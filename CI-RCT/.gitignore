@@ -1,0 +1,16 @@
+# 資料集（太大，不上 GitHub）
+data/
+
+# 訓練產出
+checkpoints/
+*.pt
+*.pth
+
+# Python 暫存
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# 論文草稿
+CI-RCT_Thesis_Plan.md

@@ -1,0 +1,60 @@
+"""
+CI-RCT hyperparameter configuration.
+
+All model and training settings live here — nothing is hardcoded in model
+files.  Treat config instances as immutable after construction (frozen=True).
+"""
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass(frozen=True)
+class CI_RCT_Config:
+    # ── Dataset ───────────────────────────────────────────────────────────
+    dataset: str = "dblp"
+    data_root: str = "data"
+    target_node_type: str = "author"
+    hop_limit: int = 2            # BFS depth for causal graph construction
+    node_limit: int = 500         # max nodes per causal subgraph
+
+    # ── HGT Backbone ──────────────────────────────────────────────────────
+    hidden_dim: int = 128
+    num_heads: int = 4
+    num_hgt_layers: int = 3
+    dropout: float = 0.3
+
+    # ── HeteroNCM ─────────────────────────────────────────────────────────
+    node_type_emb_dim: int = 16   # dimension of type embedding vectors
+    ncm_h_size: int = 64
+    ncm_h_layers: int = 2
+
+    # ── Root Cause Tracer ─────────────────────────────────────────────────
+    max_hops: int = 5
+    ce_threshold: float = 0.1
+    top_k_paths: int = 3
+
+    # ── CausalAdversarialGAN ──────────────────────────────────────────────
+    gan_hidden_dim: int = 128     # Generator hidden dimension
+    noise_std: float = 0.05       # Gaussian noise std for generation diversity
+    gp_weight: float = 10.0       # WGAN-GP gradient penalty coefficient λ
+    n_critic: int = 5             # Discriminator steps per Generator step
+
+    # ── Joint Loss Weights ─────────────────────────────────────────────────
+    # L_total = L_detection + λ1 · L_adversarial + λ2 · L_causal
+    lambda_adversarial: float = 0.1   # λ1: weight of WGAN-GP adversarial loss
+    lambda_stability: float = 0.5     # λ2: weight of Causal Shapley stability loss
+
+    # ── Training ──────────────────────────────────────────────────────────
+    num_epochs: int = 200
+    learning_rate: float = 1e-3
+    weight_decay: float = 1e-4
+
+    # ── Misc ──────────────────────────────────────────────────────────────
+    device: str = "cpu"
+    eval_every: int = 10
+    checkpoint_dir: str = "checkpoints"
+    seed: int = 42
+
+    def to_dict(self) -> dict:
+        from dataclasses import asdict
+        return asdict(self)
