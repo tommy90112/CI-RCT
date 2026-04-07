@@ -77,12 +77,20 @@ def parse_args() -> argparse.Namespace:
                         help="Max target-type nodes to keep before GPU transfer (0=no limit). "
                              "Stratified: keeps all fraud + random licit. "
                              "Use ~20000 for 16 GB GPU with GAN.")
+    # Memory reduction options (for Elliptic++)
+    parser.add_argument("--include_addr_addr", type=lambda x: x.lower() == "true",
+                        default=False,
+                        help="Include wallet→wallet edges (2.87M edges). "
+                             "Default False to save GPU memory.")
+    parser.add_argument("--labeled_only", type=lambda x: x.lower() == "true",
+                        default=False,
+                        help="Only load labeled tx nodes + 1-hop neighbors (~1/10 graph size).")
     return parser.parse_args()
 
 
 # ── Dataset loading ─────────────────────────────────────────────────────────────
 
-def load_dataset(name: str, root: str):
+def load_dataset(name: str, root: str, **kwargs):
     """Return (HeteroData, target_node_type)."""
     if name == "dblp":
         from torch_geometric.datasets import DBLP
@@ -99,7 +107,11 @@ def load_dataset(name: str, root: str):
         return load_elliptic_dataset(root)
     if name == "elliptic++":
         from utils.elliptic_plus_loader import load_elliptic_plus_dataset
-        return load_elliptic_plus_dataset(os.path.join(root, "Elliptic++"))
+        return load_elliptic_plus_dataset(
+            os.path.join(root, "Elliptic++"),
+            include_addr_addr=kwargs.get("include_addr_addr", False),
+            labeled_only=kwargs.get("labeled_only", False),
+        )
     if name == "crypto":
         from utils.crypto_loader import load_crypto_dataset
         return load_crypto_dataset(root)
@@ -277,7 +289,11 @@ def main() -> None:
     os.makedirs(args.checkpoint_dir, exist_ok=True)
 
     print(f"Loading dataset: {args.dataset}")
-    data, target_type = load_dataset(args.dataset, args.data_root)
+    data, target_type = load_dataset(
+        args.dataset, args.data_root,
+        include_addr_addr=args.include_addr_addr,
+        labeled_only=args.labeled_only,
+    )
 
     # Subsample graph before moving to GPU to avoid OOM on large datasets
     if args.subsample_tx > 0 and data[target_type].num_nodes > args.subsample_tx:
