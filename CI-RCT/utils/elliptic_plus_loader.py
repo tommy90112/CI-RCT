@@ -60,12 +60,20 @@ _TX_FEAT_COLS    = _LOCAL_FEAT_COLS + _STATS_FEAT_COLS  # 110 total
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
-def load_elliptic_plus_dataset(data_root: str) -> Tuple[HeteroData, str]:
+def load_elliptic_plus_dataset(
+    data_root: str,
+    include_addr_addr: bool = False,
+    labeled_only: bool = False,
+) -> Tuple[HeteroData, str]:
     """
     Build and return (HeteroData, target_node_type).
 
     Args:
-        data_root: directory containing all Elliptic++ CSV files
+        data_root:          directory containing all Elliptic++ CSV files
+        include_addr_addr:  whether to include wallet→wallet edges.
+                            Default False to save GPU memory (removes 2.87M edges).
+        labeled_only:       if True, keep only labeled tx nodes + their 1-hop
+                            tx/wallet neighbors (~1/10 of full graph).
 
     Returns:
         data:             PyG HeteroData ready for CI-RCT training
@@ -98,14 +106,53 @@ def load_elliptic_plus_dataset(data_root: str) -> Tuple[HeteroData, str]:
         txs_cls, tx_to_idx, n_tx
     )
 
+    # ── 4b. (Optional) restrict to labeled tx + 1-hop neighbors ─────────────
+    if labeled_only:
+        print("  [labeled_only] Filtering to labeled tx nodes + 1-hop neighbors …")
+        cls_map = txs_cls.set_index("txId")["class"].to_dict()
+        labeled_tx_ids = {tid for tid, cls in cls_map.items() if cls in (1, 2)}
+
+        # 1-hop tx neighbors via tx→tx edges
+        neighbor_tx_ids: set = set()
+        for _, row in txs_edges.iterrows():
+            if row["txId1"] in labeled_tx_ids or row["txId2"] in labeled_tx_ids:
+                neighbor_tx_ids.add(row["txId1"])
+                neighbor_tx_ids.add(row["txId2"])
+        keep_tx_ids = labeled_tx_ids | neighbor_tx_ids
+
+        # Keep only rows whose tx is in keep_tx_ids
+        keep_mask = txs_feat["txId"].isin(keep_tx_ids)
+        txs_feat  = txs_feat[keep_mask].reset_index(drop=True)
+        txs_edges = txs_edges[
+            txs_edges["txId1"].isin(keep_tx_ids) & txs_edges["txId2"].isin(keep_tx_ids)
+        ].reset_index(drop=True)
+        addr_tx   = addr_tx[addr_tx["txId"].isin(keep_tx_ids)].reset_index(drop=True)
+        tx_addr   = tx_addr[tx_addr["txId"].isin(keep_tx_ids)].reset_index(drop=True)
+
+        # Rebuild tx index from filtered features
+        all_tx_ids = txs_feat["txId"].tolist()
+        tx_to_idx  = {tid: i for i, tid in enumerate(all_tx_ids)}
+        n_tx       = len(all_tx_ids)
+
+        # Rebuild features and labels for filtered nodes
+        tx_feat = _build_tx_features(txs_feat)
+        labels, train_mask, val_mask, test_mask = _build_tx_labels_and_masks(
+            txs_cls, tx_to_idx, n_tx
+        )
+        print(f"  [labeled_only] Kept {n_tx:,} transactions "
+              f"(labeled={len(labeled_tx_ids):,}, 1-hop={len(neighbor_tx_ids - labeled_tx_ids):,})")
+
     # ── 5. Wallet node index (connected wallets only) ────────────────────────
     print("  Filtering connected wallets …")
     connected = (
         set(addr_tx["input_address"].dropna())
         | set(tx_addr["output_address"].dropna())
-        | set(addr_addr["input_address"].dropna())
-        | set(addr_addr["output_address"].dropna())
     )
+    if include_addr_addr:
+        connected |= (
+            set(addr_addr["input_address"].dropna())
+            | set(addr_addr["output_address"].dropna())
+        )
     wallets_filt  = wallets[wallets["address"].isin(connected)].reset_index(drop=True)
     all_wallet_ids = wallets_filt["address"].tolist()
     wallet_to_idx  = {addr: i for i, addr in enumerate(all_wallet_ids)}
@@ -118,7 +165,8 @@ def load_elliptic_plus_dataset(data_root: str) -> Tuple[HeteroData, str]:
     # ── 7. Build edges ────────────────────────────────────────────────────────
     print("  Building edges …")
     ei_wt, ei_tw, ei_tt, ei_ww = _build_edges(
-        addr_tx, tx_addr, txs_edges, addr_addr,
+        addr_tx, tx_addr, txs_edges,
+        addr_addr if include_addr_addr else None,
         tx_to_idx, wallet_to_idx,
     )
 
@@ -257,11 +305,11 @@ def _stratified_masks(
 # ── Edge builder ───────────────────────────────────────────────────────────────
 
 def _build_edges(
-    addr_tx:      pd.DataFrame,
-    tx_addr:      pd.DataFrame,
-    txs_edges:    pd.DataFrame,
-    addr_addr:    pd.DataFrame,
-    tx_to_idx:    dict,
+    addr_tx:       pd.DataFrame,
+    tx_addr:       pd.DataFrame,
+    txs_edges:     pd.DataFrame,
+    addr_addr:     pd.DataFrame | None,
+    tx_to_idx:     dict,
     wallet_to_idx: dict,
 ) -> tuple:
     """
@@ -290,11 +338,14 @@ def _build_edges(
     dst_tt = torch.tensor([tx_to_idx[t] for t in tt["txId2"]], dtype=torch.long)
     ei_tt  = torch.stack([src_tt, dst_tt], dim=0)
 
-    # wallet → wallet
-    ww = addr_addr.dropna(subset=["input_address", "output_address"])
-    ww = ww[ww["input_address"].isin(wallet_to_idx) & ww["output_address"].isin(wallet_to_idx)]
-    src_ww = torch.tensor([wallet_to_idx[a] for a in ww["input_address"]],  dtype=torch.long)
-    dst_ww = torch.tensor([wallet_to_idx[a] for a in ww["output_address"]], dtype=torch.long)
-    ei_ww  = torch.stack([src_ww, dst_ww], dim=0)
+    # wallet → wallet (optional, disabled for local CPU testing)
+    if addr_addr is not None:
+        ww = addr_addr.dropna(subset=["input_address", "output_address"])
+        ww = ww[ww["input_address"].isin(wallet_to_idx) & ww["output_address"].isin(wallet_to_idx)]
+        src_ww = torch.tensor([wallet_to_idx[a] for a in ww["input_address"]],  dtype=torch.long)
+        dst_ww = torch.tensor([wallet_to_idx[a] for a in ww["output_address"]], dtype=torch.long)
+        ei_ww  = torch.stack([src_ww, dst_ww], dim=0)
+    else:
+        ei_ww = torch.zeros((2, 0), dtype=torch.long)
 
     return ei_wt, ei_tw, ei_tt, ei_ww
