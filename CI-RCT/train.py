@@ -73,6 +73,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
+    parser.add_argument("--subsample_tx", type=int, default=0,
+                        help="Max target-type nodes to keep before GPU transfer (0=no limit). "
+                             "Stratified: keeps all fraud + random licit. "
+                             "Use ~20000 for 16 GB GPU with GAN.")
     return parser.parse_args()
 
 
@@ -213,6 +217,54 @@ def evaluate_split(model, data, labels, mask):
     )
 
 
+# ── Graph subsampling ───────────────────────────────────────────────────────────
+
+def _subsample_hetero(data, target_type: str, max_target: int, seed: int = 42):
+    """
+    Subsample the heterogeneous graph so that at most `max_target` nodes of
+    `target_type` are kept.  Strategy:
+      - Keep ALL fraud (label=1) nodes in the training set.
+      - Fill remaining budget with randomly sampled licit nodes.
+      - Keep only wallet nodes that are directly connected to selected transactions.
+    This preserves the train/val/test masks and label distribution.
+    """
+    torch.manual_seed(seed)
+    y = data[target_type].y
+    n_target = data[target_type].num_nodes
+
+    fraud_idx = (y == 1).nonzero(as_tuple=True)[0]
+    licit_idx = (y == 0).nonzero(as_tuple=True)[0]
+
+    n_keep_licit = max(0, max_target - len(fraud_idx))
+    perm = torch.randperm(len(licit_idx))[:n_keep_licit]
+    sampled_tx = torch.cat([fraud_idx, licit_idx[perm]]).sort()[0]
+
+    tx_mask = torch.zeros(n_target, dtype=torch.bool)
+    tx_mask[sampled_tx] = True
+
+    subset_dict = {target_type: tx_mask}
+
+    # For every other node type, keep only those connected to selected transactions
+    for nt in data.node_types:
+        if nt == target_type:
+            continue
+        keep = torch.zeros(data[nt].num_nodes, dtype=torch.bool)
+        for src_t, _, dst_t in data.edge_types:
+            ei = data[(src_t, _, dst_t)].edge_index
+            if src_t == target_type and dst_t == nt:
+                keep[ei[1][tx_mask[ei[0]]]] = True
+            elif src_t == nt and dst_t == target_type:
+                keep[ei[0][tx_mask[ei[1]]]] = True
+        subset_dict[nt] = keep
+
+    kept_tx = int(tx_mask.sum())
+    kept_other = {nt: int(subset_dict[nt].sum()) for nt in subset_dict if nt != target_type}
+    print(f"  Subsampled: {kept_tx}/{n_target} {target_type}s, "
+          + ", ".join(f"{v}/{data[k].num_nodes} {k}s" for k, v in kept_other.items()))
+
+    return data.subgraph(subset_dict)
+
+
 # ── Main ────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -226,6 +278,11 @@ def main() -> None:
 
     print(f"Loading dataset: {args.dataset}")
     data, target_type = load_dataset(args.dataset, args.data_root)
+
+    # Subsample graph before moving to GPU to avoid OOM on large datasets
+    if args.subsample_tx > 0 and data[target_type].num_nodes > args.subsample_tx:
+        data = _subsample_hetero(data, target_type, args.subsample_tx, seed=args.seed)
+
     data = data.to(device)
 
     labels = data[target_type].y
