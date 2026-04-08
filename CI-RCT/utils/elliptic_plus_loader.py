@@ -64,16 +64,25 @@ def load_elliptic_plus_dataset(
     data_root: str,
     include_addr_addr: bool = False,
     labeled_only: bool = False,
+    fraud_subgraph: bool = False,
+    fraud_subgraph_hops: int = 2,
 ) -> Tuple[HeteroData, str]:
     """
     Build and return (HeteroData, target_node_type).
 
     Args:
-        data_root:          directory containing all Elliptic++ CSV files
-        include_addr_addr:  whether to include wallet→wallet edges.
-                            Default False to save GPU memory (removes 2.87M edges).
-        labeled_only:       if True, keep only labeled tx nodes + their 1-hop
-                            tx/wallet neighbors (~1/10 of full graph).
+        data_root:            directory containing all Elliptic++ CSV files
+        include_addr_addr:    whether to include wallet→wallet edges.
+                              Default False to save GPU memory (removes 2.87M edges).
+        labeled_only:         if True, keep only labeled tx nodes + their 1-hop
+                              tx/wallet neighbors (~1/10 of full graph).
+        fraud_subgraph:       if True, keep all tx nodes but restrict wallet nodes
+                              to those within `fraud_subgraph_hops` hops of labeled
+                              tx, and include addr→addr edges only within that
+                              wallet subset. Dramatically reduces wallet count
+                              from ~900K to tens of thousands while preserving
+                              addr→addr structural signal near fraud nodes.
+        fraud_subgraph_hops:  number of wallet hops from labeled tx (default 2).
 
     Returns:
         data:             PyG HeteroData ready for CI-RCT training
@@ -144,15 +153,26 @@ def load_elliptic_plus_dataset(
 
     # ── 5. Wallet node index (connected wallets only) ────────────────────────
     print("  Filtering connected wallets …")
-    connected = (
-        set(addr_tx["input_address"].dropna())
-        | set(tx_addr["output_address"].dropna())
-    )
-    if include_addr_addr:
-        connected |= (
-            set(addr_addr["input_address"].dropna())
-            | set(addr_addr["output_address"].dropna())
+
+    if fraud_subgraph:
+        # Build wallet set anchored to labeled tx, then BFS over addr→addr
+        connected = _fraud_subgraph_wallets(
+            txs_cls, tx_to_idx, addr_tx, tx_addr, addr_addr,
+            hops=fraud_subgraph_hops,
         )
+        # addr→addr is always included in fraud_subgraph mode (that's the point)
+        _include_aa = True
+    else:
+        connected = (
+            set(addr_tx["input_address"].dropna())
+            | set(tx_addr["output_address"].dropna())
+        )
+        _include_aa = include_addr_addr
+        if _include_aa:
+            connected |= (
+                set(addr_addr["input_address"].dropna())
+                | set(addr_addr["output_address"].dropna())
+            )
     wallets_filt  = wallets[wallets["address"].isin(connected)].reset_index(drop=True)
     all_wallet_ids = wallets_filt["address"].tolist()
     wallet_to_idx  = {addr: i for i, addr in enumerate(all_wallet_ids)}
@@ -166,7 +186,7 @@ def load_elliptic_plus_dataset(
     print("  Building edges …")
     ei_wt, ei_tw, ei_tt, ei_ww = _build_edges(
         addr_tx, tx_addr, txs_edges,
-        addr_addr if include_addr_addr else None,
+        addr_addr if _include_aa else None,
         tx_to_idx, wallet_to_idx,
     )
 
@@ -300,6 +320,69 @@ def _stratified_masks(
         test_mask [idx[n_tr+n_val:]]     = True
 
     return train_mask, val_mask, test_mask
+
+
+# ── Fraud subgraph wallet set builder ──────────────────────────────────────────
+
+def _fraud_subgraph_wallets(
+    txs_cls:   "pd.DataFrame",
+    tx_to_idx: dict,
+    addr_tx:   "pd.DataFrame",
+    tx_addr:   "pd.DataFrame",
+    addr_addr: "pd.DataFrame",
+    hops:      int = 2,
+) -> set:
+    """
+    BFS outward from labeled (fraud + licit) tx nodes to collect wallet IDs.
+
+    Hop 1: wallets that directly send to / receive from labeled tx
+           (via AddrTx input_address and TxAddr output_address)
+    Hop 2+: wallets reachable via addr→addr edges from hop-1 wallets
+
+    Returns:
+        set of wallet address strings to keep
+    """
+    # Labeled tx IDs
+    cls_map = txs_cls.set_index("txId")["class"].to_dict()
+    labeled_tx = {tid for tid, cls in cls_map.items() if cls in (1, 2) and tid in tx_to_idx}
+
+    # Hop 1: wallets connected directly to labeled tx
+    seed_wallets: set = set()
+    at = addr_tx.dropna(subset=["input_address", "txId"])
+    seed_wallets |= set(at.loc[at["txId"].isin(labeled_tx), "input_address"])
+    ta = tx_addr.dropna(subset=["txId", "output_address"])
+    seed_wallets |= set(ta.loc[ta["txId"].isin(labeled_tx), "output_address"])
+
+    if hops <= 1 or addr_addr is None or addr_addr.empty:
+        print(f"  [fraud_subgraph] hop-1 wallets: {len(seed_wallets):,}")
+        return seed_wallets
+
+    # Precompute adjacency from addr_addr for fast BFS
+    aa = addr_addr.dropna(subset=["input_address", "output_address"])
+    adj: dict = {}
+    for src, dst in zip(aa["input_address"], aa["output_address"]):
+        adj.setdefault(src, set()).add(dst)
+        adj.setdefault(dst, set()).add(src)
+
+    # BFS for remaining hops
+    frontier = set(seed_wallets)
+    visited  = set(seed_wallets)
+    for hop in range(2, hops + 1):
+        next_frontier: set = set()
+        for w in frontier:
+            for nb in adj.get(w, ()):
+                if nb not in visited:
+                    next_frontier.add(nb)
+        visited |= next_frontier
+        frontier = next_frontier
+        print(f"  [fraud_subgraph] hop-{hop} wallets added: {len(next_frontier):,}  "
+              f"(total so far: {len(visited):,})")
+        if not frontier:
+            break
+
+    print(f"  [fraud_subgraph] Total wallets in subgraph: {len(visited):,} "
+          f"(vs full ~900K)")
+    return visited
 
 
 # ── Edge builder ───────────────────────────────────────────────────────────────
