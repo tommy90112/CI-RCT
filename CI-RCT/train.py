@@ -85,6 +85,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--labeled_only", type=lambda x: x.lower() == "true",
                         default=False,
                         help="Only load labeled tx nodes + 1-hop neighbors (~1/10 graph size).")
+    parser.add_argument("--fraud_subgraph", type=lambda x: x.lower() == "true",
+                        default=False,
+                        help="Keep all tx but restrict wallets to 1-2 hop neighbors of "
+                             "labeled tx, with addr→addr edges within that wallet set.")
+    parser.add_argument("--fraud_subgraph_hops", type=int, default=2,
+                        help="Number of wallet hops from labeled tx (default 2).")
     return parser.parse_args()
 
 
@@ -111,6 +117,8 @@ def load_dataset(name: str, root: str, **kwargs):
             os.path.join(root, "Elliptic++"),
             include_addr_addr=kwargs.get("include_addr_addr", False),
             labeled_only=kwargs.get("labeled_only", False),
+            fraud_subgraph=kwargs.get("fraud_subgraph", False),
+            fraud_subgraph_hops=kwargs.get("fraud_subgraph_hops", 2),
         )
     if name == "crypto":
         from utils.crypto_loader import load_crypto_dataset
@@ -293,6 +301,8 @@ def main() -> None:
         args.dataset, args.data_root,
         include_addr_addr=args.include_addr_addr,
         labeled_only=args.labeled_only,
+        fraud_subgraph=args.fraud_subgraph,
+        fraud_subgraph_hops=args.fraud_subgraph_hops,
     )
 
     # Subsample graph before moving to GPU to avoid OOM on large datasets

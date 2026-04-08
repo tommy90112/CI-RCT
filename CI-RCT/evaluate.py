@@ -22,7 +22,7 @@ from configs.config import CI_RCT_Config
 from model.causal_shapley import compute_asymmetric_causal_shapley
 from model.ci_rct import CI_RCT
 from model.root_cause_tracer import RootCauseTracer
-from utils.data_utils import build_typed_causal_graph_from_hetero
+from utils.data_utils import build_typed_causal_graph_from_hetero, compute_type_offsets
 from utils.metrics import (
     compute_classification_metrics,
     compute_root_cause_metrics,
@@ -66,7 +66,9 @@ def load_dataset(name: str, root: str):
         return load_elliptic_dataset(root)
     if name == "elliptic++":
         from utils.elliptic_plus_loader import load_elliptic_plus_dataset
-        return load_elliptic_plus_dataset(os.path.join(root, "Elliptic++"))
+        return load_elliptic_plus_dataset(
+            os.path.join(root, "Elliptic++"), include_addr_addr=False
+        )
     raise ValueError(f"Unknown dataset: {name!r}")
 
 
@@ -103,12 +105,16 @@ def eval_classification(model, data, labels, test_mask):
 # ── Metric B + D: Root Cause Tracing + φ-Stability ────────────────────────────
 
 def eval_root_cause_and_stability(model, data, labels, test_mask,
-                                  causal_graph, args, device):
+                                  causal_graph, args, device,
+                                  type_offsets, target_type):
     """
-    Run explain() on fraud-predicted test nodes.
+    Run root cause tracing on fraud-predicted test nodes.
     Computes:
       - RCP, CCV, MTD  (Dimension B)
       - φ-Stability    (Dimension D)
+
+    Uses global node IDs (local index + type offset) to correctly
+    address nodes inside the TypedCausalGraph.
     """
     model.eval()
 
@@ -124,29 +130,33 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         threshold=args.ce_threshold,
     )
 
+    offset = type_offsets[target_type]
     test_indices = test_mask.nonzero(as_tuple=True)[0].tolist()
-    fraud_predicted = [
-        idx for idx in test_indices
+
+    # Convert to global IDs; only keep nodes that exist in the causal graph
+    fraud_predicted_global = [
+        offset + idx for idx in test_indices
         if logits[idx].argmax().item() == 1
+           and (offset + idx) in causal_graph.set_v
     ][: args.max_explain]
 
-    if not fraud_predicted:
-        print("  No fraud-predicted test nodes — skipping RCT metrics.")
+    if not fraud_predicted_global:
+        print("  No fraud-predicted test nodes in causal graph — skipping RCT metrics.")
         return {}, {}
 
     predicted_roots, causal_chains, phi_list = [], [], []
 
-    for node_id in fraud_predicted:
-        root, chain = tracer.trace_root_cause(node_id, causal_effects)
+    for global_id in fraud_predicted_global:
+        root, chain = tracer.trace_root_cause(global_id, causal_effects)
         predicted_roots.append(root)
         causal_chains.append(chain)
 
-        phi = compute_asymmetric_causal_shapley(causal_effects, causal_graph, node_id)
+        phi = compute_asymmetric_causal_shapley(causal_effects, causal_graph, global_id)
         phi_list.append(phi)
 
-    # Ground-truth fraud nodes for RCP / CCV
+    # Ground-truth fraud nodes (global IDs) for RCP / CCV
     fraud_label_set = set(
-        i for i in test_indices if labels[i].item() == 1
+        offset + i for i in test_indices if labels[i].item() == 1
     )
 
     rct_metrics = compute_root_cause_metrics(
@@ -218,10 +228,22 @@ def main() -> None:
     labels    = data[target_type].y
     test_mask = data[target_type].test_mask
 
+    # Build causal graph seeded from test fraud nodes (same approach as train.py)
     print("Building TypedCausalGraph...")
+    type_offsets = compute_type_offsets(data)
+    offset = type_offsets[target_type]
+    test_indices = test_mask.nonzero(as_tuple=True)[0].tolist()
+    fraud_global_ids = [
+        offset + i for i in test_indices if labels[i].item() == 1
+    ]
+    seed_ids = fraud_global_ids[:20]
     causal_graph = build_typed_causal_graph_from_hetero(
-        data, node_limit=args.node_limit
+        data,
+        seed_node_ids=seed_ids if seed_ids else None,
+        node_limit=args.node_limit,
     )
+    print(f"  Causal graph: {len(causal_graph.v)} nodes, "
+          f"{len(causal_graph.edge_type_map)} directed edges")
 
     config = CI_RCT_Config(
         dataset=args.dataset,
@@ -261,7 +283,8 @@ def main() -> None:
 
     # ── Dimensions B + D: Root Cause Tracing + φ-Stability ──────────────────
     rct_metrics, stab_metrics = eval_root_cause_and_stability(
-        model, data, labels, test_mask, causal_graph, args, device
+        model, data, labels, test_mask, causal_graph, args, device,
+        type_offsets=type_offsets, target_type=target_type,
     )
     if rct_metrics:
         print_section("B. Root Cause Tracing Metrics", rct_metrics)
