@@ -378,4 +378,4 @@ class CI_RCT(nn.Module):
         """Load model state dict."""
         map_location = device or self.config.device
         state = torch.load(path, map_location=map_location)
-        self.load_state_dict(state)
+        self.load_state_dict(state, strict=False)

@@ -38,7 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_hops", type=int, default=5)
     parser.add_argument("--ce_threshold", type=float, default=0.1)
     parser.add_argument("--top_k", type=int, default=3)
-    parser.add_argument("--node_limit", type=int, default=500)
+    parser.add_argument("--node_limit", type=int, default=5000,
+                        help="Max nodes in TypedCausalGraph BFS (default 5000)")
     parser.add_argument("--max_explain", type=int, default=50,
                         help="Max test fraud nodes to run full explanation on")
     parser.add_argument("--device", type=str, default="cpu")
@@ -48,10 +49,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--type_emb_dim", type=int, default=16)
+    # Must match training data loading
+    parser.add_argument("--fraud_subgraph", type=lambda x: x.lower() == "true",
+                        default=False,
+                        help="Must match training: use fraud-anchored wallet subgraph")
+    parser.add_argument("--fraud_subgraph_hops", type=int, default=2)
     return parser.parse_args()
 
 
-def load_dataset(name: str, root: str):
+def load_dataset(name: str, root: str, **kwargs):
     if name == "dblp":
         from torch_geometric.datasets import DBLP
         return DBLP(root=os.path.join(root, "dblp"))[0], "author"
@@ -67,7 +73,10 @@ def load_dataset(name: str, root: str):
     if name == "elliptic++":
         from utils.elliptic_plus_loader import load_elliptic_plus_dataset
         return load_elliptic_plus_dataset(
-            os.path.join(root, "Elliptic++"), include_addr_addr=False
+            os.path.join(root, "Elliptic++"),
+            include_addr_addr=False,
+            fraud_subgraph=kwargs.get("fraud_subgraph", False),
+            fraud_subgraph_hops=kwargs.get("fraud_subgraph_hops", 2),
         )
     raise ValueError(f"Unknown dataset: {name!r}")
 
@@ -174,7 +183,7 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
     stability_metrics = {
         "phi_stability_std": float(np.std(stability_diffs)) if stability_diffs else 0.0,
         "phi_stability_mean_abs": float(np.mean(stability_diffs)) if stability_diffs else 0.0,
-        "num_nodes_explained": len(fraud_predicted),
+        "num_nodes_explained": len(fraud_predicted_global),
     }
 
     return rct_metrics, stability_metrics
@@ -222,7 +231,11 @@ def main() -> None:
     device = torch.device(args.device)
 
     print(f"Loading dataset: {args.dataset}")
-    data, target_type = load_dataset(args.dataset, args.data_root)
+    data, target_type = load_dataset(
+        args.dataset, args.data_root,
+        fraud_subgraph=args.fraud_subgraph,
+        fraud_subgraph_hops=args.fraud_subgraph_hops,
+    )
     data = data.to(device)
 
     labels    = data[target_type].y
