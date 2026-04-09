@@ -73,9 +73,12 @@ def build_typed_causal_graph_from_hetero(
 
     type_offsets = compute_type_offsets(data)
 
-    # --- Build adjacency list in global ID space ---
-    # adj[node] = list of (neighbour, edge_type_str)
-    adj: Dict[int, List[Tuple[int, str]]] = {}
+    # --- Build adjacency lists in global ID space ---
+    # causal_adj: directed forward edges only → used to add edges to TypedCausalGraph
+    # bfs_adj:    bidirectional → used for BFS node discovery so upstream nodes
+    #             (causal parents) are reachable from fraud seed nodes
+    causal_adj: Dict[int, List[Tuple[int, str]]] = {}
+    bfs_adj:    Dict[int, List[Tuple[int, str]]] = {}
 
     for src_type, rel, dst_type in data.edge_types:
         edge_key = (src_type, rel, dst_type)
@@ -89,9 +92,14 @@ def build_typed_causal_graph_from_hetero(
         for i in range(ei.size(1)):
             src_g = src_off + int(ei[0, i].item())
             dst_g = dst_off + int(ei[1, i].item())
-            adj.setdefault(src_g, []).append((dst_g, etype_str))
-            if not directed:
-                adj.setdefault(dst_g, []).append((src_g, etype_str))
+            # Causal (directed) adjacency
+            causal_adj.setdefault(src_g, []).append((dst_g, etype_str))
+            # BFS (bidirectional) adjacency — allows finding upstream parents
+            bfs_adj.setdefault(src_g, []).append((dst_g, etype_str))
+            bfs_adj.setdefault(dst_g, []).append((src_g, etype_str))
+
+    # Keep backward compat: adj used below for BFS
+    adj = bfs_adj
 
     # --- Determine which nodes to include ---
     total_nodes = sum(data[nt].num_nodes for nt in data.node_types)
@@ -121,8 +129,8 @@ def build_typed_causal_graph_from_hetero(
         node_types=node_type_dict,
     )
 
-    # --- Add edges ---
-    for src_g, neighbours in adj.items():
+    # --- Add directed causal edges (forward only) ---
+    for src_g, neighbours in causal_adj.items():
         if src_g not in included_nodes:
             continue
         for dst_g, etype_str in neighbours:
