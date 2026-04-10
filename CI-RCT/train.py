@@ -143,20 +143,31 @@ def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
     )
 
     flat_h = model._build_flat_h(h_dict)
-    ce_scores = model.hetero_ncm.detached_causal_effects(flat_h, causal_graph)
+
+    # Compute CE WITH gradients so L_stability backpropagates into the NCM.
+    ce_tensors = model.hetero_ncm.forward(flat_h, causal_graph)  # {(src,dst): Tensor}
+    # Detached floats used only for Shapley tracking and prev_phi buffer.
+    ce_scores = {k: v.item() for k, v in ce_tensors.items()}
 
     from model.causal_shapley import compute_asymmetric_causal_shapley
     phi_current = compute_asymmetric_causal_shapley(ce_scores, causal_graph, target_node)
 
     stability_loss = torch.zeros(1, device=device)
-    if model._prev_phi is not None and phi_current:
+    parents = list(causal_graph.parents(target_node))
+    n_parents = len(parents)
+    if model._prev_phi is not None and phi_current and n_parents > 0:
         common = set(phi_current.keys()) & set(model._prev_phi.keys())
         if common:
-            diffs = [(phi_current[p] - model._prev_phi[p]) ** 2 for p in common]
-            stability_loss = torch.tensor(
-                sum(diffs) / len(diffs), dtype=torch.float32,
-                device=device, requires_grad=False,
-            )
+            # φ_t = CE(p → target) / n  — keep tensor so NCM receives gradient
+            diffs = []
+            for p in common:
+                ce_t = ce_tensors.get((p, target_node), torch.zeros(1, device=device))
+                phi_t = ce_t / n_parents
+                phi_prev = torch.tensor(
+                    model._prev_phi[p], dtype=torch.float32, device=device
+                )
+                diffs.append((phi_t - phi_prev) ** 2)
+            stability_loss = torch.stack(diffs).mean()
 
     model._prev_phi = dict(phi_current)
 

@@ -241,24 +241,31 @@ class CI_RCT(nn.Module):
         # ── L_stability (Module 2c) ───────────────────────────────────────
         # ‖φ_t − φ_{t-1}‖² — penalise Causal Shapley fluctuations
         if causal_graph is not None and target_node is not None:
-            ce_scores = self.hetero_ncm.detached_causal_effects(flat_h, causal_graph)
+            # Compute CE WITH gradients so L_stability backpropagates into NCM.
+            ce_tensors = self.hetero_ncm.forward(flat_h, causal_graph)
+            ce_scores = {k: v.item() for k, v in ce_tensors.items()}
             phi_current = compute_asymmetric_causal_shapley(
                 ce_scores, causal_graph, target_node
             )
 
-            if self._prev_phi is not None and phi_current:
+            parents = list(causal_graph.parents(target_node))
+            n_parents = len(parents)
+            if self._prev_phi is not None and phi_current and n_parents > 0:
                 common_parents = set(phi_current.keys()) & set(self._prev_phi.keys())
                 if common_parents:
-                    diffs = [
-                        (phi_current[p] - self._prev_phi[p]) ** 2
-                        for p in common_parents
-                    ]
-                    stability_loss = torch.tensor(
-                        sum(diffs) / len(diffs),
-                        dtype=torch.float32,
-                        device=detection_loss.device,
-                        requires_grad=True,
-                    )
+                    diffs = []
+                    for p in common_parents:
+                        ce_t = ce_tensors.get(
+                            (p, target_node),
+                            torch.zeros(1, device=detection_loss.device),
+                        )
+                        phi_t = ce_t / n_parents
+                        phi_prev = torch.tensor(
+                            self._prev_phi[p], dtype=torch.float32,
+                            device=detection_loss.device,
+                        )
+                        diffs.append((phi_t - phi_prev) ** 2)
+                    stability_loss = torch.stack(diffs).mean()
 
             # Update φ buffer (detached — not part of computation graph)
             self._prev_phi = {k: v for k, v in phi_current.items()}
