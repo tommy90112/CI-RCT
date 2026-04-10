@@ -181,6 +181,65 @@ class HeteroNCM(nn.Module):
 
         return causal_effects
 
+    def supervised_ncm_loss(
+        self,
+        flat_h: Dict[int, Tensor],
+        causal_graph: TypedCausalGraph,
+        node_labels: "torch.Tensor",
+        target_type_offset: int,
+    ) -> "torch.Tensor":
+        """
+        Supervision loss for the NCM: train each edge-type MLP to predict
+        the fraud probability of the *destination* node from the *source*
+        node's embedding.
+
+        For an edge (src → dst):
+            p_actual = sigmoid(MLP(h_src ‖ type_emb_src))
+            label    = y_dst  (1 if fraud, 0 if licit)
+            loss     += BCE(p_actual, label)
+
+        This gives NCM a directional signal: edges pointing to fraud nodes
+        should yield high CE; edges to licit nodes should yield low CE.
+
+        Args:
+            flat_h:              {global_id: embedding [D]}
+            causal_graph:        TypedCausalGraph
+            node_labels:         Label tensor [N_target] (long, 0/1)
+            target_type_offset:  Global ID offset for the target node type
+
+        Returns:
+            Scalar BCE loss tensor (0 if no valid edges found)
+        """
+        import torch.nn.functional as F
+
+        losses: list = []
+        n_labels = node_labels.size(0)
+        device = next(self.parameters()).device
+
+        for (src, dst), edge_type in causal_graph.edge_type_map.items():
+            dst_local = dst - target_type_offset
+            if dst_local < 0 or dst_local >= n_labels:
+                continue
+            if src not in flat_h:
+                continue
+            if edge_type not in self.edge_type_models:
+                continue
+
+            y = node_labels[dst_local].float().to(device)
+            src_type = causal_graph.node_type.get(src, self.all_node_types[0])
+            type_idx = torch.tensor(
+                self.node_type_to_idx.get(src_type, 0),
+                dtype=torch.long, device=device,
+            )
+            type_emb = self.type_embeddings(type_idx)
+            u_actual = torch.cat([flat_h[src].to(device), type_emb], dim=-1)
+            p_actual = self.edge_type_models[edge_type](u_actual).squeeze(-1)
+            losses.append(F.binary_cross_entropy(p_actual, y))
+
+        if not losses:
+            return torch.zeros(1, device=device)
+        return torch.stack(losses).mean()
+
     def detached_causal_effects(
         self,
         flat_h: Dict[int, Tensor],

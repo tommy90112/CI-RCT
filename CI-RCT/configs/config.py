@@ -43,6 +43,7 @@ class CI_RCT_Config:
     # L_total = L_detection + λ1 · L_adversarial + λ2 · L_causal
     lambda_adversarial: float = 0.1   # λ1: weight of WGAN-GP adversarial loss
     lambda_stability: float = 0.5     # λ2: weight of Causal Shapley stability loss
+    lambda_ncm: float = 0.1           # λ3: weight of NCM supervision (BCE) loss
 
     # ── Training ──────────────────────────────────────────────────────────
     num_epochs: int = 200

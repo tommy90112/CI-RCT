@@ -60,6 +60,8 @@ def parse_args() -> argparse.Namespace:
                         help="λ1: weight of WGAN-GP adversarial loss")
     parser.add_argument("--lambda_stability", type=float, default=0.5,
                         help="λ2: weight of Causal Shapley stability loss")
+    parser.add_argument("--lambda_ncm", type=float, default=0.1,
+                        help="λ3: weight of NCM supervision (BCE) loss")
     # GAN settings
     parser.add_argument("--use_gan", type=lambda x: x.lower() == "true",
                         default=False,
@@ -129,10 +131,11 @@ def load_dataset(name: str, root: str, **kwargs):
 # ── Training helpers ────────────────────────────────────────────────────────────
 
 def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
-                      target_node, device, class_weight=None):
+                      target_node, device, type_offsets, target_type,
+                      class_weight=None):
     """
     Single training step without GAN (Phase 1).
-    L_total = L_detection + λ2 · L_stability
+    L_total = L_detection + λ2 · L_stability + λ3 · L_ncm
     """
     model.train()
     optimizer.zero_grad()
@@ -171,11 +174,20 @@ def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
 
     model._prev_phi = dict(phi_current)
 
-    total_loss = detection_loss + model.config.lambda_stability * stability_loss
+    # L_ncm: supervise NCM to predict fraud probability from parent embeddings
+    ncm_loss = model.hetero_ncm.supervised_ncm_loss(
+        flat_h, causal_graph, labels, type_offsets[target_type]
+    )
+
+    total_loss = (
+        detection_loss
+        + model.config.lambda_stability * stability_loss
+        + model.config.lambda_ncm * ncm_loss
+    )
     total_loss.backward()
     optimizer.step()
 
-    return total_loss.item(), detection_loss.item(), stability_loss.item()
+    return total_loss.item(), detection_loss.item(), stability_loss.item(), ncm_loss.item()
 
 
 def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
@@ -342,6 +354,7 @@ def main() -> None:
         node_limit=args.node_limit,
         lambda_adversarial=args.lambda_adversarial,
         lambda_stability=args.lambda_stability,
+        lambda_ncm=args.lambda_ncm,
         n_critic=args.n_critic,
         gp_weight=args.gp_weight,
         noise_std=args.noise_std,
@@ -452,12 +465,13 @@ def main() -> None:
     for epoch in range(1, args.epochs + 1):
 
         if not args.use_gan:
-            total_loss, det_loss, stab_loss = train_step_no_gan(
+            total_loss, det_loss, stab_loss, ncm_loss = train_step_no_gan(
                 model, data, labels, train_mask, optimizer_backbone,
-                causal_graph, target_node, device, class_weight=class_weight
+                causal_graph, target_node, device,
+                type_offsets, target_type, class_weight=class_weight
             )
             loss_str = (f"Loss {total_loss:.4f} "
-                        f"(det={det_loss:.4f}, stab={stab_loss:.2e})")
+                        f"(det={det_loss:.4f}, stab={stab_loss:.2e}, ncm={ncm_loss:.4f})")
         else:
             total_loss, det_loss, adv_loss, g_loss = train_step_with_gan(
                 model, data, labels, train_mask,
