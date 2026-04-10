@@ -193,7 +193,7 @@ def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
 def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
                         optimizer_generator, causal_graph, fraud_features,
                         topo_order, target_node, step_count, device,
-                        class_weight=None):
+                        type_offsets, target_type, class_weight=None):
     """
     WGAN-GP training step (Phase 2):
       - Every step: update Discriminator (= backbone)
@@ -205,6 +205,7 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
     model.train()
     optimizer_backbone.zero_grad()
 
+    target_type_offset = type_offsets[target_type]
     total_loss, detection_loss, adv_loss, stability_loss = model.compute_total_loss(
         data=data,
         labels=labels,
@@ -215,6 +216,7 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
         target_node=target_node,
         is_critic_step=True,
         class_weight=class_weight,
+        target_type_offset=target_type_offset,
     )
     # Use only detection + adversarial for discriminator update
     d_loss = detection_loss + model.config.lambda_adversarial * adv_loss
@@ -235,6 +237,7 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
             target_node=target_node,
             is_critic_step=False,
             class_weight=class_weight,
+            target_type_offset=target_type_offset,
         )
         g_loss = model.config.lambda_adversarial * g_adv_loss
         g_loss.backward()
@@ -477,7 +480,9 @@ def main() -> None:
                 model, data, labels, train_mask,
                 optimizer_backbone, optimizer_generator,
                 causal_graph, fraud_features, topo_order, target_node,
-                step_count=epoch, device=device, class_weight=class_weight
+                step_count=epoch, device=device,
+                type_offsets=type_offsets, target_type=target_type,
+                class_weight=class_weight
             )
             loss_str = (f"Loss {total_loss:.4f} "
                         f"(det={det_loss:.4f}, adv={adv_loss:.4f}, G={g_loss:.4f})")

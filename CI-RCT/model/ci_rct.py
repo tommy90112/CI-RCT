@@ -170,9 +170,10 @@ class CI_RCT(nn.Module):
         target_node: Optional[int] = None,
         is_critic_step: bool = True,
         class_weight: Optional[Tensor] = None,
+        target_type_offset: Optional[int] = None,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         """
-        Compute L_total = L_detection + λ1·L_adversarial + λ2·L_stability.
+        Compute L_total = L_detection + λ1·L_adversarial + λ2·L_stability + λ3·L_ncm.
 
         Args:
             data:            Input HeteroData
@@ -270,10 +271,18 @@ class CI_RCT(nn.Module):
             # Update φ buffer (detached — not part of computation graph)
             self._prev_phi = {k: v for k, v in phi_current.items()}
 
+        # ── L_ncm (NCM supervision) ───────────────────────────────────────
+        ncm_loss = torch.zeros(1, device=detection_loss.device)
+        if causal_graph is not None and target_type_offset is not None:
+            ncm_loss = self.hetero_ncm.supervised_ncm_loss(
+                flat_h, causal_graph, labels, target_type_offset
+            )
+
         total_loss = (
             detection_loss
             + self.config.lambda_adversarial * adv_loss
             + self.config.lambda_stability * stability_loss
+            + self.config.lambda_ncm * ncm_loss
         )
 
         return total_loss, detection_loss, adv_loss, stability_loss
