@@ -40,6 +40,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top_k", type=int, default=3)
     parser.add_argument("--node_limit", type=int, default=5000,
                         help="Max nodes in TypedCausalGraph BFS (default 5000)")
+    parser.add_argument("--hop_limit", type=int, default=2,
+                        help="BFS hop depth for TypedCausalGraph construction (default 2)")
+    parser.add_argument("--num_seeds", type=int, default=20,
+                        help="Number of fraud seed nodes for causal graph BFS (default 20)")
     parser.add_argument("--max_explain", type=int, default=50,
                         help="Max test fraud nodes to run full explanation on")
     parser.add_argument("--device", type=str, default="cpu")
@@ -249,10 +253,11 @@ def main() -> None:
     fraud_global_ids = [
         offset + i for i in test_indices if labels[i].item() == 1
     ]
-    seed_ids = fraud_global_ids[:20]
+    seed_ids = fraud_global_ids[:args.num_seeds]
     causal_graph = build_typed_causal_graph_from_hetero(
         data,
         seed_node_ids=seed_ids if seed_ids else None,
+        hop_limit=args.hop_limit,
         node_limit=args.node_limit,
     )
     print(f"  Causal graph: {len(causal_graph.v)} nodes, "
