@@ -218,9 +218,8 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
         class_weight=class_weight,
         target_type_offset=target_type_offset,
     )
-    # Use only detection + adversarial for discriminator update
-    d_loss = detection_loss + model.config.lambda_adversarial * adv_loss
-    d_loss.backward()
+    # Use full loss (detection + adversarial + NCM + stability) for discriminator update
+    total_loss.backward()
     optimizer_backbone.step()
 
     # ── Generator step (every n_critic steps) ──────────────────────────────
