@@ -82,6 +82,12 @@ def load_dataset(name: str, root: str, **kwargs):
             fraud_subgraph=kwargs.get("fraud_subgraph", False),
             fraud_subgraph_hops=kwargs.get("fraud_subgraph_hops", 2),
         )
+    if name == "unsw_nb15":
+        from utils.unsw_loader import load_unsw_dataset
+        return load_unsw_dataset(
+            os.path.join(root, "unsw_nb15"),
+            max_flows=kwargs.get("max_flows", 200_000),
+        )
     raise ValueError(f"Unknown dataset: {name!r}")
 
 
@@ -309,10 +315,24 @@ def main() -> None:
     if stab_metrics:
         print_section("D. φ-Stability Metrics", stab_metrics)
 
-    # ── Dimension C: Explanation Quality (optional) ──────────────────────────
-    # To enable: pass gt_causal_nodes={node_id: set_of_gt_nodes}
+    # ── Dimension C: Explanation Quality ─────────────────────────────────────
+    gt_causal_nodes = None
+    if args.dataset == "unsw_nb15" and hasattr(data, "_df"):
+        print("Computing Granger ground-truth for Metric C...")
+        from utils.granger_utils import compute_granger_ground_truth
+        gt_causal_nodes = compute_granger_ground_truth(
+            df=data._df,
+            ip_global_offset=type_offsets.get("ip_node", 0),
+            flow_global_offset=type_offsets.get("flow_node", 0),
+            window_size=60,
+            max_lag=3,
+            p_threshold=0.05,
+            verbose=True,
+        )
+
     eval_explanation_quality(
-        model, data, labels, test_mask, causal_graph, args, gt_causal_nodes=None
+        model, data, labels, test_mask, causal_graph, args,
+        gt_causal_nodes=gt_causal_nodes,
     )
 
     print(f"\n{'─' * 55}\n  Evaluation complete.\n{'─' * 55}\n")

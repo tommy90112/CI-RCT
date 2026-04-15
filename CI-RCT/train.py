@@ -125,6 +125,12 @@ def load_dataset(name: str, root: str, **kwargs):
     if name == "crypto":
         from utils.crypto_loader import load_crypto_dataset
         return load_crypto_dataset(root)
+    if name == "unsw_nb15":
+        from utils.unsw_loader import load_unsw_dataset
+        return load_unsw_dataset(
+            os.path.join(root, "unsw_nb15"),
+            max_flows=kwargs.get("max_flows", 200_000),
+        )
     raise ValueError(f"Unknown dataset: {name!r}")
 
 
