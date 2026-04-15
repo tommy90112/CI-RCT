@@ -253,8 +253,9 @@ def _build_flow_features(df: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor]:
         if col in feat_df.columns:
             feat_df[col] = pd.Categorical(feat_df[col]).codes.astype(float)
 
-    # Fill NaN and convert
+    # Fill NaN and convert — coerce any remaining object columns to numeric
     feat_df = feat_df.fillna(0.0)
+    feat_df = feat_df.apply(pd.to_numeric, errors='coerce').fillna(0.0)
     x = torch.tensor(feat_df.values, dtype=torch.float32)
 
     # Normalise each feature column to [0, 1]
