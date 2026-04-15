@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
         description="Train CI-RCT: Causal Intervention-Based Root Cause Tracing"
     )
     parser.add_argument("--dataset", type=str, default="dblp",
-                        choices=["dblp", "acm", "imdb", "elliptic", "elliptic++", "crypto"])
+                        choices=["dblp", "acm", "imdb", "elliptic", "elliptic++", "crypto", "unsw_nb15"])
     parser.add_argument("--data_root", type=str, default="data")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -93,6 +93,8 @@ def parse_args() -> argparse.Namespace:
                              "labeled tx, with addr→addr edges within that wallet set.")
     parser.add_argument("--fraud_subgraph_hops", type=int, default=2,
                         help="Number of wallet hops from labeled tx (default 2).")
+    parser.add_argument("--max_flows", type=int, default=200_000,
+                        help="Max flow records for unsw_nb15 (0 = no limit).")
     return parser.parse_args()
 
 
@@ -334,6 +336,7 @@ def main() -> None:
         labeled_only=args.labeled_only,
         fraud_subgraph=args.fraud_subgraph,
         fraud_subgraph_hops=args.fraud_subgraph_hops,
+        max_flows=args.max_flows,
     )
 
     # Subsample graph before moving to GPU to avoid OOM on large datasets
