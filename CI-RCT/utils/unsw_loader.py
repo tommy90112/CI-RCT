@@ -229,13 +229,25 @@ def _parse_port_value(val) -> int:
 
 
 def _stratified_sample(df: pd.DataFrame, max_flows: int, seed: int) -> pd.DataFrame:
-    """Keep all attack flows + random sample of normal flows."""
+    """
+    Proportional stratified sampling.
+    Keeps class ratio roughly unchanged, capping each class by max_flows.
+    """
     rng = np.random.default_rng(seed)
 
     attack_df = df[df["Label"] == 1]
     normal_df = df[df["Label"] == 0]
 
-    n_normal_keep = max(0, max_flows - len(attack_df))
+    total = len(df)
+    attack_ratio = len(attack_df) / total
+
+    n_attack_keep = min(len(attack_df), int(max_flows * attack_ratio))
+    n_normal_keep = min(len(normal_df), max_flows - n_attack_keep)
+
+    if n_attack_keep < len(attack_df):
+        idx = rng.choice(len(attack_df), size=n_attack_keep, replace=False)
+        attack_df = attack_df.iloc[idx]
+
     if n_normal_keep < len(normal_df):
         idx = rng.choice(len(normal_df), size=n_normal_keep, replace=False)
         normal_df = normal_df.iloc[idx]
@@ -268,35 +280,52 @@ def _build_flow_features(df: pd.DataFrame) -> Tuple[torch.Tensor, torch.Tensor]:
     return x, y
 
 
+def _ip_to_key(ip: str) -> str:
+    """
+    Convert IP to a node key.
+    Uses the full IP string so each unique host is a distinct node.
+    Falls back to the raw string if parsing fails.
+    """
+    return ip.strip()
+
+
 def _build_ip_features(
     df: pd.DataFrame,
 ) -> Tuple[torch.Tensor, List[int], List[int]]:
     """
     Build ip_node feature matrix and per-flow IP index lists.
 
+    Each unique IP address (src or dst) becomes one ip_node.
+
     Features per IP (8-dim):
         log_total_flows, attack_ratio, avg_sbytes, avg_dbytes,
-        avg_dur, unique_dst_ports, avg_spkts, avg_dpkts
+        avg_dur, log_unique_dst_ports, avg_spkts, avg_dpkts
     """
-    all_ips = pd.concat([df["srcip"], df["dstip"]]).unique().tolist()
-    ip_to_idx: Dict[str, int] = {ip: i for i, ip in enumerate(all_ips)}
+    src_keys = df["srcip"].apply(_ip_to_key).tolist()
+    dst_keys = df["dstip"].apply(_ip_to_key).tolist()
 
-    n_ip = len(all_ips)
+    all_keys  = sorted(set(src_keys) | set(dst_keys))
+    ip_to_idx: Dict[str, int] = {k: i for i, k in enumerate(all_keys)}
+
+    n_ip  = len(all_keys)
     feats = np.zeros((n_ip, 8), dtype=np.float32)
 
-    for ip, grp in df.groupby("srcip"):
-        idx = ip_to_idx[ip]
-        feats[idx, 0] = np.log1p(len(grp))
-        feats[idx, 1] = grp["Label"].mean()
-        feats[idx, 2] = np.log1p(grp["sbytes"].clip(0).mean())
-        feats[idx, 3] = np.log1p(grp["dbytes"].clip(0).mean())
-        feats[idx, 4] = np.log1p(grp["dur"].clip(0).mean())
-        feats[idx, 5] = np.log1p(grp["dsport"].nunique())
-        feats[idx, 6] = np.log1p(grp["spkts"].clip(0).mean())
-        feats[idx, 7] = np.log1p(grp["dpkts"].clip(0).mean())
+    df_work = df.copy()
+    df_work["_src_key"] = src_keys
 
-    src_ip_idx = [ip_to_idx[ip] for ip in df["srcip"]]
-    dst_ip_idx = [ip_to_idx[ip] for ip in df["dstip"]]
+    for key, grp in df_work.groupby("_src_key"):
+        idx = ip_to_idx[key]
+        feats[idx, 0] = np.log1p(len(grp))
+        feats[idx, 1] = float(grp["Label"].mean())
+        feats[idx, 2] = np.log1p(float(pd.to_numeric(grp["sbytes"], errors="coerce").clip(lower=0).mean()))
+        feats[idx, 3] = np.log1p(float(pd.to_numeric(grp["dbytes"], errors="coerce").clip(lower=0).mean()))
+        feats[idx, 4] = np.log1p(float(pd.to_numeric(grp["dur"],    errors="coerce").clip(lower=0).mean()))
+        feats[idx, 5] = np.log1p(grp["dsport"].nunique())
+        feats[idx, 6] = np.log1p(float(pd.to_numeric(grp["spkts"],  errors="coerce").clip(lower=0).mean()))
+        feats[idx, 7] = np.log1p(float(pd.to_numeric(grp["dpkts"],  errors="coerce").clip(lower=0).mean()))
+
+    src_ip_idx = [ip_to_idx[k] for k in src_keys]
+    dst_ip_idx = [ip_to_idx[k] for k in dst_keys]
 
     return torch.tensor(feats, dtype=torch.float32), src_ip_idx, dst_ip_idx
 
