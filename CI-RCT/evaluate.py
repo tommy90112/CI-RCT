@@ -32,7 +32,7 @@ from utils.metrics import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a trained CI-RCT model")
     parser.add_argument("--dataset", type=str, default="dblp",
-                        choices=["dblp", "acm", "imdb", "elliptic", "elliptic++"])
+                        choices=["dblp", "acm", "imdb", "elliptic", "elliptic++", "unsw_nb15"])
     parser.add_argument("--data_root", type=str, default="data")
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--max_hops", type=int, default=5)
@@ -58,6 +58,8 @@ def parse_args() -> argparse.Namespace:
                         default=False,
                         help="Must match training: use fraud-anchored wallet subgraph")
     parser.add_argument("--fraud_subgraph_hops", type=int, default=2)
+    parser.add_argument("--max_flows", type=int, default=200_000,
+                        help="Max flow records for unsw_nb15 (0 = no limit).")
     return parser.parse_args()
 
 
@@ -245,6 +247,7 @@ def main() -> None:
         args.dataset, args.data_root,
         fraud_subgraph=args.fraud_subgraph,
         fraud_subgraph_hops=args.fraud_subgraph_hops,
+        max_flows=args.max_flows,
     )
     data = data.to(device)
 
