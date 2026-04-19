@@ -321,7 +321,7 @@ def main() -> None:
     # ── Dimension C: Explanation Quality ─────────────────────────────────────
     gt_causal_nodes = None
     if args.dataset == "unsw_nb15" and hasattr(data, "_df"):
-        print("Computing Granger ground-truth for Metric C...")
+        print("Computing Granger ground-truth for Metric C (UNSW-NB15)...")
         from utils.granger_utils import compute_granger_ground_truth
         gt_causal_nodes = compute_granger_ground_truth(
             df=data._df,
@@ -330,6 +330,20 @@ def main() -> None:
             window_size=60,
             max_lag=3,
             p_threshold=0.05,
+            verbose=True,
+        )
+    elif args.dataset == "elliptic++":
+        print("Computing Granger ground-truth for Metric C (Elliptic++)...")
+        from utils.elliptic_granger_utils import compute_elliptic_granger_ground_truth
+        import os
+        gt_causal_nodes = compute_elliptic_granger_ground_truth(
+            data_root=os.path.join(args.data_root, "elliptic++"),
+            tx_global_offset=type_offsets.get("transaction", 0),
+            wallet_global_offset=type_offsets.get("wallet", 0),
+            max_lag=3,
+            p_threshold=0.05,
+            min_observations=5,
+            max_wallet_pairs=5000,
             verbose=True,
         )
 
