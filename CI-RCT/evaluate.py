@@ -337,7 +337,7 @@ def main() -> None:
         from utils.elliptic_granger_utils import compute_elliptic_granger_ground_truth
         import os
         gt_causal_nodes = compute_elliptic_granger_ground_truth(
-            data_root=os.path.join(args.data_root, "elliptic++"),
+            data_root=os.path.join(args.data_root, "Elliptic++"),
             tx_global_offset=type_offsets.get("transaction", 0),
             wallet_global_offset=type_offsets.get("wallet", 0),
             max_lag=3,
