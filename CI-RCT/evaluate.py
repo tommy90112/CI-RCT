@@ -342,15 +342,17 @@ def main() -> None:
             wallet_global_offset=type_offsets.get("wallet", 0),
             max_lag=3,
             p_threshold=0.05,
-            min_observations=5,
+            min_observations=2,
             max_wallet_pairs=5000,
             verbose=True,
         )
 
-    eval_explanation_quality(
+    expl_metrics = eval_explanation_quality(
         model, data, labels, test_mask, causal_graph, args,
         gt_causal_nodes=gt_causal_nodes,
     )
+    if expl_metrics:
+        print_section("C. Explanation Quality Metrics", expl_metrics)
 
     print(f"\n{'─' * 55}\n  Evaluation complete.\n{'─' * 55}\n")
 
