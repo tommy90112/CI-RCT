@@ -54,6 +54,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--type_emb_dim", type=int, default=16)
     # Must match training data loading
+    parser.add_argument("--include_addr_addr", type=lambda x: x.lower() == "true",
+                        default=False,
+                        help="Must match training: include wallet→wallet edges")
     parser.add_argument("--fraud_subgraph", type=lambda x: x.lower() == "true",
                         default=False,
                         help="Must match training: use fraud-anchored wallet subgraph")
@@ -80,7 +83,7 @@ def load_dataset(name: str, root: str, **kwargs):
         from utils.elliptic_plus_loader import load_elliptic_plus_dataset
         return load_elliptic_plus_dataset(
             os.path.join(root, "Elliptic++"),
-            include_addr_addr=False,
+            include_addr_addr=kwargs.get("include_addr_addr", False),
             fraud_subgraph=kwargs.get("fraud_subgraph", False),
             fraud_subgraph_hops=kwargs.get("fraud_subgraph_hops", 2),
         )
@@ -245,6 +248,7 @@ def main() -> None:
     print(f"Loading dataset: {args.dataset}")
     data, target_type = load_dataset(
         args.dataset, args.data_root,
+        include_addr_addr=args.include_addr_addr,
         fraud_subgraph=args.fraud_subgraph,
         fraud_subgraph_hops=args.fraud_subgraph_hops,
         max_flows=args.max_flows,
