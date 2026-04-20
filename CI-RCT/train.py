@@ -214,7 +214,7 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
     optimizer_backbone.zero_grad()
 
     target_type_offset = type_offsets[target_type]
-    total_loss, detection_loss, adv_loss, stability_loss = model.compute_total_loss(
+    total_loss, detection_loss, adv_loss, stability_loss, ncm_loss = model.compute_total_loss(
         data=data,
         labels=labels,
         train_mask=train_mask,
@@ -234,7 +234,7 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
     g_loss_val = 0.0
     if step_count % n_critic == 0:
         optimizer_generator.zero_grad()
-        _, _, g_adv_loss, _ = model.compute_total_loss(
+        _, _, g_adv_loss, _, _ = model.compute_total_loss(
             data=data,
             labels=labels,
             train_mask=train_mask,
@@ -251,7 +251,7 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
         optimizer_generator.step()
         g_loss_val = g_loss.item()
 
-    return total_loss.item(), detection_loss.item(), adv_loss.item(), g_loss_val
+    return total_loss.item(), detection_loss.item(), adv_loss.item(), g_loss_val, ncm_loss.item()
 
 
 @torch.no_grad()
@@ -484,7 +484,7 @@ def main() -> None:
             loss_str = (f"Loss {total_loss:.4f} "
                         f"(det={det_loss:.4f}, stab={stab_loss:.2e}, ncm={ncm_loss:.4f})")
         else:
-            total_loss, det_loss, adv_loss, g_loss = train_step_with_gan(
+            total_loss, det_loss, adv_loss, g_loss, ncm_loss = train_step_with_gan(
                 model, data, labels, train_mask,
                 optimizer_backbone, optimizer_generator,
                 causal_graph, fraud_features, topo_order, target_node,
@@ -493,7 +493,7 @@ def main() -> None:
                 class_weight=class_weight
             )
             loss_str = (f"Loss {total_loss:.4f} "
-                        f"(det={det_loss:.4f}, adv={adv_loss:.4f}, G={g_loss:.4f})")
+                        f"(det={det_loss:.4f}, adv={adv_loss:.4f}, G={g_loss:.4f}, ncm={ncm_loss:.4f})")
 
         if epoch % args.eval_every == 0:
             val_metrics = evaluate_split(model, data, labels, val_mask)

@@ -171,7 +171,7 @@ class CI_RCT(nn.Module):
         is_critic_step: bool = True,
         class_weight: Optional[Tensor] = None,
         target_type_offset: Optional[int] = None,
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
         Compute L_total = L_detection + λ1·L_adversarial + λ2·L_stability + λ3·L_ncm.
 
@@ -285,7 +285,7 @@ class CI_RCT(nn.Module):
             + self.config.lambda_ncm * ncm_loss
         )
 
-        return total_loss, detection_loss, adv_loss, stability_loss
+        return total_loss, detection_loss, adv_loss, stability_loss, ncm_loss, ncm_loss
 
     # ── Explanation ───────────────────────────────────────────────────────────
 
