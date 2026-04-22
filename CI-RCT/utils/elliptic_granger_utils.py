@@ -5,7 +5,9 @@ Core idea
 ─────────
 Elliptic++ transactions have integer time steps (1–49).
 For each wallet, we build a 49-dim time series where each value is the
-count of illicit transactions initiated by that wallet at each time step.
+total transaction count initiated by that wallet at each time step
+(all transactions, not just illicit ones, to ensure a rich enough
+time series for statistical testing).
 
 Granger causality: wallet A Granger-causes wallet B if past illicit
 activity from A significantly helps predict future illicit activity from B,
@@ -132,8 +134,6 @@ def compute_elliptic_granger_ground_truth(
         wallet = str(row[addr_col])
         tx_id  = row[txid_col]
         if wallet not in wallet_to_idx:
-            continue
-        if tx_id not in illicit_tx:
             continue
         ts = int(time_step_map.get(tx_id, 0))
         if ts < 1 or ts > n_steps:

@@ -189,7 +189,7 @@ class CI_RCT(nn.Module):
                              (e.g. [1.0, 44.0] for 1:44 licit/illicit ratio)
 
         Returns:
-            (total_loss, detection_loss, adversarial_loss, stability_loss)
+            (total_loss, detection_loss, adversarial_loss, stability_loss, ncm_loss)
         """
         logits, h_dict = self.forward(data)
         if train_mask is not None:
@@ -285,7 +285,7 @@ class CI_RCT(nn.Module):
             + self.config.lambda_ncm * ncm_loss
         )
 
-        return total_loss, detection_loss, adv_loss, stability_loss, ncm_loss, ncm_loss
+        return total_loss, detection_loss, adv_loss, stability_loss, ncm_loss
 
     # ── Explanation ───────────────────────────────────────────────────────────
 
