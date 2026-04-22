@@ -129,6 +129,7 @@ def compute_elliptic_granger_ground_truth(
 
     n_steps = 49
     wallet_series: Dict[str, np.ndarray] = {}
+    illicit_wallets: set = set()
 
     for _, row in addr_tx.iterrows():
         wallet = str(row[addr_col])
@@ -141,11 +142,13 @@ def compute_elliptic_granger_ground_truth(
         if wallet not in wallet_series:
             wallet_series[wallet] = np.zeros(n_steps, dtype=np.float32)
         wallet_series[wallet][ts - 1] += 1.0
+        if tx_id in illicit_tx:
+            illicit_wallets.add(wallet)
 
-    # Filter wallets with sufficient non-zero time steps
+    # Only test wallets that (a) have enough activity AND (b) are involved in fraud
     qualified: Dict[str, np.ndarray] = {
         w: s for w, s in wallet_series.items()
-        if int((s > 0).sum()) >= min_observations
+        if int((s > 0).sum()) >= min_observations and w in illicit_wallets
     }
 
     if verbose:

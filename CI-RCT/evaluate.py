@@ -213,7 +213,7 @@ def eval_explanation_quality(model, data, labels, test_mask,
 
     gt_causal_nodes: dict {node_id: set_of_gt_causal_node_ids} or None
     """
-    if gt_causal_nodes is None:
+    if not gt_causal_nodes:
         print("  No ground-truth causal labels — skipping explanation quality metrics.")
         return {}
 
