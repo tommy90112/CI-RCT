@@ -283,15 +283,48 @@ def main() -> None:
     labels    = data[target_type].y
     test_mask = data[target_type].test_mask
 
-    # Build causal graph seeded from test fraud nodes (same approach as train.py)
-    print("Building TypedCausalGraph...")
     type_offsets = compute_type_offsets(data)
     offset = type_offsets[target_type]
     test_indices = test_mask.nonzero(as_tuple=True)[0].tolist()
     fraud_global_ids = [
         offset + i for i in test_indices if labels[i].item() == 1
     ]
-    seed_ids = fraud_global_ids[:args.num_seeds]
+
+    # ── Metric C ground-truth (computed BEFORE causal graph so GT tx IDs
+    #    can be added as seeds, guaranteeing they appear in the graph) ─────────
+    gt_causal_nodes = None
+    if args.dataset == "unsw_nb15" and hasattr(data, "_df"):
+        print("Computing Granger ground-truth for Metric C (UNSW-NB15)...")
+        from utils.granger_utils import compute_granger_ground_truth
+        gt_causal_nodes = compute_granger_ground_truth(
+            df=data._df,
+            ip_global_offset=type_offsets.get("ip_node", 0),
+            flow_global_offset=type_offsets.get("flow_node", 0),
+            window_size=60,
+            max_lag=3,
+            p_threshold=0.05,
+            verbose=True,
+        )
+    elif args.dataset == "elliptic++":
+        print("Computing Granger ground-truth for Metric C (Elliptic++)...")
+        from utils.elliptic_granger_utils import compute_elliptic_granger_ground_truth
+        import os
+        gt_causal_nodes = compute_elliptic_granger_ground_truth(
+            data_root=os.path.join(args.data_root, "Elliptic++"),
+            tx_global_offset=type_offsets.get("transaction", 0),
+            wallet_global_offset=type_offsets.get("wallet", 0),
+            max_lag=3,
+            p_threshold=0.05,
+            min_observations=2,
+            max_wallet_pairs=5000,
+            verbose=True,
+        )
+
+    # Build causal graph seeded from test fraud nodes + GT tx IDs so that
+    # Metric C transactions are guaranteed to be reachable in the graph.
+    print("Building TypedCausalGraph...")
+    gt_tx_ids = list(gt_causal_nodes.keys()) if gt_causal_nodes else []
+    seed_ids = list(dict.fromkeys(fraud_global_ids[:args.num_seeds] + gt_tx_ids))
     causal_graph = build_typed_causal_graph_from_hetero(
         data,
         seed_node_ids=seed_ids if seed_ids else None,
@@ -348,34 +381,6 @@ def main() -> None:
         print_section("D. φ-Stability Metrics", stab_metrics)
 
     # ── Dimension C: Explanation Quality ─────────────────────────────────────
-    gt_causal_nodes = None
-    if args.dataset == "unsw_nb15" and hasattr(data, "_df"):
-        print("Computing Granger ground-truth for Metric C (UNSW-NB15)...")
-        from utils.granger_utils import compute_granger_ground_truth
-        gt_causal_nodes = compute_granger_ground_truth(
-            df=data._df,
-            ip_global_offset=type_offsets.get("ip_node", 0),
-            flow_global_offset=type_offsets.get("flow_node", 0),
-            window_size=60,
-            max_lag=3,
-            p_threshold=0.05,
-            verbose=True,
-        )
-    elif args.dataset == "elliptic++":
-        print("Computing Granger ground-truth for Metric C (Elliptic++)...")
-        from utils.elliptic_granger_utils import compute_elliptic_granger_ground_truth
-        import os
-        gt_causal_nodes = compute_elliptic_granger_ground_truth(
-            data_root=os.path.join(args.data_root, "Elliptic++"),
-            tx_global_offset=type_offsets.get("transaction", 0),
-            wallet_global_offset=type_offsets.get("wallet", 0),
-            max_lag=3,
-            p_threshold=0.05,
-            min_observations=2,
-            max_wallet_pairs=5000,
-            verbose=True,
-        )
-
     expl_metrics = eval_explanation_quality(
         model, data, labels, test_mask, causal_graph, args,
         gt_causal_nodes=gt_causal_nodes,
