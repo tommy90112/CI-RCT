@@ -168,15 +168,31 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         print("  No fraud-predicted test nodes in causal graph — skipping RCT metrics.")
         return {}, {}
 
-    predicted_roots, causal_chains, phi_list = [], [], []
+    predicted_roots, causal_chains = [], []
+
+    # φ-Stability: compute perturbed causal effects once for the whole batch.
+    # Stability = mean |φ_orig(p→v) − φ_pert(p→v)| across all (parent, target)
+    # pairs, measured per target node.  This quantifies how sensitive the
+    # explanation is to small Gaussian noise on node embeddings.
+    _noise_sigma = 0.01
+    with torch.no_grad():
+        flat_h_perturbed = {
+            gid: emb + torch.randn_like(emb) * _noise_sigma
+            for gid, emb in flat_h.items()
+        }
+    causal_effects_perturbed = model.compute_causal_effects(flat_h_perturbed, causal_graph)
+
+    stability_diffs = []
 
     for global_id in fraud_predicted_global:
         root, chain = tracer.trace_root_cause(global_id, causal_effects)
         predicted_roots.append(root)
         causal_chains.append(chain)
 
-        phi = compute_asymmetric_causal_shapley(causal_effects, causal_graph, global_id)
-        phi_list.append(phi)
+        phi_orig = compute_asymmetric_causal_shapley(causal_effects, causal_graph, global_id)
+        phi_pert = compute_asymmetric_causal_shapley(causal_effects_perturbed, causal_graph, global_id)
+        for p in set(phi_orig.keys()) & set(phi_pert.keys()):
+            stability_diffs.append(abs(phi_orig[p] - phi_pert[p]))
 
     # Ground-truth fraud nodes (global IDs) for RCP / CCV
     fraud_label_set = set(
@@ -187,13 +203,6 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         predicted_roots, causal_chains, fraud_label_set
     )
     rct_metrics["num_traced"] = len(predicted_roots)
-
-    # φ-Stability: Std(φ_t − φ_{t-1}) across consecutive fraud nodes
-    stability_diffs = []
-    for i in range(1, len(phi_list)):
-        common = set(phi_list[i].keys()) & set(phi_list[i - 1].keys())
-        for p in common:
-            stability_diffs.append(abs(phi_list[i][p] - phi_list[i - 1][p]))
 
     stability_metrics = {
         "phi_stability_std": float(np.std(stability_diffs)) if stability_diffs else 0.0,
