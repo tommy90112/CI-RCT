@@ -221,9 +221,24 @@ def eval_explanation_quality(model, data, labels, test_mask,
     EA and ER metrics.  Skipped if no ground-truth causal node labels provided.
 
     gt_causal_nodes: dict {node_id: set_of_gt_causal_node_ids} or None
+
+    Only GT nodes that exist in the causal graph are evaluated.  Tracing uses
+    threshold=0.0 so that cross-type edges (e.g. wallet→tx) are not pruned by
+    the CE threshold; the goal here is coverage, not precision filtering.
     """
     if not gt_causal_nodes:
         print("  No ground-truth causal labels — skipping explanation quality metrics.")
+        return {}
+
+    # Filter to GT nodes that are actually reachable in the causal graph
+    eligible = {
+        nid: gs for nid, gs in gt_causal_nodes.items()
+        if nid in causal_graph.set_v
+    }
+    print(f"  Explanation Quality: {len(eligible)}/{len(gt_causal_nodes)} "
+          f"GT transactions found in causal graph.")
+    if not eligible:
+        print("  No GT transactions in causal graph — skipping explanation quality metrics.")
         return {}
 
     model.eval()
@@ -232,14 +247,15 @@ def eval_explanation_quality(model, data, labels, test_mask,
         flat_h = model._build_flat_h(h_dict)
 
     causal_effects = model.compute_causal_effects(flat_h, causal_graph)
+    # Use threshold=0.0 so cross-type edges are not pruned during explanation
     tracer = RootCauseTracer(
         causal_graph=causal_graph,
         max_hops=args.max_hops,
-        threshold=args.ce_threshold,
+        threshold=0.0,
     )
 
     preds_list, gts_list = [], []
-    for node_id, gt_set in gt_causal_nodes.items():
+    for node_id, gt_set in eligible.items():
         root, chain = tracer.trace_root_cause(node_id, causal_effects)
         preds_list.append(set(chain))
         gts_list.append(gt_set)
