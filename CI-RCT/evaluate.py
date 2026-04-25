@@ -7,12 +7,24 @@ Evaluates a trained model across four metric dimensions:
   C. Explanation Quality:    EA, ER (requires ground-truth causal labels)
   D. φ-Stability:            Std(φ_t − φ_{t-1}) over test fraud nodes
 
+Metric C ground-truth sources (automatically selected by dataset):
+  - elliptic++  : LFPN (Labeled Fraud Propagation Neighborhood), via
+                  utils/lfpn_utils.py.  Both "strict" (direct initiator
+                  only) and "extended" (+ k-hop labeled illicit wallets
+                  via AddrAddr) are run by default; control with
+                  --lfpn_mode and --lfpn_k.
+  - unsw_nb15   : Granger causality on per-IP attack-flow time series,
+                  via utils/granger_utils.py.
+  - other       : Metric C is skipped.
+
 Usage:
   python evaluate.py --dataset dblp --checkpoint checkpoints/ci_rct_dblp_best.pt
   python evaluate.py --dataset elliptic --checkpoint checkpoints/ci_rct_elliptic_best.pt
+  python evaluate.py --dataset elliptic++ --checkpoint ... --lfpn_mode both --lfpn_k 2
 """
 import argparse
 import os
+from typing import Dict, List, Set, Tuple
 
 import numpy as np
 import torch
@@ -63,6 +75,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fraud_subgraph_hops", type=int, default=2)
     parser.add_argument("--max_flows", type=int, default=200_000,
                         help="Max flow records for unsw_nb15 (0 = no limit).")
+    # LFPN settings (Elliptic++ Metric C)
+    parser.add_argument("--lfpn_mode", type=str, default="both",
+                        choices=["strict", "extended", "both"],
+                        help="Ground-truth mode for Elliptic++ Metric C. "
+                             "strict = direct initiators only; "
+                             "extended = + k-hop labeled illicit wallets; "
+                             "both = run both and report two tables.")
+    parser.add_argument("--lfpn_k", type=int, default=2,
+                        help="k in LFPN_k for extended mode (default 2). "
+                             "Use k=1/2/3 for sensitivity analysis.")
     return parser.parse_args()
 
 
@@ -171,9 +193,6 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
     predicted_roots, causal_chains = [], []
 
     # φ-Stability: compute perturbed causal effects once for the whole batch.
-    # Stability = mean |φ_orig(p→v) − φ_pert(p→v)| across all (parent, target)
-    # pairs, measured per target node.  This quantifies how sensitive the
-    # explanation is to small Gaussian noise on node embeddings.
     _noise_sigma = 0.01
     with torch.no_grad():
         flat_h_perturbed = {
@@ -264,6 +283,65 @@ def eval_explanation_quality(model, data, labels, test_mask,
     return compute_explanation_metrics(preds_list, gts_list)
 
 
+# ── Metric C ground-truth dispatcher ──────────────────────────────────────────
+
+def build_gt_list(
+    args:          argparse.Namespace,
+    data,
+    type_offsets:  Dict[str, int],
+) -> List[Tuple[str, Dict[int, Set[int]]]]:
+    """
+    Build the Metric C ground-truth for the current dataset.
+
+    Returns a list of (label, gt_dict) so downstream code can evaluate
+    the same model under multiple GT definitions (e.g. LFPN-Strict and
+    LFPN-Extended on Elliptic++).  An empty list means Metric C will
+    be skipped.
+    """
+    gt_list: List[Tuple[str, Dict[int, Set[int]]]] = []
+
+    if args.dataset == "unsw_nb15" and hasattr(data, "_df"):
+        print("Computing Granger ground-truth for Metric C (UNSW-NB15)...")
+        from utils.granger_utils import compute_granger_ground_truth
+        gt = compute_granger_ground_truth(
+            df=data._df,
+            ip_global_offset=type_offsets.get("ip_node", 0),
+            flow_global_offset=type_offsets.get("flow_node", 0),
+            window_size=60,
+            max_lag=3,
+            p_threshold=0.05,
+            verbose=True,
+        )
+        if gt:
+            gt_list.append(("Granger", gt))
+
+    elif args.dataset == "elliptic++":
+        from utils.lfpn_utils import compute_lfpn_ground_truth
+
+        modes = ["strict", "extended"] if args.lfpn_mode == "both" \
+                else [args.lfpn_mode]
+
+        for m in modes:
+            print(f"\nComputing LFPN ground-truth (mode={m}) for Metric C...")
+            gt = compute_lfpn_ground_truth(
+                data_root=os.path.join(args.data_root, "Elliptic++"),
+                tx_global_offset=type_offsets.get("transaction", 0),
+                wallet_global_offset=type_offsets.get("wallet", 0),
+                mode=m,
+                k_hops=args.lfpn_k,
+                include_addr_addr=args.include_addr_addr,
+                fraud_subgraph=args.fraud_subgraph,
+                fraud_subgraph_hops=args.fraud_subgraph_hops,
+                verbose=True,
+            )
+            if gt:
+                label = "LFPN-Strict" if m == "strict" \
+                        else f"LFPN-Extended (k={args.lfpn_k})"
+                gt_list.append((label, gt))
+
+    return gt_list
+
+
 # ── Main ────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -292,39 +370,17 @@ def main() -> None:
 
     # ── Metric C ground-truth (computed BEFORE causal graph so GT tx IDs
     #    can be added as seeds, guaranteeing they appear in the graph) ─────────
-    gt_causal_nodes = None
-    if args.dataset == "unsw_nb15" and hasattr(data, "_df"):
-        print("Computing Granger ground-truth for Metric C (UNSW-NB15)...")
-        from utils.granger_utils import compute_granger_ground_truth
-        gt_causal_nodes = compute_granger_ground_truth(
-            df=data._df,
-            ip_global_offset=type_offsets.get("ip_node", 0),
-            flow_global_offset=type_offsets.get("flow_node", 0),
-            window_size=60,
-            max_lag=3,
-            p_threshold=0.05,
-            verbose=True,
-        )
-    elif args.dataset == "elliptic++":
-        print("Computing Granger ground-truth for Metric C (Elliptic++)...")
-        from utils.elliptic_granger_utils import compute_elliptic_granger_ground_truth
-        import os
-        gt_causal_nodes = compute_elliptic_granger_ground_truth(
-            data_root=os.path.join(args.data_root, "Elliptic++"),
-            tx_global_offset=type_offsets.get("transaction", 0),
-            wallet_global_offset=type_offsets.get("wallet", 0),
-            max_lag=3,
-            p_threshold=0.05,
-            min_observations=2,
-            max_wallet_pairs=5000,
-            verbose=True,
-        )
+    gt_list = build_gt_list(args, data, type_offsets)
 
-    # Build causal graph seeded from test fraud nodes + GT tx IDs so that
-    # Metric C transactions are guaranteed to be reachable in the graph.
-    print("Building TypedCausalGraph...")
-    gt_tx_ids = list(gt_causal_nodes.keys()) if gt_causal_nodes else []
-    seed_ids = list(dict.fromkeys(fraud_global_ids[:args.num_seeds] + gt_tx_ids))
+    # Build causal graph seeded from test fraud nodes + all GT tx IDs across
+    # every GT definition, so Metric C transactions are guaranteed reachable.
+    print("\nBuilding TypedCausalGraph...")
+    gt_tx_ids: List[int] = []
+    for _, gt in gt_list:
+        gt_tx_ids.extend(gt.keys())
+    seed_ids = list(dict.fromkeys(
+        fraud_global_ids[:args.num_seeds] + gt_tx_ids
+    ))
     causal_graph = build_typed_causal_graph_from_hetero(
         data,
         seed_node_ids=seed_ids if seed_ids else None,
@@ -380,13 +436,19 @@ def main() -> None:
     if stab_metrics:
         print_section("D. φ-Stability Metrics", stab_metrics)
 
-    # ── Dimension C: Explanation Quality ─────────────────────────────────────
-    expl_metrics = eval_explanation_quality(
-        model, data, labels, test_mask, causal_graph, args,
-        gt_causal_nodes=gt_causal_nodes,
-    )
-    if expl_metrics:
-        print_section("C. Explanation Quality Metrics", expl_metrics)
+    # ── Dimension C: Explanation Quality (once per GT definition) ────────────
+    if not gt_list:
+        print("\n  Metric C: no ground-truth available — skipping.")
+    else:
+        for gt_label, gt_dict in gt_list:
+            print(f"\n[Metric C — GT = {gt_label}]")
+            expl_metrics = eval_explanation_quality(
+                model, data, labels, test_mask, causal_graph, args,
+                gt_causal_nodes=gt_dict,
+            )
+            if expl_metrics:
+                print_section(f"C. Explanation Quality — {gt_label}",
+                              expl_metrics)
 
     print(f"\n{'─' * 55}\n  Evaluation complete.\n{'─' * 55}\n")
 
