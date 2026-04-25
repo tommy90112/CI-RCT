@@ -168,6 +168,23 @@ def heterodata_to_flat_feature_dict(
 # ── Private helpers ────────────────────────────────────────────────────────────
 
 
+def _is_addr_to_addr_edge(etype_str: str) -> bool:
+    """Return True if the edge connects two nodes of the same addr-like type.
+
+    Enforces tx → addr → tx → addr alternating traversal by blocking
+    addr→addr shortcuts (e.g. "address__to__address", "wallet__to__wallet").
+    tx→tx edges (rare but possible) are intentionally allowed.
+    """
+    parts = etype_str.split("__to__")
+    if len(parts) != 2:
+        return False
+    src_type, dst_type = parts
+    if src_type != dst_type:
+        return False
+    # Allow same-type if it's a transaction node
+    return "tx" not in src_type and "transaction" not in src_type
+
+
 def _multi_source_bfs(
     seeds: List[int],
     adj: Dict[int, List[Tuple[int, str]]],
@@ -185,7 +202,9 @@ def _multi_source_bfs(
         node, depth = queue.popleft()
         if depth >= hop_limit:
             continue
-        for neighbour, _ in adj.get(node, []):
+        for neighbour, etype_str in adj.get(node, []):
+            if _is_addr_to_addr_edge(etype_str):
+                continue  # skip addr→addr; enforce tx↔addr alternating path
             if neighbour not in visited and len(visited) < node_limit:
                 visited.add(neighbour)
                 queue.append((neighbour, depth + 1))
@@ -243,7 +262,9 @@ def _bfs_subgraph(
         node, depth = queue.popleft()
         if depth >= hop_limit:
             continue
-        for neighbour, _ in adj.get(node, []):
+        for neighbour, etype_str in adj.get(node, []):
+            if _is_addr_to_addr_edge(etype_str):
+                continue  # skip addr→addr; enforce tx↔addr alternating path
             if neighbour not in visited and len(visited) < node_limit:
                 visited.add(neighbour)
                 queue.append((neighbour, depth + 1))
