@@ -5,6 +5,29 @@ Provides:
   - compute_type_offsets():              global node ID scheme per type
   - build_typed_causal_graph_from_hetero(): BFS-based TypedCausalGraph construction
   - heterodata_to_flat_feature_dict():   flat {global_id: feature_tensor}
+
+Tracer-aligned BFS (Apr 2026)
+─────────────────────────────
+On bipartite-style fraud graphs (e.g. Elliptic++: tx ↔ wallet),
+addr→addr edges (e.g. wallet→wallet AddrAddr links, ~2.87M on Elliptic++)
+let BFS waste its node budget on lateral wallet-to-wallet expansion
+without ever advancing to upstream tx, which means the RootCauseTracer
+runs out of tx parents to follow and stops at depth 1.
+
+We therefore enforce alternating tx ↔ wallet traversal at TWO points:
+
+  1. BFS subgraph extraction      (skip addr→addr neighbours)
+  2. TypedCausalGraph edge insert (drop addr→addr edges entirely)
+
+Both are necessary: skipping only at BFS still leaves addr→addr edges
+inside the final causal graph if both endpoints happen to be included
+via other tx-mediated paths, which would let the tracer wander
+laterally between wallets at evaluation time.
+
+For dataset-agnostic use the filter is a no-op on graphs without
+addr-like same-type edges (DBLP, ACM, IMDB, UNSW-NB15 — none of these
+have wallet→wallet-style same-type edges except possibly tx→tx,
+which we deliberately allow).
 """
 from collections import deque
 from typing import Dict, List, Optional, Tuple
@@ -48,6 +71,7 @@ def build_typed_causal_graph_from_hetero(
     hop_limit: int = 2,
     node_limit: int = 500,
     directed: bool = True,
+    block_addr_to_addr: bool = True,
 ) -> TypedCausalGraph:
     """
     Build a TypedCausalGraph from a HeteroData object.
@@ -59,11 +83,18 @@ def build_typed_causal_graph_from_hetero(
     Global node IDs follow compute_type_offsets() scheme.
 
     Args:
-        data:           PyG HeteroData graph
-        target_node_id: Global node ID to centre the subgraph on (optional)
-        hop_limit:      BFS depth for subgraph extraction
-        node_limit:     Hard cap on number of nodes to include
-        directed:       Whether to register edges as directed (for upstream BFS)
+        data:               PyG HeteroData graph
+        target_node_id:     Global node ID to centre the subgraph on (optional)
+        seed_node_ids:      Multi-source BFS seeds (optional, for evaluation)
+        hop_limit:          BFS depth for subgraph extraction
+        node_limit:         Hard cap on number of nodes to include
+        directed:           Whether to register edges as directed (for upstream BFS)
+        block_addr_to_addr: If True (default), drop addr→addr edges from BOTH
+                            BFS expansion and the final causal graph.  This
+                            forces the tracer to traverse tx↔addr alternating
+                            paths instead of getting stuck in lateral wallet
+                            chains.  Set False to mirror the legacy behaviour
+                            (e.g. for ablation experiments).
 
     Returns:
         TypedCausalGraph with typed nodes and edges
@@ -98,17 +129,18 @@ def build_typed_causal_graph_from_hetero(
             bfs_adj.setdefault(src_g, []).append((dst_g, etype_str))
             bfs_adj.setdefault(dst_g, []).append((src_g, etype_str))
 
-    # Keep backward compat: adj used below for BFS
-    adj = bfs_adj
-
     # --- Determine which nodes to include ---
-    total_nodes = sum(data[nt].num_nodes for nt in data.node_types)
-
     if target_node_id is not None:
-        included_nodes = _bfs_subgraph(target_node_id, adj, hop_limit, node_limit)
+        included_nodes = _bfs_subgraph(
+            target_node_id, bfs_adj, hop_limit, node_limit,
+            block_addr_to_addr=block_addr_to_addr,
+        )
     elif seed_node_ids:
         # Multi-source BFS from seed nodes — guarantees connectivity
-        included_nodes = _multi_source_bfs(seed_node_ids, adj, hop_limit, node_limit)
+        included_nodes = _multi_source_bfs(
+            seed_node_ids, bfs_adj, hop_limit, node_limit,
+            block_addr_to_addr=block_addr_to_addr,
+        )
     else:
         included_nodes = _sample_nodes_proportional(
             data, type_offsets, node_limit
@@ -130,13 +162,25 @@ def build_typed_causal_graph_from_hetero(
     )
 
     # --- Add directed causal edges (forward only) ---
+    # Block addr→addr edges from the final graph too, not just from BFS,
+    # otherwise the tracer can still drift between wallets that BFS
+    # happened to include via tx-mediated paths.
+    n_aa_skipped = 0
     for src_g, neighbours in causal_adj.items():
         if src_g not in included_nodes:
             continue
         for dst_g, etype_str in neighbours:
             if dst_g not in included_nodes:
                 continue
+            if block_addr_to_addr and _is_addr_to_addr_edge(etype_str):
+                n_aa_skipped += 1
+                continue
             tcg.add_edge(src_g, dst_g, etype_str)
+
+    if block_addr_to_addr and n_aa_skipped > 0:
+        # Diagnostic: prints once per call so user knows the filter fired.
+        print(f"  [data_utils] Skipped {n_aa_skipped:,} addr→addr edges "
+              f"from causal graph (block_addr_to_addr=True).")
 
     return tcg
 
@@ -169,11 +213,19 @@ def heterodata_to_flat_feature_dict(
 
 
 def _is_addr_to_addr_edge(etype_str: str) -> bool:
-    """Return True if the edge connects two nodes of the same addr-like type.
+    """Return True if `etype_str` is a same-type non-tx edge (e.g. wallet↔wallet).
 
-    Enforces tx → addr → tx → addr alternating traversal by blocking
-    addr→addr shortcuts (e.g. "address__to__address", "wallet__to__wallet").
-    tx→tx edges (rare but possible) are intentionally allowed.
+    Enforces tx ↔ addr alternating traversal by blocking addr→addr shortcuts
+    such as `wallet__to__wallet` or `address__to__address`.
+
+    Same-type tx edges (`transaction__to__transaction`, `tx__to__tx`) are
+    intentionally allowed: a tx can plausibly be the upstream cause of
+    another tx via a `flows_to` relation, and the tracer needs that link
+    to chain multiple tx hops.
+
+    For graphs whose edge-type strings don't follow `src__to__dst` (e.g. a
+    custom serialisation), the function falls back to False, which means
+    the filter no-ops and we keep the legacy behaviour — safe default.
     """
     parts = etype_str.split("__to__")
     if len(parts) != 2:
@@ -181,7 +233,7 @@ def _is_addr_to_addr_edge(etype_str: str) -> bool:
     src_type, dst_type = parts
     if src_type != dst_type:
         return False
-    # Allow same-type if it's a transaction node
+    # Allow same-type tx links (tx→tx flows_to is a legitimate hop).
     return "tx" not in src_type and "transaction" not in src_type
 
 
@@ -190,6 +242,7 @@ def _multi_source_bfs(
     adj: Dict[int, List[Tuple[int, str]]],
     hop_limit: int,
     node_limit: int,
+    block_addr_to_addr: bool = True,
 ) -> set:
     """
     BFS from multiple seed nodes simultaneously.
@@ -203,8 +256,8 @@ def _multi_source_bfs(
         if depth >= hop_limit:
             continue
         for neighbour, etype_str in adj.get(node, []):
-            if _is_addr_to_addr_edge(etype_str):
-                continue  # skip addr→addr; enforce tx↔addr alternating path
+            if block_addr_to_addr and _is_addr_to_addr_edge(etype_str):
+                continue  # skip addr→addr; force tx↔addr alternating path
             if neighbour not in visited and len(visited) < node_limit:
                 visited.add(neighbour)
                 queue.append((neighbour, depth + 1))
@@ -253,6 +306,7 @@ def _bfs_subgraph(
     adj: Dict[int, List[Tuple[int, str]]],
     hop_limit: int,
     node_limit: int,
+    block_addr_to_addr: bool = True,
 ) -> set:
     """BFS from start up to hop_limit hops; return node set (at most node_limit)."""
     visited = {start}
@@ -263,8 +317,8 @@ def _bfs_subgraph(
         if depth >= hop_limit:
             continue
         for neighbour, etype_str in adj.get(node, []):
-            if _is_addr_to_addr_edge(etype_str):
-                continue  # skip addr→addr; enforce tx↔addr alternating path
+            if block_addr_to_addr and _is_addr_to_addr_edge(etype_str):
+                continue  # skip addr→addr; force tx↔addr alternating path
             if neighbour not in visited and len(visited) < node_limit:
                 visited.add(neighbour)
                 queue.append((neighbour, depth + 1))
