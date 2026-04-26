@@ -187,6 +187,8 @@ class HeteroNCM(nn.Module):
         causal_graph: TypedCausalGraph,
         node_labels: "torch.Tensor",
         target_type_offset: int,
+        wallet_labels: Optional["torch.Tensor"] = None,
+        wallet_type_offset: int = 0,
     ) -> "torch.Tensor":
         """
         Supervision loss for the NCM: train each edge-type MLP to predict
@@ -217,16 +219,33 @@ class HeteroNCM(nn.Module):
         device = next(self.parameters()).device
 
         for (src, dst), edge_type in causal_graph.edge_type_map.items():
-            dst_local = dst - target_type_offset
-            if dst_local < 0 or dst_local >= n_labels:
-                continue
             if src not in flat_h:
                 continue
             if edge_type not in self.edge_type_models:
                 continue
 
-            y = node_labels[dst_local].float().to(device)
             src_type = causal_graph.node_type.get(src, self.all_node_types[0])
+            dst_type = causal_graph.node_type.get(dst, self.all_node_types[0])
+
+            # wallet→tx：用 wallet（src）的標籤監督
+            if src_type == "wallet" and dst_type == "transaction":
+                if wallet_labels is None:
+                    continue
+                src_local = src - wallet_type_offset
+                if src_local < 0 or src_local >= wallet_labels.size(0):
+                    continue
+                y = wallet_labels[src_local].float().to(device)
+                # class=3 (unknown) → skip
+                if wallet_labels[src_local].item() not in (0, 1):
+                    continue
+
+            # 其他邊：用 dst（tx）的標籤監督
+            else:
+                dst_local = dst - target_type_offset
+                if dst_local < 0 or dst_local >= n_labels:
+                    continue
+                y = node_labels[dst_local].float().to(device)
+
             type_idx = torch.tensor(
                 self.node_type_to_idx.get(src_type, 0),
                 dtype=torch.long, device=device,

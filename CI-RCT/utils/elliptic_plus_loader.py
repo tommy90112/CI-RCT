@@ -201,6 +201,17 @@ def load_elliptic_plus_dataset(
 
     data["wallet"].x = wallet_feat
 
+    # 載入 wallet 標籤
+    wallets_cls = pd.read_csv(root / "wallets_classes.csv")
+    wallets_cls.columns = [c.strip() for c in wallets_cls.columns]
+    cls_map_w = wallets_cls.set_index("address")["class"].to_dict()
+    wallet_labels = torch.zeros(n_wallets, dtype=torch.long)
+    for addr, idx in wallet_to_idx.items():
+        cls = cls_map_w.get(addr, 3)
+        if cls == 1:
+            wallet_labels[idx] = 1
+    data["wallet"].y = wallet_labels
+
     data["wallet",       "sends",    "transaction"].edge_index = ei_wt
     data["transaction",  "pays",     "wallet"      ].edge_index = ei_tw
     data["transaction",  "flows_to", "transaction" ].edge_index = ei_tt

@@ -184,7 +184,9 @@ def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
 
     # L_ncm: supervise NCM to predict fraud probability from parent embeddings
     ncm_loss = model.hetero_ncm.supervised_ncm_loss(
-        flat_h, causal_graph, labels, type_offsets[target_type]
+        flat_h, causal_graph, labels, type_offsets[target_type],
+        wallet_labels=data["wallet"].y if hasattr(data["wallet"], "y") else None,
+        wallet_type_offset=type_offsets.get("wallet", 0),
     )
 
     total_loss = (
@@ -225,6 +227,8 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
         is_critic_step=True,
         class_weight=class_weight,
         target_type_offset=target_type_offset,
+        wallet_labels=data["wallet"].y if hasattr(data["wallet"], "y") else None,
+        wallet_type_offset=type_offsets.get("wallet", 0),
     )
     # Use full loss (detection + adversarial + NCM + stability) for discriminator update
     total_loss.backward()
@@ -245,6 +249,8 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
             is_critic_step=False,
             class_weight=class_weight,
             target_type_offset=target_type_offset,
+            wallet_labels=data["wallet"].y if hasattr(data["wallet"], "y") else None,
+            wallet_type_offset=type_offsets.get("wallet", 0),
         )
         g_loss = model.config.lambda_adversarial * g_adv_loss
         g_loss.backward()
