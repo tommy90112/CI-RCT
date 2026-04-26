@@ -171,6 +171,8 @@ class CI_RCT(nn.Module):
         is_critic_step: bool = True,
         class_weight: Optional[Tensor] = None,
         target_type_offset: Optional[int] = None,
+        wallet_labels: Optional[Tensor] = None,
+        wallet_type_offset: int = 0,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
         Compute L_total = L_detection + λ1·L_adversarial + λ2·L_stability + λ3·L_ncm.
@@ -275,7 +277,9 @@ class CI_RCT(nn.Module):
         ncm_loss = torch.zeros(1, device=detection_loss.device)
         if causal_graph is not None and target_type_offset is not None:
             ncm_loss = self.hetero_ncm.supervised_ncm_loss(
-                flat_h, causal_graph, labels, target_type_offset
+                flat_h, causal_graph, labels, target_type_offset,
+                wallet_labels=wallet_labels,
+                wallet_type_offset=wallet_type_offset,
             )
 
         total_loss = (
