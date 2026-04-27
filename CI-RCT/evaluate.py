@@ -118,6 +118,82 @@ def print_section(title, metrics):
             print(f"  {label:40s}: {value}")
  
  
+def _load_illicit_wallet_globals(
+    data_root: str,
+    wallet_global_offset: int,
+    include_addr_addr: bool = False,
+    fraud_subgraph: bool = False,
+    fraud_subgraph_hops: int = 2,
+) -> set:
+    """
+    Return the set of *global node IDs* of labeled illicit wallets
+    (wallets_classes.csv class==1) on Elliptic++.
+ 
+    The wallet ordering must match what elliptic_plus_loader.py produces
+    under the same loader flags — we rely on lfpn_utils._rebuild_wallet_to_idx
+    to do this consistently.  If the loader ever changes its filtering rules,
+    that helper is the single place to update.
+ 
+    Returns an empty set on any failure (so RCP just falls back to
+    "tx-only fraud nodes" instead of crashing).
+    """
+    try:
+        import pandas as pd
+        from pathlib import Path
+        from utils.lfpn_utils import _rebuild_wallet_to_idx, CLASS_ILLICIT
+    except Exception as e:
+        print(f"  [fraud_label_set] could not load illicit wallet helper: {e}")
+        return set()
+ 
+    root = Path(os.path.join(data_root, "Elliptic++"))
+    try:
+        wallets_cls = pd.read_csv(root / "wallets_classes.csv")
+        wallets_cls.columns = [c.strip() for c in wallets_cls.columns]
+ 
+        # Same readers the loader uses, needed by _rebuild_wallet_to_idx.
+        wallets   = pd.read_csv(root / "wallets_features.csv", usecols=[0])
+        wallets.columns = ["address"]
+        txs_feat  = pd.read_csv(root / "txs_features.csv", usecols=[0])
+        txs_feat.columns = ["txId"]
+        txs_cls_df = pd.read_csv(root / "txs_classes.csv")
+        txs_cls_df.columns = [c.strip() for c in txs_cls_df.columns]
+        addr_tx   = pd.read_csv(root / "AddrTx_edgelist.csv")
+        addr_tx.columns = [c.strip() for c in addr_tx.columns]
+        tx_addr   = pd.read_csv(root / "TxAddr_edgelist.csv")
+        tx_addr.columns = [c.strip() for c in tx_addr.columns]
+        addr_addr = pd.read_csv(root / "AddrAddr_edgelist.csv")
+        addr_addr.columns = [c.strip() for c in addr_addr.columns]
+ 
+        tx_to_idx = {tid: i for i, tid in enumerate(txs_feat["txId"].tolist())}
+ 
+        wallet_to_idx = _rebuild_wallet_to_idx(
+            wallets=wallets,
+            wallets_cls=wallets_cls,
+            txs_cls=txs_cls_df,
+            tx_to_idx=tx_to_idx,
+            addr_tx=addr_tx,
+            tx_addr=tx_addr,
+            addr_addr=addr_addr,
+            include_addr_addr=include_addr_addr,
+            fraud_subgraph=fraud_subgraph,
+            fraud_subgraph_hops=fraud_subgraph_hops,
+            verbose=False,
+        )
+ 
+        illicit_addrs = wallets_cls.loc[
+            wallets_cls["class"] == CLASS_ILLICIT, "address"
+        ].astype(str).tolist()
+ 
+        return {
+            wallet_global_offset + wallet_to_idx[a]
+            for a in illicit_addrs
+            if a in wallet_to_idx
+        }
+    except Exception as e:
+        print(f"  [fraud_label_set] failed to build illicit wallet set: {e}")
+        return set()
+ 
+ 
 @torch.no_grad()
 def eval_classification(model, data, labels, test_mask):
     model.eval()
@@ -196,13 +272,52 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         for p in set(phi_orig.keys()) & set(phi_pert.keys()):
             stability_diffs.append(abs(phi_orig[p] - phi_pert[p]))
  
+    # ── Build fraud_label_set ─────────────────────────────────────────────
+    # On bipartite-style fraud graphs the tracer's root is typically a
+    # wallet (because |CE(wallet→tx)| dominates).  RCP/CCV must therefore
+    # treat *both* illicit transactions and labeled illicit wallets as
+    # fraud-related — a chain ending at a known illicit wallet is a
+    # successful root-cause trace, not a miss.
     fraud_label_set = set(
         offset + i for i in test_indices if labels[i].item() == 1
     )
+    if args.dataset == "elliptic++":
+        wallet_offset = type_offsets.get("wallet")
+        illicit_wallet_globals = _load_illicit_wallet_globals(
+            args.data_root,
+            wallet_global_offset=wallet_offset,
+            include_addr_addr=args.include_addr_addr,
+            fraud_subgraph=args.fraud_subgraph,
+            fraud_subgraph_hops=args.fraud_subgraph_hops,
+        )
+        fraud_label_set |= illicit_wallet_globals
+        if args.debug:
+            print(f"\n[fraud_label_set] tx fraud nodes: "
+                  f"{sum(1 for i in test_indices if labels[i].item() == 1)}, "
+                  f"illicit wallets added: {len(illicit_wallet_globals):,}, "
+                  f"total fraud_label_set size: {len(fraud_label_set):,}")
+ 
     rct_metrics = compute_root_cause_metrics(
         predicted_roots, causal_chains, fraud_label_set
     )
     rct_metrics["num_traced"] = len(predicted_roots)
+ 
+    # ── DIAGNOSTIC 4: root type breakdown ──────────────────────────────────
+    if args.debug:
+        root_type_counts = Counter()
+        root_in_fraud_by_type = Counter()
+        for root in predicted_roots:
+            rtype = causal_graph.node_type.get(root, "unknown")
+            root_type_counts[rtype] += 1
+            if root in fraud_label_set:
+                root_in_fraud_by_type[rtype] += 1
+        print(f"\n[diagnostic 4/4] Predicted root cause type breakdown")
+        for rtype in sorted(root_type_counts.keys()):
+            n_total = root_type_counts[rtype]
+            n_fraud = root_in_fraud_by_type[rtype]
+            pct = 100 * n_fraud / max(1, n_total)
+            print(f"  root type = {rtype:<20s}: {n_total:>4d}  "
+                  f"({n_fraud} in fraud_label_set, {pct:.1f}%)")
     stability_metrics = {
         "phi_stability_std": float(np.std(stability_diffs)) if stability_diffs else 0.0,
         "phi_stability_mean_abs": float(np.mean(stability_diffs)) if stability_diffs else 0.0,
