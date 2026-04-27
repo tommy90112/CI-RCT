@@ -243,6 +243,34 @@ def mean_tracing_depth(causal_chains: List[List]) -> float:
     depths = [max(len(chain) - 1, 0) for chain in causal_chains if chain]
     return float(np.mean(depths)) if depths else 0.0
 
+def root_cause_hit_rate(causal_chains: List[List], fraud_node_set: Set) -> float:
+    """
+    Fraction of causal chains that contain AT LEAST ONE node from the
+    fraud-related node set.
+
+    This metric reflects the practical use case of root-cause tracing:
+    investigators care whether *some* node in the traced chain is a known
+    fraud-related entity, not whether *every* node is.  It complements:
+      - root_cause_precision (only the chain's terminal node)
+      - causal_chain_validity (proportion of fraud-related nodes per chain)
+
+    Args:
+        causal_chains:  List of node-ID lists (each a chain from target to root)
+        fraud_node_set: Set of fraud-related global node IDs
+
+    Returns:
+        float: |chains with ≥1 fraud node| / |chains|
+    """
+    if not causal_chains:
+        raise ValueError("causal_chains must not be empty.")
+    if fraud_node_set is None:
+        raise ValueError("fraud_node_set must not be None.")
+
+    n_hits = sum(
+        1 for chain in causal_chains
+        if any(n in fraud_node_set for n in chain)
+    )
+    return n_hits / len(causal_chains)
 
 def compute_root_cause_metrics(
     predicted_roots: List,
@@ -278,6 +306,7 @@ def compute_root_cause_metrics(
 
     return {
         "root_cause_precision": float(np.mean(precisions)),
+        "root_cause_hit_rate":  root_cause_hit_rate(causal_chains, fraud_node_set),
         "chain_validity": float(np.mean(validities)) if validities else 0.0,
         "mean_tracing_depth": mean_tracing_depth(causal_chains),
     }
