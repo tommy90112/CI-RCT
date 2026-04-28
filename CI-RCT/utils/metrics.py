@@ -268,7 +268,7 @@ def root_cause_hit_rate(causal_chains: List[List], fraud_node_set: Set) -> float
 
     n_hits = sum(
         1 for chain in causal_chains
-        if any(n in fraud_node_set for n in chain)
+        if any(n in fraud_node_set for n in chain[1:]) # exclude target node at index 0
     )
     return n_hits / len(causal_chains)
 
