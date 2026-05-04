@@ -24,12 +24,13 @@ Usage:
 """
 import argparse
 import os
+from collections import Counter, defaultdict
 from typing import Dict, List, Set, Tuple
-
+ 
 import numpy as np
 import torch
 from sklearn.metrics import recall_score
-
+ 
 from configs.config import CI_RCT_Config
 from model.causal_shapley import compute_asymmetric_causal_shapley
 from model.ci_rct import CI_RCT
@@ -39,8 +40,8 @@ from utils.metrics import (
     compute_classification_metrics,
     compute_root_cause_metrics,
 )
-
-
+ 
+ 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a trained CI-RCT model")
     parser.add_argument("--dataset", type=str, default="dblp",
@@ -50,45 +51,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_hops", type=int, default=5)
     parser.add_argument("--ce_threshold", type=float, default=0.1)
     parser.add_argument("--top_k", type=int, default=3)
-    parser.add_argument("--node_limit", type=int, default=5000,
-                        help="Max nodes in TypedCausalGraph BFS (default 5000)")
-    parser.add_argument("--hop_limit", type=int, default=2,
-                        help="BFS hop depth for TypedCausalGraph construction (default 2)")
-    parser.add_argument("--num_seeds", type=int, default=20,
-                        help="Number of fraud seed nodes for causal graph BFS (default 20)")
-    parser.add_argument("--max_explain", type=int, default=50,
-                        help="Max test fraud nodes to run full explanation on")
+    parser.add_argument("--node_limit", type=int, default=5000)
+    parser.add_argument("--hop_limit", type=int, default=2)
+    parser.add_argument("--num_seeds", type=int, default=20)
+    parser.add_argument("--max_explain", type=int, default=50)
     parser.add_argument("--device", type=str, default="cpu")
-    # Must match training config
     parser.add_argument("--hidden_dim", type=int, default=128)
     parser.add_argument("--num_hgt_layers", type=int, default=3)
     parser.add_argument("--num_heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--type_emb_dim", type=int, default=16)
-    # Must match training data loading
     parser.add_argument("--include_addr_addr", type=lambda x: x.lower() == "true",
-                        default=False,
-                        help="Must match training: include wallet→wallet edges")
+                        default=False)
     parser.add_argument("--fraud_subgraph", type=lambda x: x.lower() == "true",
-                        default=False,
-                        help="Must match training: use fraud-anchored wallet subgraph")
+                        default=False)
     parser.add_argument("--fraud_subgraph_hops", type=int, default=2)
-    parser.add_argument("--max_flows", type=int, default=200_000,
-                        help="Max flow records for unsw_nb15 (0 = no limit).")
-    # LFPN settings (Elliptic++ Metric C)
+    parser.add_argument("--max_flows", type=int, default=200_000)
     parser.add_argument("--lfpn_mode", type=str, default="both",
-                        choices=["strict", "extended", "both"],
-                        help="Ground-truth mode for Elliptic++ Metric C. "
-                             "strict = direct initiators only; "
-                             "extended = + k-hop labeled illicit wallets; "
-                             "both = run both and report two tables.")
-    parser.add_argument("--lfpn_k", type=int, default=2,
-                        help="k in LFPN_k for extended mode (default 2). "
-                             "Use k=1/2/3 for sensitivity analysis.")
+                        choices=["strict", "extended", "both"])
+    parser.add_argument("--lfpn_k", type=int, default=2)
+    parser.add_argument("--debug", action="store_true",
+                        help="Print tracer diagnostics: CE distribution by edge "
+                             "type, chain length histogram, stuck-trace analysis.")
     return parser.parse_args()
-
-
-def load_dataset(name: str, root: str, **kwargs):
+ 
+ 
+def load_dataset(name, root, **kwargs):
     if name == "dblp":
         from torch_geometric.datasets import DBLP
         return DBLP(root=os.path.join(root, "dblp"))[0], "author"
@@ -116,9 +104,9 @@ def load_dataset(name: str, root: str, **kwargs):
             max_flows=kwargs.get("max_flows", 200_000),
         )
     raise ValueError(f"Unknown dataset: {name!r}")
-
-
-def print_section(title: str, metrics: dict) -> None:
+ 
+ 
+def print_section(title, metrics):
     print(f"\n{'─' * 55}")
     print(f"  {title}")
     print(f"{'─' * 55}")
@@ -128,10 +116,84 @@ def print_section(title: str, metrics: dict) -> None:
             print(f"  {label:40s}: {value:.4f}")
         else:
             print(f"  {label:40s}: {value}")
-
-
-# ── Metric A: Classification ───────────────────────────────────────────────────
-
+ 
+ 
+def _load_illicit_wallet_globals(
+    data_root: str,
+    wallet_global_offset: int,
+    include_addr_addr: bool = False,
+    fraud_subgraph: bool = False,
+    fraud_subgraph_hops: int = 2,
+) -> set:
+    """
+    Return the set of *global node IDs* of labeled illicit wallets
+    (wallets_classes.csv class==1) on Elliptic++.
+ 
+    The wallet ordering must match what elliptic_plus_loader.py produces
+    under the same loader flags — we rely on lfpn_utils._rebuild_wallet_to_idx
+    to do this consistently.  If the loader ever changes its filtering rules,
+    that helper is the single place to update.
+ 
+    Returns an empty set on any failure (so RCP just falls back to
+    "tx-only fraud nodes" instead of crashing).
+    """
+    try:
+        import pandas as pd
+        from pathlib import Path
+        from utils.lfpn_utils import _rebuild_wallet_to_idx, CLASS_ILLICIT
+    except Exception as e:
+        print(f"  [fraud_label_set] could not load illicit wallet helper: {e}")
+        return set()
+ 
+    root = Path(os.path.join(data_root, "Elliptic++"))
+    try:
+        wallets_cls = pd.read_csv(root / "wallets_classes.csv")
+        wallets_cls.columns = [c.strip() for c in wallets_cls.columns]
+ 
+        # Same readers the loader uses, needed by _rebuild_wallet_to_idx.
+        wallets   = pd.read_csv(root / "wallets_features.csv", usecols=[0])
+        wallets.columns = ["address"]
+        txs_feat  = pd.read_csv(root / "txs_features.csv", usecols=[0])
+        txs_feat.columns = ["txId"]
+        txs_cls_df = pd.read_csv(root / "txs_classes.csv")
+        txs_cls_df.columns = [c.strip() for c in txs_cls_df.columns]
+        addr_tx   = pd.read_csv(root / "AddrTx_edgelist.csv")
+        addr_tx.columns = [c.strip() for c in addr_tx.columns]
+        tx_addr   = pd.read_csv(root / "TxAddr_edgelist.csv")
+        tx_addr.columns = [c.strip() for c in tx_addr.columns]
+        addr_addr = pd.read_csv(root / "AddrAddr_edgelist.csv")
+        addr_addr.columns = [c.strip() for c in addr_addr.columns]
+ 
+        tx_to_idx = {tid: i for i, tid in enumerate(txs_feat["txId"].tolist())}
+ 
+        wallet_to_idx = _rebuild_wallet_to_idx(
+            wallets=wallets,
+            wallets_cls=wallets_cls,
+            txs_cls=txs_cls_df,
+            tx_to_idx=tx_to_idx,
+            addr_tx=addr_tx,
+            tx_addr=tx_addr,
+            addr_addr=addr_addr,
+            include_addr_addr=include_addr_addr,
+            fraud_subgraph=fraud_subgraph,
+            fraud_subgraph_hops=fraud_subgraph_hops,
+            verbose=False,
+        )
+ 
+        illicit_addrs = wallets_cls.loc[
+            wallets_cls["class"] == CLASS_ILLICIT, "address"
+        ].astype(str).tolist()
+ 
+        return {
+            wallet_global_offset + wallet_to_idx[a]
+            for a in illicit_addrs
+            if a in wallet_to_idx
+        }
+    except Exception as e:
+        print(f"  [fraud_label_set] failed to build illicit wallet set: {e}")
+        return set()
+ 
+ 
 @torch.no_grad()
 def eval_classification(model, data, labels, test_mask):
     model.eval()
@@ -139,60 +201,59 @@ def eval_classification(model, data, labels, test_mask):
     preds  = logits[test_mask].argmax(dim=-1).cpu()
     scores = torch.softmax(logits[test_mask], dim=-1)[:, 1].cpu()
     y_true = labels[test_mask].cpu()
-
     metrics = compute_classification_metrics(preds, y_true, scores)
-    # Add per-class Recall for fraud detection focus
     metrics["recall_fraud"] = float(
         recall_score(y_true.numpy(), preds.numpy(), pos_label=1, zero_division=0)
     )
     return metrics
-
-
-# ── Metric B + D: Root Cause Tracing + φ-Stability ────────────────────────────
-
+ 
+ 
 def eval_root_cause_and_stability(model, data, labels, test_mask,
                                   causal_graph, args, device,
                                   type_offsets, target_type):
-    """
-    Run root cause tracing on fraud-predicted test nodes.
-    Computes:
-      - RCP, CCV, MTD  (Dimension B)
-      - φ-Stability    (Dimension D)
-
-    Uses global node IDs (local index + type offset) to correctly
-    address nodes inside the TypedCausalGraph.
-    """
     model.eval()
-
     with torch.no_grad():
         logits, h_dict = model.forward(data)
         flat_h = model._build_flat_h(h_dict)
-
     causal_effects = model.compute_causal_effects(flat_h, causal_graph)
-
+ 
+    # ── DIAGNOSTIC 1: CE distribution by edge type ─────────────────────────
+    if args.debug:
+        ce_by_etype = defaultdict(list)
+        for (src, dst), ce in causal_effects.items():
+            etype = causal_graph.edge_type_map.get((src, dst), "unknown")
+            ce_by_etype[etype].append(ce)
+        print("\n[diagnostic 1/3] CE distribution by edge type")
+        print(f"  (ce_threshold = {args.ce_threshold})")
+        print(f"  {'edge_type':<35s} {'n':>7s}  {'mean':>9s}  {'std':>8s}  "
+              f"{'min':>8s}  {'max':>8s}  {'%>thresh':>9s}")
+        for etype in sorted(ce_by_etype.keys()):
+            arr = np.array(ce_by_etype[etype])
+            pct = float((arr > args.ce_threshold).mean()) * 100
+            print(f"  {etype:<35s} {len(arr):>7d}  "
+                  f"{arr.mean():>+9.4f}  {arr.std():>8.4f}  "
+                  f"{arr.min():>+8.4f}  {arr.max():>+8.4f}  "
+                  f"{pct:>8.2f}%")
+ 
     tracer = RootCauseTracer(
         causal_graph=causal_graph,
         max_hops=args.max_hops,
         threshold=args.ce_threshold,
     )
-
+ 
     offset = type_offsets[target_type]
     test_indices = test_mask.nonzero(as_tuple=True)[0].tolist()
-
-    # Convert to global IDs; only keep nodes that exist in the causal graph
     fraud_predicted_global = [
         offset + idx for idx in test_indices
         if logits[idx].argmax().item() == 1
            and (offset + idx) in causal_graph.set_v
     ][: args.max_explain]
-
+ 
     if not fraud_predicted_global:
         print("  No fraud-predicted test nodes in causal graph — skipping RCT metrics.")
         return {}, {}
-
+ 
     predicted_roots, causal_chains = [], []
-
-    # φ-Stability: compute perturbed causal effects once for the whole batch.
     _noise_sigma = 0.01
     with torch.no_grad():
         flat_h_perturbed = {
@@ -200,56 +261,123 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
             for gid, emb in flat_h.items()
         }
     causal_effects_perturbed = model.compute_causal_effects(flat_h_perturbed, causal_graph)
-
     stability_diffs = []
-
+ 
     for global_id in fraud_predicted_global:
         root, chain = tracer.trace_root_cause(global_id, causal_effects)
         predicted_roots.append(root)
         causal_chains.append(chain)
-
         phi_orig = compute_asymmetric_causal_shapley(causal_effects, causal_graph, global_id)
         phi_pert = compute_asymmetric_causal_shapley(causal_effects_perturbed, causal_graph, global_id)
         for p in set(phi_orig.keys()) & set(phi_pert.keys()):
             stability_diffs.append(abs(phi_orig[p] - phi_pert[p]))
-
-    # Ground-truth fraud nodes (global IDs) for RCP / CCV
+ 
+    # ── Build fraud_label_set ─────────────────────────────────────────────
+    # On bipartite-style fraud graphs the tracer's root is typically a
+    # wallet (because |CE(wallet→tx)| dominates).  RCP/CCV must therefore
+    # treat *both* illicit transactions and labeled illicit wallets as
+    # fraud-related — a chain ending at a known illicit wallet is a
+    # successful root-cause trace, not a miss.
     fraud_label_set = set(
         offset + i for i in test_indices if labels[i].item() == 1
     )
-
+    if args.dataset == "elliptic++":
+        wallet_offset = type_offsets.get("wallet")
+        illicit_wallet_globals = _load_illicit_wallet_globals(
+            args.data_root,
+            wallet_global_offset=wallet_offset,
+            include_addr_addr=args.include_addr_addr,
+            fraud_subgraph=args.fraud_subgraph,
+            fraud_subgraph_hops=args.fraud_subgraph_hops,
+        )
+        fraud_label_set |= illicit_wallet_globals
+        if args.debug:
+            print(f"\n[fraud_label_set] tx fraud nodes: "
+                  f"{sum(1 for i in test_indices if labels[i].item() == 1)}, "
+                  f"illicit wallets added: {len(illicit_wallet_globals):,}, "
+                  f"total fraud_label_set size: {len(fraud_label_set):,}")
+ 
     rct_metrics = compute_root_cause_metrics(
         predicted_roots, causal_chains, fraud_label_set
     )
     rct_metrics["num_traced"] = len(predicted_roots)
-
+ 
+    # ── DIAGNOSTIC 4: root type breakdown ──────────────────────────────────
+    if args.debug:
+        root_type_counts = Counter()
+        root_in_fraud_by_type = Counter()
+        for root in predicted_roots:
+            rtype = causal_graph.node_type.get(root, "unknown")
+            root_type_counts[rtype] += 1
+            if root in fraud_label_set:
+                root_in_fraud_by_type[rtype] += 1
+        print(f"\n[diagnostic 4/4] Predicted root cause type breakdown")
+        for rtype in sorted(root_type_counts.keys()):
+            n_total = root_type_counts[rtype]
+            n_fraud = root_in_fraud_by_type[rtype]
+            pct = 100 * n_fraud / max(1, n_total)
+            print(f"  root type = {rtype:<20s}: {n_total:>4d}  "
+                  f"({n_fraud} in fraud_label_set, {pct:.1f}%)")
     stability_metrics = {
         "phi_stability_std": float(np.std(stability_diffs)) if stability_diffs else 0.0,
         "phi_stability_mean_abs": float(np.mean(stability_diffs)) if stability_diffs else 0.0,
         "num_nodes_explained": len(fraud_predicted_global),
     }
-
+ 
+    # ── DIAGNOSTIC 2: chain depth histogram ────────────────────────────────
+    if args.debug:
+        chain_lens = [len(c) for c in causal_chains]
+        depth_hist = Counter([l - 1 for l in chain_lens])
+        n = len(causal_chains)
+        print(f"\n[diagnostic 2/3] Chain depth histogram "
+              f"(num_traced={n}, max_hops={args.max_hops})")
+        for depth in sorted(depth_hist.keys()):
+            count = depth_hist[depth]
+            bar = "█" * int(40 * count / max(1, n))
+            print(f"  depth={depth:>2d}: {count:>4d}  {bar}")
+ 
+    # ── DIAGNOSTIC 3: why are length-1 (depth-0) chains stuck? ─────────────
+    if args.debug:
+        stuck_total = 0
+        no_parents = 0
+        weak_ce_count = 0
+        weak_ce_max_values = []
+        for chain in causal_chains:
+            if len(chain) > 1:
+                continue
+            stuck_total += 1
+            target = chain[0]
+            parents = list(causal_graph.parents(target))
+            if not parents:
+                no_parents += 1
+            else:
+                best_ce = max(
+                    (causal_effects.get((p, target), 0.0) for p in parents),
+                    default=0.0,
+                )
+                if best_ce < args.ce_threshold:
+                    weak_ce_count += 1
+                    weak_ce_max_values.append(best_ce)
+        print(f"\n[diagnostic 3/3] Stuck-at-target trace analysis "
+              f"({stuck_total}/{len(causal_chains)} chains have depth 0)")
+        print(f"  reason: target has no parents in causal graph : {no_parents}")
+        print(f"  reason: parents exist but max CE < threshold  : {weak_ce_count}")
+        if weak_ce_max_values:
+            arr = np.array(weak_ce_max_values)
+            print(f"    -> max-CE among stuck-but-has-parents:  "
+                  f"mean={arr.mean():+.4f}  median={np.median(arr):+.4f}  "
+                  f"min={arr.min():+.4f}  max={arr.max():+.4f}")
+            print(f"    -> if these are mostly near 0, the relevant edge model "
+                  f"is undertrained (NCM hypothesis confirmed).")
+ 
     return rct_metrics, stability_metrics
-
-
-# ── Metric C: Explanation Quality (optional, requires ground truth) ────────────
-
+ 
+ 
 def eval_explanation_quality(model, data, labels, test_mask,
                               causal_graph, args, gt_causal_nodes=None):
-    """
-    EA and ER metrics.  Skipped if no ground-truth causal node labels provided.
-
-    gt_causal_nodes: dict {node_id: set_of_gt_causal_node_ids} or None
-
-    Only GT nodes that exist in the causal graph are evaluated.  Tracing uses
-    threshold=0.0 so that cross-type edges (e.g. wallet→tx) are not pruned by
-    the CE threshold; the goal here is coverage, not precision filtering.
-    """
     if not gt_causal_nodes:
-        print("  No ground-truth causal labels — skipping explanation quality metrics.")
+        print("  No ground-truth causal labels — skipping.")
         return {}
-
-    # Filter to GT nodes that are actually reachable in the causal graph
     eligible = {
         nid: gs for nid, gs in gt_causal_nodes.items()
         if nid in causal_graph.set_v
@@ -257,49 +385,28 @@ def eval_explanation_quality(model, data, labels, test_mask,
     print(f"  Explanation Quality: {len(eligible)}/{len(gt_causal_nodes)} "
           f"GT transactions found in causal graph.")
     if not eligible:
-        print("  No GT transactions in causal graph — skipping explanation quality metrics.")
         return {}
-
     model.eval()
     with torch.no_grad():
         logits, h_dict = model.forward(data)
         flat_h = model._build_flat_h(h_dict)
-
     causal_effects = model.compute_causal_effects(flat_h, causal_graph)
-    # Use threshold=0.0 so cross-type edges are not pruned during explanation
     tracer = RootCauseTracer(
         causal_graph=causal_graph,
         max_hops=args.max_hops,
         threshold=0.0,
     )
-
     preds_list, gts_list = [], []
     for node_id, gt_set in eligible.items():
         root, chain = tracer.trace_root_cause(node_id, causal_effects)
         preds_list.append(set(chain))
         gts_list.append(gt_set)
-
     from utils.metrics import compute_explanation_metrics
     return compute_explanation_metrics(preds_list, gts_list)
-
-
-# ── Metric C ground-truth dispatcher ──────────────────────────────────────────
-
-def build_gt_list(
-    args:          argparse.Namespace,
-    data,
-    type_offsets:  Dict[str, int],
-) -> List[Tuple[str, Dict[int, Set[int]]]]:
-    """
-    Build the Metric C ground-truth for the current dataset.
-
-    Returns a list of (label, gt_dict) so downstream code can evaluate
-    the same model under multiple GT definitions (e.g. LFPN-Strict and
-    LFPN-Extended on Elliptic++).  An empty list means Metric C will
-    be skipped.
-    """
-    gt_list: List[Tuple[str, Dict[int, Set[int]]]] = []
-
+ 
+ 
+def build_gt_list(args, data, type_offsets):
+    gt_list = []
     if args.dataset == "unsw_nb15" and hasattr(data, "_df"):
         print("Computing Granger ground-truth for Metric C (UNSW-NB15)...")
         from utils.granger_utils import compute_granger_ground_truth
@@ -314,13 +421,9 @@ def build_gt_list(
         )
         if gt:
             gt_list.append(("Granger", gt))
-
     elif args.dataset == "elliptic++":
         from utils.lfpn_utils import compute_lfpn_ground_truth
-
-        modes = ["strict", "extended"] if args.lfpn_mode == "both" \
-                else [args.lfpn_mode]
-
+        modes = ["strict", "extended"] if args.lfpn_mode == "both" else [args.lfpn_mode]
         for m in modes:
             print(f"\nComputing LFPN ground-truth (mode={m}) for Metric C...")
             gt = compute_lfpn_ground_truth(
@@ -338,16 +441,13 @@ def build_gt_list(
                 label = "LFPN-Strict" if m == "strict" \
                         else f"LFPN-Extended (k={args.lfpn_k})"
                 gt_list.append((label, gt))
-
     return gt_list
-
-
-# ── Main ────────────────────────────────────────────────────────────────────────
-
-def main() -> None:
+ 
+ 
+def main():
     args = parse_args()
     device = torch.device(args.device)
-
+ 
     print(f"Loading dataset: {args.dataset}")
     data, target_type = load_dataset(
         args.dataset, args.data_root,
@@ -357,25 +457,20 @@ def main() -> None:
         max_flows=args.max_flows,
     )
     data = data.to(device)
-
     labels    = data[target_type].y
     test_mask = data[target_type].test_mask
-
+ 
     type_offsets = compute_type_offsets(data)
     offset = type_offsets[target_type]
     test_indices = test_mask.nonzero(as_tuple=True)[0].tolist()
     fraud_global_ids = [
         offset + i for i in test_indices if labels[i].item() == 1
     ]
-
-    # ── Metric C ground-truth (computed BEFORE causal graph so GT tx IDs
-    #    can be added as seeds, guaranteeing they appear in the graph) ─────────
+ 
     gt_list = build_gt_list(args, data, type_offsets)
-
-    # Build causal graph seeded from test fraud nodes + all GT tx IDs across
-    # every GT definition, so Metric C transactions are guaranteed reachable.
+ 
     print("\nBuilding TypedCausalGraph...")
-    gt_tx_ids: List[int] = []
+    gt_tx_ids = []
     for _, gt in gt_list:
         gt_tx_ids.extend(gt.keys())
     seed_ids = list(dict.fromkeys(
@@ -389,7 +484,7 @@ def main() -> None:
     )
     print(f"  Causal graph: {len(causal_graph.v)} nodes, "
           f"{len(causal_graph.edge_type_map)} directed edges")
-
+ 
     config = CI_RCT_Config(
         dataset=args.dataset,
         target_node_type=target_type,
@@ -402,31 +497,26 @@ def main() -> None:
         dropout=args.dropout,
         node_type_emb_dim=args.type_emb_dim,
     )
-
     in_channels_dict = {
         nt: data[nt].x.size(-1)
         for nt in sorted(data.node_types)
         if data[nt].x is not None
     }
-
     model = CI_RCT(
         config=config,
         metadata=data.metadata(),
         in_channels_dict=in_channels_dict,
-        use_gan=False,  # evaluation always runs in inference mode
+        use_gan=False,
     ).to(device)
-
     if args.checkpoint:
         model.load_checkpoint(args.checkpoint, device=args.device)
         print(f"Loaded checkpoint: {args.checkpoint}")
     else:
         print("No checkpoint — evaluating randomly initialised model (baseline).")
-
-    # ── Dimension A: Classification ──────────────────────────────────────────
+ 
     cls_metrics = eval_classification(model, data, labels, test_mask)
     print_section("A. Classification Metrics", cls_metrics)
-
-    # ── Dimensions B + D: Root Cause Tracing + φ-Stability ──────────────────
+ 
     rct_metrics, stab_metrics = eval_root_cause_and_stability(
         model, data, labels, test_mask, causal_graph, args, device,
         type_offsets=type_offsets, target_type=target_type,
@@ -435,8 +525,7 @@ def main() -> None:
         print_section("B. Root Cause Tracing Metrics", rct_metrics)
     if stab_metrics:
         print_section("D. φ-Stability Metrics", stab_metrics)
-
-    # ── Dimension C: Explanation Quality (once per GT definition) ────────────
+ 
     if not gt_list:
         print("\n  Metric C: no ground-truth available — skipping.")
     else:
@@ -449,9 +538,9 @@ def main() -> None:
             if expl_metrics:
                 print_section(f"C. Explanation Quality — {gt_label}",
                               expl_metrics)
-
+ 
     print(f"\n{'─' * 55}\n  Evaluation complete.\n{'─' * 55}\n")
-
-
+ 
+ 
 if __name__ == "__main__":
     main()
