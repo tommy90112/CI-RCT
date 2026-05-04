@@ -68,13 +68,16 @@ def compute_asymmetric_causal_shapley(
     if n == 0:
         return {}
 
-    # Sort parents by global topological order (earlier = lower index = root)
-    topo_order = causal_graph.topological_order()
-    topo_idx: Dict[object, int] = {v: i for i, v in enumerate(topo_order)}
+    # Sort parents by global topological order (earlier = lower index = root).
+    # Use the cached topological_index — building this dict from scratch on
+    # every call costs O(V) and was the dominant evaluation bottleneck on
+    # 1M-node Elliptic++ graphs (200 calls × ~20s each ≈ 67 minutes).
+    topo_idx = causal_graph.topological_index()
+    n_nodes = len(topo_idx)
 
     parents_sorted = sorted(
         parents,
-        key=lambda p: topo_idx.get(p, len(topo_order)),
+        key=lambda p: topo_idx.get(p, n_nodes),
     )
 
     phi: Dict[int, float] = {}
