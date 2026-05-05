@@ -97,9 +97,17 @@ def parse_procmon_csv(
     """
     path = Path(path)
 
-    # Procmon CSV files are UTF-8 with BOM and may contain stray quotes; let
-    # pandas handle encoding detection but strip the BOM if present.
-    raw = pd.read_csv(path, encoding="utf-8-sig", low_memory=False)
+    # Procmon CSVs are messy in practice:
+    #   1. Encoding may be UTF-8 with BOM, or contain stray Latin-1 bytes.
+    #   2. Some lines are very long and trigger the C parser's buffer overflow.
+    #   3. A few rows are malformed (truncated multiline Detail values).
+    # We use the Python engine (slower but tolerant) with on_bad_lines="skip",
+    # and fall back to Latin-1 if UTF-8 fails.
+    common_kwargs = dict(engine="python", on_bad_lines="skip")
+    try:
+        raw = pd.read_csv(path, encoding="utf-8-sig", **common_kwargs)
+    except UnicodeDecodeError:
+        raw = pd.read_csv(path, encoding="latin-1", **common_kwargs)
 
     # Normalise column names; Procmon's header includes spaces.
     raw = raw.rename(
