@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
         description="Train CI-RCT: Causal Intervention-Based Root Cause Tracing"
     )
     parser.add_argument("--dataset", type=str, default="dblp",
-                        choices=["dblp", "acm", "imdb", "elliptic", "elliptic++", "crypto", "unsw_nb15"])
+                        choices=["dblp", "acm", "imdb", "elliptic", "elliptic++", "crypto", "unsw_nb15", "unsw_mg24"])
     parser.add_argument("--data_root", type=str, default="data")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -95,6 +95,15 @@ def parse_args() -> argparse.Namespace:
                         help="Number of wallet hops from labeled tx (default 2).")
     parser.add_argument("--max_flows", type=int, default=200_000,
                         help="Max flow records for unsw_nb15 (0 = no limit).")
+    # UNSW-MG24 specific options (see DD-1 in unsw_mg24_plan.md)
+    parser.add_argument("--mg24_subsample_ddos", type=float, default=1.0,
+                        help="Fraction of ddos1 flows to retain for unsw_mg24. "
+                             "1.0 = full graph (DD-1 default); 0.1 = 10% (OOM fallback).")
+    parser.add_argument("--mg24_min_host_flows", type=int, default=5,
+                        help="External-IP host pruning threshold for unsw_mg24.")
+    parser.add_argument("--mg24_prune_external", type=lambda x: x.lower() == "true",
+                        default=True,
+                        help="Whether to prune external-only IP hosts in unsw_mg24.")
     return parser.parse_args()
 
 
@@ -133,6 +142,24 @@ def load_dataset(name: str, root: str, **kwargs):
             os.path.join(root, "unsw_nb15"),
             max_flows=kwargs.get("max_flows", 200_000),
         )
+    if name == "unsw_mg24":
+        from utils.mg24_loader import (
+            build_edges,
+            load_mg24_data,
+            to_pyg_hetero_data,
+        )
+        mg24 = load_mg24_data(
+            root=os.path.join(root, "unsw_mg24"),
+            subsample_ddos=kwargs.get("mg24_subsample_ddos", 1.0),
+            seed=kwargs.get("seed", 42),
+            prune_external_hosts=kwargs.get("mg24_prune_external", True),
+            min_host_flows=kwargs.get("mg24_min_host_flows", 5),
+            verbose=True,
+        )
+        edges = build_edges(mg24)
+        hd = to_pyg_hetero_data(mg24, edges, seed=kwargs.get("seed", 42))
+        # DD-3 primary target: flow_node (main detection task; baseline-comparable).
+        return hd, "flow_node"
     raise ValueError(f"Unknown dataset: {name!r}")
 
 
@@ -343,6 +370,10 @@ def main() -> None:
         fraud_subgraph=args.fraud_subgraph,
         fraud_subgraph_hops=args.fraud_subgraph_hops,
         max_flows=args.max_flows,
+        mg24_subsample_ddos=args.mg24_subsample_ddos,
+        mg24_min_host_flows=args.mg24_min_host_flows,
+        mg24_prune_external=args.mg24_prune_external,
+        seed=args.seed,
     )
 
     # Subsample graph before moving to GPU to avoid OOM on large datasets
