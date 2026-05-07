@@ -109,13 +109,22 @@ class HeteroGNNBackbone(nn.Module):
         }
 
         # --- HGT message passing ---
+        # Note: PyG's HGTConv only emits destination node types in its output.
+        # Source-only types (those that never appear as dst in any edge_type,
+        # e.g. `device_node` in UNSW-MG24) would be silently dropped between
+        # layers, causing the next layer's `k_dict[src]` lookup to KeyError.
+        # We carry such types forward by merging the previous x_dict.
         for i, hgt_layer in enumerate(self.hgt_layers):
             x_dict_new = hgt_layer(x_dict, edge_index_dict)
-            # Apply activation + dropout between layers (not on the last layer)
-            if i < len(self.hgt_layers) - 1:
-                x_dict = {k: self.dropout(self.act(v)) for k, v in x_dict_new.items()}
-            else:
-                x_dict = x_dict_new
+            is_last = i == len(self.hgt_layers) - 1
+
+            x_dict_merged: Dict[str, Tensor] = dict(x_dict)  # preserve source-only types
+            for ntype, h in x_dict_new.items():
+                if is_last:
+                    x_dict_merged[ntype] = h
+                else:
+                    x_dict_merged[ntype] = self.dropout(self.act(h))
+            x_dict = x_dict_merged
 
         h_dict: Dict[str, Tensor] = x_dict
 
