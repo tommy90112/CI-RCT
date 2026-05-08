@@ -167,10 +167,17 @@ def load_dataset(name: str, root: str, **kwargs):
 
 def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
                       target_node, device, type_offsets, target_type,
-                      class_weight=None):
+                      class_weight=None, multi_task_labels=None):
     """
     Single training step without GAN (Phase 1).
     L_total = L_detection + λ2 · L_stability + λ3 · L_ncm
+
+    Args:
+        multi_task_labels: Optional {node_type: label_tensor}. When provided,
+            HeteroNCM's supervision uses each edge's destination type's label
+            instead of assuming dst is the target type. Required for MG24
+            (DD-3) so `host→process`, `device→measurement`, etc. contribute
+            real BCE supervision instead of being silently skipped.
     """
     model.train()
     optimizer.zero_grad()
@@ -209,11 +216,17 @@ def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
 
     model._prev_phi = dict(phi_current)
 
-    # L_ncm: supervise NCM to predict fraud probability from parent embeddings
+    # L_ncm: supervise NCM to predict the destination node's binary label.
+    # For MG24 (DD-3), `multi_task_labels` lets every labelled dst type
+    # (flow / process / measurement) provide BCE signal — without this, all
+    # edges whose dst is not the primary target type would be silently
+    # skipped and the NCM loss would plateau (observed in pilot run).
     ncm_loss = model.hetero_ncm.supervised_ncm_loss(
         flat_h, causal_graph, labels, type_offsets[target_type],
         wallet_labels=data["wallet"].y if hasattr(data["wallet"], "y") else None,
         wallet_type_offset=type_offsets.get("wallet", 0),
+        multi_task_labels=multi_task_labels,
+        type_offsets=type_offsets if multi_task_labels is not None else None,
     )
 
     total_loss = (
@@ -503,6 +516,21 @@ def main() -> None:
             # Fallback: use all training nodes
             fraud_features = data[target_type].x[train_mask].to(device)
 
+    # --- Multi-task labels for HeteroNCM supervision (DD-3, MG24-only) ---
+    # Every labelled node type with `y` attached contributes BCE supervision
+    # for its incoming causal edges. For datasets with only a single labelled
+    # type (Elliptic++, NB15, DBLP) this remains None and the legacy
+    # single-task / wallet→tx path in supervised_ncm_loss() is used.
+    multi_task_labels = None
+    if args.dataset == "unsw_mg24":
+        multi_task_labels = {
+            ntype: data[ntype].y
+            for ntype in data.node_types
+            if hasattr(data[ntype], "y") and data[ntype].y is not None
+        }
+        labelled_types = sorted(multi_task_labels.keys())
+        print(f"  Multi-task NCM supervision: {labelled_types}")
+
     # --- Training loop ---
     mode_str = "Phase 2 (GAN)" if args.use_gan else "Phase 1 (No GAN)"
     print(f"\nTraining [{mode_str}] for {args.epochs} epochs on {device}...")
@@ -516,7 +544,8 @@ def main() -> None:
             total_loss, det_loss, stab_loss, ncm_loss = train_step_no_gan(
                 model, data, labels, train_mask, optimizer_backbone,
                 causal_graph, target_node, device,
-                type_offsets, target_type, class_weight=class_weight
+                type_offsets, target_type, class_weight=class_weight,
+                multi_task_labels=multi_task_labels,
             )
             loss_str = (f"Loss {total_loss:.4f} "
                         f"(det={det_loss:.4f}, stab={stab_loss:.2e}, ncm={ncm_loss:.4f})")

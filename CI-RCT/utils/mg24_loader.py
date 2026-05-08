@@ -26,6 +26,7 @@ Reference: unsw_mg24_plan.md § 6.4
 from __future__ import annotations
 
 import re
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -35,6 +36,28 @@ import pandas as pd
 
 from utils.audit_parser import parse_audit_dir, parse_audit_log
 from utils.procmon_parser import parse_procmon_csv
+
+
+def _safe_concat(frames: List[pd.DataFrame]) -> pd.DataFrame:
+    """
+    pd.concat wrapper that silences a noisy pandas FutureWarning.
+
+    When concatenating audit / Procmon log DataFrames, some files have all-NA
+    columns (e.g. a log with no PATH records → `path` column is all NaN),
+    which triggers a FutureWarning about pandas 3.0 changing how all-NA
+    columns participate in dtype inference. The current behaviour produces
+    the correct schema for our downstream code (which always re-coerces
+    numerics), so we suppress just this specific warning.
+    """
+    if not frames:
+        return pd.DataFrame()
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="The behavior of DataFrame concatenation",
+            category=FutureWarning,
+        )
+        return pd.concat(frames, ignore_index=True)
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -292,7 +315,7 @@ def _load_flows(
     if not all_frames:
         return pd.DataFrame()
 
-    flows = pd.concat(all_frames, ignore_index=True)
+    flows = _safe_concat(all_frames)
 
     # DD-1: ddos subsample applied here, after concat, per attack_type.
     if subsample_ddos < 1.0:
@@ -368,7 +391,7 @@ def _load_audit(root: Path, verbose: bool) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
 
-    audit = pd.concat(frames, ignore_index=True)
+    audit = _safe_concat(frames)
     if verbose:
         print(f"[audit] total: {len(audit):,} events ({audit['is_malicious'].sum():,} malicious)")
     return audit
@@ -405,7 +428,7 @@ def _load_procmon(root: Path, verbose: bool) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
 
-    procmon = pd.concat(frames, ignore_index=True)
+    procmon = _safe_concat(frames)
     if verbose:
         print(f"[procmon] total: {len(procmon):,} events ({procmon['is_malicious'].sum():,} malicious)")
     return procmon
@@ -454,7 +477,7 @@ def _load_power(root: Path, verbose: bool) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
 
-    power = pd.concat(frames, ignore_index=True)
+    power = _safe_concat(frames)
     if verbose:
         print(f"[power] total: {len(power):,} samples")
     return power
@@ -1155,6 +1178,43 @@ def to_pyg_hetero_data(
 # ── Feature builders ──────────────────────────────────────────────────────────
 
 
+def _log1p_zscore(arr: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+    """
+    Stabilise heavy-tailed numeric features.
+
+    Pipeline:
+      1. sign(x) * log1p(|x|): compresses [-1e9, 1e9] → roughly [-21, 21]
+         (handles CICFlowMeter columns whose raw scale spans ~9 orders of
+         magnitude — Flow Duration ≈ 1e7, byte counts ≈ 1e9, ratios ≈ 0-10).
+      2. Per-column z-score: centre at 0, unit variance.
+      3. Constant columns (std < eps) are zero-filled to avoid NaN.
+
+    Why this matters:
+        Without normalisation the first HGT projection produces enormous
+        activations, the per-edge-type NCM MLPs saturate at sigmoid 0/1,
+        BCE supervision plateaus, and the detection cross-entropy stays at
+        large absolute values even when F1 is high. We observed that
+        behaviour in the first MG24 pilot run (NCM loss stuck at 29.82,
+        det loss ~ 400 at F1=0.99).
+
+    Statistics are computed over the *current* dataset (no separate
+    train-fit / val-transform), which is acceptable for a transductive
+    full-graph training setting.
+    """
+    arr = np.asarray(arr, dtype=np.float32)
+    sign = np.sign(arr)
+    arr = sign * np.log1p(np.abs(arr))
+
+    mean = arr.mean(axis=0, keepdims=True)
+    std = arr.std(axis=0, keepdims=True)
+    const_mask = std < eps
+    std = np.where(const_mask, 1.0, std)
+    arr = (arr - mean) / std
+    if const_mask.any():
+        arr[:, const_mask[0]] = 0.0
+    return arr.astype(np.float32, copy=False)
+
+
 def _host_features(hosts: pd.DataFrame):
     """
     host_node features (9-dim): 6 numeric stats + 3-dim one-hot host_kind.
@@ -1207,9 +1267,9 @@ def _process_features(processes: pd.DataFrame):
 
 def _flow_features(flows: pd.DataFrame):
     """
-    flow_node features: all numeric CICFlowMeter columns minus identifiers.
-    inf and NaN are coerced to 0; values are not normalised here (training
-    code is expected to apply BatchNorm or LayerNorm).
+    flow_node features: all numeric CICFlowMeter columns minus identifiers,
+    log1p-compressed and z-scored so heavy-tailed columns (durations, byte
+    counts) do not dominate the HGT input. See `_log1p_zscore` for rationale.
     """
     import torch
 
@@ -1226,6 +1286,7 @@ def _flow_features(flows: pd.DataFrame):
 
     arr = flows[feature_cols].astype(np.float32).values
     arr = np.nan_to_num(arr, nan=0.0, posinf=1e9, neginf=-1e9)
+    arr = _log1p_zscore(arr)
     return torch.from_numpy(arr)
 
 
@@ -1247,7 +1308,9 @@ def _device_features(devices: pd.DataFrame):
 def _measurement_features(power: pd.DataFrame):
     """
     measurement_node features: extracted from the power DataFrame in the
-    same row order. Missing columns (schema-specific) become 0.
+    same row order. Missing columns (schema-specific) become 0; the union
+    of mechanical (Speed/Torque) and electrical (Voltage/Current/Channel*)
+    feature ranges is then log1p+z-scored together (see _log1p_zscore).
     """
     import torch
 
@@ -1260,6 +1323,7 @@ def _measurement_features(power: pd.DataFrame):
             vals = pd.to_numeric(power[col], errors="coerce").fillna(0.0).values
             feats[:, i] = vals.astype(np.float32)
     feats = np.nan_to_num(feats, nan=0.0, posinf=1e9, neginf=-1e9)
+    feats = _log1p_zscore(feats)
     return torch.from_numpy(feats)
 
 

@@ -189,25 +189,54 @@ class HeteroNCM(nn.Module):
         target_type_offset: int,
         wallet_labels: Optional["torch.Tensor"] = None,
         wallet_type_offset: int = 0,
+        multi_task_labels: Optional[Dict[str, "torch.Tensor"]] = None,
+        type_offsets: Optional[Dict[str, int]] = None,
     ) -> "torch.Tensor":
         """
         Supervision loss for the NCM: train each edge-type MLP to predict
-        the fraud probability of the *destination* node from the *source*
-        node's embedding.
+        the destination node's binary label from the source's embedding.
 
         For an edge (src → dst):
             p_actual = sigmoid(MLP(h_src ‖ type_emb_src))
-            label    = y_dst  (1 if fraud, 0 if licit)
+            label    = y_dst  (1 if malicious/fraud, 0 if benign)
             loss     += BCE(p_actual, label)
 
-        This gives NCM a directional signal: edges pointing to fraud nodes
-        should yield high CE; edges to licit nodes should yield low CE.
+        This gives NCM a directional signal: edges pointing to malicious
+        nodes should yield high CE; edges to benign nodes should yield low CE.
+
+        Three label-resolution paths (in priority order):
+
+          1. **Multi-task** (`multi_task_labels` + `type_offsets` given):
+             Look up each edge's destination type and use the corresponding
+             per-type label tensor. This is the path used by UNSW-MG24
+             where flow_node, process_node, and measurement_node are all
+             labelled (DD-3). Edges whose dst_type has no label tensor are
+             skipped, so e.g. host_node → process_node uses the process_node
+             label, and host_node → flow_node uses the flow_node label.
+
+          2. **Elliptic++ wallet→tx** (`wallet_labels` given):
+             Special case where wallets carry their own (wallet_labels) and
+             transactions carry node_labels. Falls back to this if (1) is
+             not provided and the edge is wallet→transaction.
+
+          3. **Single-task default**: assume dst is the target node type
+             and look up node_labels[dst − target_type_offset]. Edges whose
+             dst is not in the target type range are silently skipped.
 
         Args:
             flat_h:              {global_id: embedding [D]}
             causal_graph:        TypedCausalGraph
-            node_labels:         Label tensor [N_target] (long, 0/1)
-            target_type_offset:  Global ID offset for the target node type
+            node_labels:         Label tensor [N_target] (long, 0/1) for
+                                 the primary target type — used in path (3).
+            target_type_offset:  Global ID offset for the primary target type.
+            wallet_labels:       Elliptic++ wallet labels (path 2 only).
+            wallet_type_offset:  Global ID offset for the wallet type.
+            multi_task_labels:   {node_type: label_tensor} for the multi-task
+                                 supervision path (1). When provided together
+                                 with `type_offsets`, every labelled dst type
+                                 contributes BCE supervision for its incoming
+                                 causal edges.
+            type_offsets:        {node_type: global_offset} (path 1 lookup).
 
         Returns:
             Scalar BCE loss tensor (0 if no valid edges found)
@@ -217,6 +246,7 @@ class HeteroNCM(nn.Module):
         losses: list = []
         n_labels = node_labels.size(0)
         device = next(self.parameters()).device
+        use_multi_task = multi_task_labels is not None and type_offsets is not None
 
         for (src, dst), edge_type in causal_graph.edge_type_map.items():
             if src not in flat_h:
@@ -227,19 +257,35 @@ class HeteroNCM(nn.Module):
             src_type = causal_graph.node_type.get(src, self.all_node_types[0])
             dst_type = causal_graph.node_type.get(dst, self.all_node_types[0])
 
-            # wallet→tx：用 wallet（src）的標籤監督
-            if src_type == "wallet" and dst_type == "transaction":
+            y: Optional[Tensor] = None
+
+            # Path 1: multi-task — supervise from dst's per-type label.
+            if use_multi_task:
+                label_tensor = multi_task_labels.get(dst_type)
+                dst_off = type_offsets.get(dst_type)
+                if label_tensor is None or dst_off is None:
+                    continue
+                dst_local = dst - dst_off
+                if dst_local < 0 or dst_local >= label_tensor.size(0):
+                    continue
+                # Skip "unknown" labels (Elliptic++ class=3 convention).
+                y_int = int(label_tensor[dst_local].item())
+                if y_int not in (0, 1):
+                    continue
+                y = label_tensor[dst_local].float().to(device)
+
+            # Path 2: Elliptic++ wallet→tx supervised by wallet (src) label.
+            elif src_type == "wallet" and dst_type == "transaction":
                 if wallet_labels is None:
                     continue
                 src_local = src - wallet_type_offset
                 if src_local < 0 or src_local >= wallet_labels.size(0):
                     continue
-                y = wallet_labels[src_local].float().to(device)
-                # class=3 (unknown) → skip
                 if wallet_labels[src_local].item() not in (0, 1):
                     continue
+                y = wallet_labels[src_local].float().to(device)
 
-            # 其他邊：用 dst（tx）的標籤監督
+            # Path 3: single-task default — dst is target type.
             else:
                 dst_local = dst - target_type_offset
                 if dst_local < 0 or dst_local >= n_labels:
