@@ -1477,13 +1477,24 @@ def _stratified_split_by_file(
     val_ratio: float,
     test_ratio: float,
     rng: np.random.Generator,
+    size_tiers: int = 3,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    By-file stratified split.
+    Size-stratified by-file split (DD-8).
 
-    Each unique value in `groups` (e.g. source CSV filename) is assigned
-    wholly to train, val, or test. Files are stratified by their dominant
-    binary label so the file-level class ratio is preserved.
+    Each unique value in `groups` (source filename) is assigned wholly to
+    train, val, or test — preventing same-pcap row leakage across splits.
+
+    To avoid the val/test base-rate skew that pure random by-file shuffling
+    causes when file sizes differ by orders of magnitude (MG24 ddos1=223k vs
+    samba=118), files within each binary class are first sorted by row count
+    and partitioned into `size_tiers` quantile-based tiers. Each tier is
+    then shuffled and split 70/15/15 independently. This guarantees val and
+    test each receive a balanced mix of large/medium/small files, so their
+    malicious-to-benign ratios are comparable.
+
+    Classes with < size_tiers*2 files fall back to single-tier shuffle
+    (tiering would leave some tiers without enough files for a 3-way split).
 
     If `groups` has fewer entries than `labels` (missing source info), the
     affected rows fall back to the row-level _stratified_split.
@@ -1498,36 +1509,47 @@ def _stratified_split_by_file(
     val = np.zeros(n, dtype=bool)
     test = np.zeros(n, dtype=bool)
 
-    # Each group inherits a single binary label (max → malicious dominates
-    # if a group has mixed rows; in practice MG24 groups are pure).
-    unique_groups, group_first = np.unique(groups, return_index=True)
+    # Each group inherits a single binary label (rounded mean — handles
+    # rare mixed cases) and a size in rows.
+    unique_groups = np.unique(groups)
     group_label: Dict[str, int] = {}
-    for g, idx in zip(unique_groups, group_first):
-        # Find the dominant label for this group (handles rare mixed cases).
+    group_size: Dict[str, int] = {}
+    for g in unique_groups:
         mask = groups == g
         group_label[g] = int(round(float(labels[mask].mean())))
+        group_size[g] = int(mask.sum())
 
     for cls in np.unique(list(group_label.values())):
         files_in_cls = [g for g, y in group_label.items() if y == cls]
         if not files_in_cls:
             continue
-        rng.shuffle(files_in_cls)
+
+        # Sort by size descending; partition into tiers when class is large
+        # enough that every tier can support a 3-way split.
+        files_in_cls.sort(key=lambda g: -group_size[g])
         n_files = len(files_in_cls)
-        # max(1, ...) guarantees val/test get at least one file when possible.
-        n_test = max(1, int(round(n_files * test_ratio))) if n_files >= 2 else 0
-        n_val = max(1, int(round(n_files * val_ratio))) if n_files >= 3 else 0
-        # Don't let val+test eat the whole class.
-        if n_test + n_val >= n_files:
-            n_val = max(0, n_files - n_test - 1)
-        test_files = files_in_cls[:n_test]
-        val_files = files_in_cls[n_test:n_test + n_val]
-        train_files = files_in_cls[n_test + n_val:]
-        for f in test_files:
-            test[groups == f] = True
-        for f in val_files:
-            val[groups == f] = True
-        for f in train_files:
-            train[groups == f] = True
+        actual_tiers = size_tiers if n_files >= size_tiers * 2 else 1
+        tier_chunks = np.array_split(files_in_cls, actual_tiers)
+
+        for tier_arr in tier_chunks:
+            tier = list(tier_arr)
+            rng.shuffle(tier)
+            n_tier = len(tier)
+            # max(1, ...) guarantees val/test get at least one file when possible.
+            n_test = max(1, int(round(n_tier * test_ratio))) if n_tier >= 2 else 0
+            n_val = max(1, int(round(n_tier * val_ratio))) if n_tier >= 3 else 0
+            # Don't let val+test eat the whole tier.
+            if n_test + n_val >= n_tier:
+                n_val = max(0, n_tier - n_test - 1)
+            test_files = tier[:n_test]
+            val_files = tier[n_test:n_test + n_val]
+            train_files = tier[n_test + n_val:]
+            for f in test_files:
+                test[groups == f] = True
+            for f in val_files:
+                val[groups == f] = True
+            for f in train_files:
+                train[groups == f] = True
 
     return train, val, test
 
