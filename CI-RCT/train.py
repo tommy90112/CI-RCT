@@ -104,6 +104,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mg24_prune_external", type=lambda x: x.lower() == "true",
                         default=True,
                         help="Whether to prune external-only IP hosts in unsw_mg24.")
+    parser.add_argument("--mg24_split_mode", type=str, default="by_file",
+                        choices=("row", "by_file", "hybrid"),
+                        help="Train/val/test split strategy for unsw_mg24 "
+                             "(DD-8). 'row' = row-level random (data-leaky); "
+                             "'by_file' = by-file stratified (default, "
+                             "honest cross-session generalisation); "
+                             "'hybrid' = benign row-level + malicious "
+                             "by-file (production deployment scenario).")
     return parser.parse_args()
 
 
@@ -157,7 +165,13 @@ def load_dataset(name: str, root: str, **kwargs):
             verbose=True,
         )
         edges = build_edges(mg24)
-        hd = to_pyg_hetero_data(mg24, edges, seed=kwargs.get("seed", 42))
+        split_mode = kwargs.get("mg24_split_mode", "by_file")
+        print(f"  Split mode: {split_mode} (DD-8)")
+        hd = to_pyg_hetero_data(
+            mg24, edges,
+            seed=kwargs.get("seed", 42),
+            split_mode=split_mode,
+        )
         # DD-3 primary target: flow_node (main detection task; baseline-comparable).
         return hd, "flow_node"
     raise ValueError(f"Unknown dataset: {name!r}")
@@ -386,6 +400,7 @@ def main() -> None:
         mg24_subsample_ddos=args.mg24_subsample_ddos,
         mg24_min_host_flows=args.mg24_min_host_flows,
         mg24_prune_external=args.mg24_prune_external,
+        mg24_split_mode=args.mg24_split_mode,
         seed=args.seed,
     )
 

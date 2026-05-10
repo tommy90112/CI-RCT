@@ -29,7 +29,7 @@ import re
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -1106,12 +1106,16 @@ _POWER_FEATURE_COLS: List[str] = [
 ]
 
 
+SplitMode = Literal["row", "by_file", "hybrid"]
+
+
 def to_pyg_hetero_data(
     data: MG24Data,
     edges: Dict[EdgeKey, np.ndarray],
     val_ratio: float = 0.15,
     test_ratio: float = 0.15,
     seed: int = 42,
+    split_mode: SplitMode = "by_file",
 ):
     """
     Convert MG24Data + edges into a PyG HeteroData object.
@@ -1122,12 +1126,24 @@ def to_pyg_hetero_data(
       - Stratified train/val/test masks for the three labelled node types
         (flow_node, process_node, measurement_node — see DD-3)
 
+    Split modes (DD-8):
+      "row":     Row-level random stratified split. Each row independently
+                 assigned to train/val/test, stratified by binary label.
+                 ⚠ Same-pcap rows leak across splits — overestimates F1.
+      "by_file": File-level stratified split. Each source file goes wholly
+                 to one of train/val/test, stratified by binary label.
+                 Tests cross-session generalisation.
+      "hybrid":  Benign rows split row-wise (stable baseline assumption);
+                 malicious rows split by-file. Mirrors production IDS
+                 deployment scenario.
+
     Args:
         data:       MG24Data from load_mg24_data().
         edges:      Edge dict from build_edges().
         val_ratio:  Fraction of labelled nodes assigned to validation.
         test_ratio: Fraction assigned to test.
         seed:       Random seed for the stratified splits.
+        split_mode: One of "row", "by_file", "hybrid". See above.
 
     Returns:
         torch_geometric.data.HeteroData
@@ -1163,10 +1179,18 @@ def to_pyg_hetero_data(
 
     # ── Train / val / test masks (stratified) ─────────────────────
     rng = np.random.default_rng(seed)
+    split_groups: Dict[str, np.ndarray] = {
+        "flow_node": _split_groups_for_flows(data.flows),
+        "process_node": _split_groups_for_processes(data.processes),
+        "measurement_node": _split_groups_for_measurements(data.measurements),
+    }
     for ntype in ("flow_node", "process_node", "measurement_node"):
         labels = hd[ntype].y.numpy()
-        train_mask, val_mask, test_mask = _stratified_split(
-            labels, val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        groups = split_groups[ntype]
+        train_mask, val_mask, test_mask = _build_split_masks(
+            labels, groups,
+            val_ratio=val_ratio, test_ratio=test_ratio,
+            mode=split_mode, rng=rng,
         )
         hd[ntype].train_mask = torch.from_numpy(train_mask)
         hd[ntype].val_mask = torch.from_numpy(val_mask)
@@ -1359,5 +1383,206 @@ def _stratified_split(
         train[train_idx] = True
         val[val_idx] = True
         test[test_idx] = True
+
+    return train, val, test
+
+
+# ── DD-8: by-file / hybrid stratified splits ─────────────────────────────────
+
+
+def _split_groups_for_flows(flows: pd.DataFrame) -> np.ndarray:
+    """
+    Per-row split-group identifier for flow_node = the source CSV filename.
+    Each pcap is one independent attack/benign session.
+    """
+    if flows.empty or "source_file" not in flows.columns:
+        return np.array([], dtype=object)
+    return flows["source_file"].fillna("unknown").astype(str).values
+
+
+def _split_groups_for_processes(processes: pd.DataFrame) -> np.ndarray:
+    """
+    Per-row split-group identifier for process_node.
+
+    A process aggregates events from one source log/CSV:
+      - audit-derived: host_ref already encodes the file ("audit:<filename>"
+        or "audit:<dept>"), so use it directly.
+      - procmon-derived: a single (host_id × is_malicious) pair maps 1:1 to
+        one of the 6 procmon CSV files (e.g., host:central + is_malicious=1
+        ⇒ central_malicious.CSV), so we synthesise that key.
+    """
+    if processes.empty:
+        return np.array([], dtype=object)
+    src = processes["source"].astype(str).values
+    host_ref = processes["host_ref"].astype(str).values
+    is_mal = processes["is_malicious"].astype(int).values
+    out = np.empty(len(processes), dtype=object)
+    for i in range(len(processes)):
+        if src[i] == "audit":
+            out[i] = host_ref[i]
+        else:
+            out[i] = f"{host_ref[i]}:mal{is_mal[i]}"
+    return out
+
+
+def _split_groups_for_measurements(measurements: pd.DataFrame) -> np.ndarray:
+    """
+    Per-row split-group identifier for measurement_node.
+
+    Each (device_id × is_malicious) pair maps 1:1 to one of the 4 power CSV
+    files (local1_normal, local1_malicious, local2_normal, local2_malicious).
+    """
+    if measurements.empty:
+        return np.array([], dtype=object)
+    dev = measurements["device_id"].astype(str).values
+    is_mal = measurements["is_malicious"].astype(int).values
+    return np.array([f"{dev[i]}:mal{is_mal[i]}" for i in range(len(measurements))], dtype=object)
+
+
+def _build_split_masks(
+    labels: np.ndarray,
+    groups: np.ndarray,
+    *,
+    val_ratio: float,
+    test_ratio: float,
+    mode: SplitMode,
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Dispatch to the requested split strategy.
+
+    See DD-8 in unsw_mg24_plan.md for the rationale of each mode.
+    """
+    if mode == "row":
+        return _stratified_split(
+            labels, val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        )
+    if mode == "by_file":
+        return _stratified_split_by_file(
+            labels, groups,
+            val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        )
+    if mode == "hybrid":
+        return _stratified_split_hybrid(
+            labels, groups,
+            val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        )
+    raise ValueError(f"Unknown split_mode: {mode!r}")
+
+
+def _stratified_split_by_file(
+    labels: np.ndarray,
+    groups: np.ndarray,
+    *,
+    val_ratio: float,
+    test_ratio: float,
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    By-file stratified split.
+
+    Each unique value in `groups` (e.g. source CSV filename) is assigned
+    wholly to train, val, or test. Files are stratified by their dominant
+    binary label so the file-level class ratio is preserved.
+
+    If `groups` has fewer entries than `labels` (missing source info), the
+    affected rows fall back to the row-level _stratified_split.
+    """
+    n = len(labels)
+    if len(groups) != n:
+        return _stratified_split(
+            labels, val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        )
+
+    train = np.zeros(n, dtype=bool)
+    val = np.zeros(n, dtype=bool)
+    test = np.zeros(n, dtype=bool)
+
+    # Each group inherits a single binary label (max → malicious dominates
+    # if a group has mixed rows; in practice MG24 groups are pure).
+    unique_groups, group_first = np.unique(groups, return_index=True)
+    group_label: Dict[str, int] = {}
+    for g, idx in zip(unique_groups, group_first):
+        # Find the dominant label for this group (handles rare mixed cases).
+        mask = groups == g
+        group_label[g] = int(round(float(labels[mask].mean())))
+
+    for cls in np.unique(list(group_label.values())):
+        files_in_cls = [g for g, y in group_label.items() if y == cls]
+        if not files_in_cls:
+            continue
+        rng.shuffle(files_in_cls)
+        n_files = len(files_in_cls)
+        # max(1, ...) guarantees val/test get at least one file when possible.
+        n_test = max(1, int(round(n_files * test_ratio))) if n_files >= 2 else 0
+        n_val = max(1, int(round(n_files * val_ratio))) if n_files >= 3 else 0
+        # Don't let val+test eat the whole class.
+        if n_test + n_val >= n_files:
+            n_val = max(0, n_files - n_test - 1)
+        test_files = files_in_cls[:n_test]
+        val_files = files_in_cls[n_test:n_test + n_val]
+        train_files = files_in_cls[n_test + n_val:]
+        for f in test_files:
+            test[groups == f] = True
+        for f in val_files:
+            val[groups == f] = True
+        for f in train_files:
+            train[groups == f] = True
+
+    return train, val, test
+
+
+def _stratified_split_hybrid(
+    labels: np.ndarray,
+    groups: np.ndarray,
+    *,
+    val_ratio: float,
+    test_ratio: float,
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Hybrid split: benign rows split row-wise (assumes stable baseline),
+    malicious rows split by-file (independent attack sessions).
+
+    Mirrors a production IDS deployment scenario where the model has seen
+    a long tail of normal traffic but must flag a *new* attack pcap.
+    """
+    n = len(labels)
+    train = np.zeros(n, dtype=bool)
+    val = np.zeros(n, dtype=bool)
+    test = np.zeros(n, dtype=bool)
+
+    # Benign: row-level stratified split (single class within this slice).
+    benign_idx = np.flatnonzero(labels == 0)
+    if len(benign_idx) > 0:
+        sub_train, sub_val, sub_test = _stratified_split(
+            np.zeros(len(benign_idx), dtype=int),
+            val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        )
+        train[benign_idx[sub_train]] = True
+        val[benign_idx[sub_val]] = True
+        test[benign_idx[sub_test]] = True
+
+    # Malicious: by-file split.
+    mal_idx = np.flatnonzero(labels == 1)
+    if len(mal_idx) > 0 and len(groups) == n:
+        mal_groups = groups[mal_idx]
+        mal_train, mal_val, mal_test = _stratified_split_by_file(
+            np.ones(len(mal_idx), dtype=int),
+            mal_groups,
+            val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        )
+        train[mal_idx[mal_train]] = True
+        val[mal_idx[mal_val]] = True
+        test[mal_idx[mal_test]] = True
+    elif len(mal_idx) > 0:
+        # Fallback: row-level if no group info.
+        sub_train, sub_val, sub_test = _stratified_split(
+            np.ones(len(mal_idx), dtype=int),
+            val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        )
+        train[mal_idx[sub_train]] = True
+        val[mal_idx[sub_val]] = True
+        test[mal_idx[sub_test]] = True
 
     return train, val, test
