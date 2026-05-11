@@ -66,11 +66,15 @@ class CI_RCT(nn.Module):
         node_feature_dim: Optional[int] = None,
         use_gan: bool = True,
         num_classes: int = 2,
+        backbone_exclude_node_types: Optional[List[str]] = None,
     ) -> None:
         super().__init__()
 
         self.config = config
         self.use_gan = use_gan
+        self.backbone_exclude_node_types: List[str] = list(
+            backbone_exclude_node_types or []
+        )
 
         node_types, edge_types = metadata
         self.node_types: List[str] = sorted(node_types)
@@ -93,6 +97,7 @@ class CI_RCT(nn.Module):
             num_layers=config.num_hgt_layers,
             target_node_type=config.target_node_type,
             dropout=config.dropout,
+            exclude_node_types=self.backbone_exclude_node_types,
         )
 
         # ── Module 2b: HeteroNCM ─────────────────────────────────────────

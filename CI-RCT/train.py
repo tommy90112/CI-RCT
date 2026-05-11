@@ -112,6 +112,15 @@ def parse_args() -> argparse.Namespace:
                              "honest cross-session generalisation); "
                              "'hybrid' = benign row-level + malicious "
                              "by-file (production deployment scenario).")
+    parser.add_argument("--mg24_host_role", type=str, default="full",
+                        choices=("full", "detection_excluded"),
+                        help="DD-8 Fix 4 fairness control for unsw_mg24. "
+                             "'full' keeps host_node in detection (default, "
+                             "may inflate F1 via host-level threat memory); "
+                             "'detection_excluded' removes host_node from "
+                             "HGT message passing while keeping it in the "
+                             "graph for RootCauseTracer — gives the honest "
+                             "behavioural-detection F1.")
     return parser.parse_args()
 
 
@@ -485,6 +494,12 @@ def main() -> None:
 
     # --- Model ---
     node_feature_dim = in_channels_dict.get(target_type)
+    # DD-8 Fix 4: when --mg24_host_role=detection_excluded, drop host_node
+    # from HGT message passing (graph stays intact for RootCauseTracer).
+    backbone_exclude_node_types = []
+    if args.dataset == "unsw_mg24" and args.mg24_host_role == "detection_excluded":
+        backbone_exclude_node_types = ["host_node"]
+        print(f"  Detection graph excludes: {backbone_exclude_node_types} (DD-8 Fix 4)")
     model = CI_RCT(
         config=config,
         metadata=data.metadata(),
@@ -492,6 +507,7 @@ def main() -> None:
         node_feature_dim=node_feature_dim if args.use_gan else None,
         use_gan=args.use_gan,
         num_classes=num_classes,
+        backbone_exclude_node_types=backbone_exclude_node_types,
     ).to(device)
 
     # --- Optimisers ---

@@ -7,7 +7,7 @@ structure and returns per-type node embeddings plus target-type logits.
 
 Reference: CI-RCT_Thesis_Plan.md § 5.2
 """
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -32,6 +32,12 @@ class HeteroGNNBackbone(nn.Module):
         num_layers:        Number of HGT message-passing layers
         target_node_type:  The node type whose logits are returned for classification
         dropout:           Dropout probability applied between HGT layers
+        exclude_node_types: Node types to drop from message passing while
+                            keeping them in the underlying HeteroData (so other
+                            modules — e.g. RootCauseTracer — can still traverse
+                            the full graph). DD-8 Fix 4 fairness setup uses
+                            this to exclude host_node from detection while
+                            retaining it for downstream tracing. Default: None.
     """
 
     def __init__(
@@ -44,29 +50,53 @@ class HeteroGNNBackbone(nn.Module):
         num_layers: int = 3,
         target_node_type: Optional[str] = None,
         dropout: float = 0.3,
+        exclude_node_types: Optional[List[str]] = None,
     ) -> None:
         super().__init__()
 
-        node_types, edge_types = metadata
+        all_node_types, all_edge_types = metadata
+
+        # Filter node and edge types for detection-time message passing.
+        self.excluded_types: List[str] = sorted(set(exclude_node_types or []))
+        excluded_set = set(self.excluded_types)
+        node_types = [t for t in all_node_types if t not in excluded_set]
+        edge_types = [
+            (s, r, d) for (s, r, d) in all_edge_types
+            if s not in excluded_set and d not in excluded_set
+        ]
+
+        if not node_types:
+            raise ValueError(
+                "All node types excluded — no nodes left for detection."
+            )
+
         self.node_types = list(node_types)
         self.edge_types = list(edge_types)
         self.hidden_dim = hidden_dim
         self.target_node_type = target_node_type or self.node_types[0]
 
-        # Per-type input projection: maps raw features → hidden_dim
+        if self.target_node_type in excluded_set:
+            raise ValueError(
+                f"target_node_type {self.target_node_type!r} cannot be in "
+                f"exclude_node_types {self.excluded_types}."
+            )
+
+        # Per-type input projection: maps raw features → hidden_dim.
         # Use in_channels=-1 for lazy (deferred) initialisation if sizes unknown.
         in_ch_map = in_channels_dict or {ntype: -1 for ntype in self.node_types}
         self.input_proj = nn.ModuleDict(
             {ntype: Linear(in_ch_map.get(ntype, -1), hidden_dim) for ntype in self.node_types}
         )
 
-        # HGT message-passing layers
+        # HGT message-passing layers — use filtered metadata so HGTConv only
+        # allocates parameters for the included node/edge types.
+        filtered_metadata = (self.node_types, self.edge_types)
         self.hgt_layers = nn.ModuleList(
             [
                 HGTConv(
                     in_channels=hidden_dim,
                     out_channels=hidden_dim,
-                    metadata=metadata,
+                    metadata=filtered_metadata,
                     heads=num_heads,
                 )
                 for _ in range(num_layers)
@@ -93,6 +123,9 @@ class HeteroGNNBackbone(nn.Module):
             h_dict:  {node_type: Tensor [N, hidden_dim]} — post-HGT embeddings
         """
         # --- Initial feature projection ---
+        # Excluded node types (e.g. host_node under DD-8 Fix 4) are silently
+        # skipped here; their entries never appear in x_dict so they cannot
+        # contribute to message passing.
         x_dict: Dict[str, Tensor] = {}
         for ntype in self.node_types:
             if ntype not in data.node_types:
@@ -102,10 +135,13 @@ class HeteroGNNBackbone(nn.Module):
                 continue
             x_dict[ntype] = self.act(self.input_proj[ntype](x))
 
+        # Filter edge_index_dict to only the (filtered) edge types HGTConv
+        # was built for. Edges involving excluded node types are dropped.
+        allowed_edges = set(self.edge_types)
         edge_index_dict = {
             etype: data[etype].edge_index
             for etype in data.edge_types
-            if hasattr(data[etype], "edge_index")
+            if etype in allowed_edges and hasattr(data[etype], "edge_index")
         }
 
         # --- HGT message passing ---
