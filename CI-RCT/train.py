@@ -113,14 +113,15 @@ def parse_args() -> argparse.Namespace:
                              "'hybrid' = benign row-level + malicious "
                              "by-file (production deployment scenario).")
     parser.add_argument("--mg24_host_role", type=str, default="full",
-                        choices=("full", "detection_excluded"),
-                        help="DD-8 Fix 4 fairness control for unsw_mg24. "
-                             "'full' keeps host_node in detection (default, "
-                             "may inflate F1 via host-level threat memory); "
-                             "'detection_excluded' removes host_node from "
-                             "HGT message passing while keeping it in the "
-                             "graph for RootCauseTracer — gives the honest "
-                             "behavioural-detection F1.")
+                        choices=("full", "no_mal_count", "zeroed",
+                                 "detection_excluded"),
+                        help="DD-8 host-feature fairness ablation:\n"
+                             "  full               baseline (incl. mal_flow_count)\n"
+                             "  no_mal_count       Fix 1: drop label-derived count\n"
+                             "  zeroed             Fix 3: zero all host features\n"
+                             "  detection_excluded Fix 4: remove host_node from HGT\n"
+                             "host_node stays in the graph for RootCauseTracer "
+                             "in all modes.")
     return parser.parse_args()
 
 
@@ -175,11 +176,28 @@ def load_dataset(name: str, root: str, **kwargs):
         )
         edges = build_edges(mg24)
         split_mode = kwargs.get("mg24_split_mode", "by_file")
-        print(f"  Split mode: {split_mode} (DD-8)")
+        # DD-8 host_role → host_features_mode mapping:
+        #   "full"               → features="full"            (baseline)
+        #   "no_mal_count"       → features="no_mal_count"    (Fix 1)
+        #   "zeroed"             → features="zeroed"          (Fix 3)
+        #   "detection_excluded" → features="full" + backbone exclude (Fix 4;
+        #                          features value doesn't matter because the
+        #                          backbone drops the node type entirely).
+        host_role = kwargs.get("mg24_host_role", "full")
+        host_features_mode = (
+            host_role if host_role in ("full", "no_mal_count", "zeroed")
+            else "full"
+        )
+        print(
+            f"  Split mode: {split_mode} (DD-8)\n"
+            f"  Host role:  {host_role}  "
+            f"(features={host_features_mode})"
+        )
         hd = to_pyg_hetero_data(
             mg24, edges,
             seed=kwargs.get("seed", 42),
             split_mode=split_mode,
+            host_features_mode=host_features_mode,
         )
         # DD-3 primary target: flow_node (main detection task; baseline-comparable).
         return hd, "flow_node"
@@ -410,6 +428,7 @@ def main() -> None:
         mg24_min_host_flows=args.mg24_min_host_flows,
         mg24_prune_external=args.mg24_prune_external,
         mg24_split_mode=args.mg24_split_mode,
+        mg24_host_role=args.mg24_host_role,
         seed=args.seed,
     )
 

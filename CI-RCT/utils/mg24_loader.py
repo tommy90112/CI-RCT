@@ -1116,6 +1116,7 @@ def to_pyg_hetero_data(
     test_ratio: float = 0.15,
     seed: int = 42,
     split_mode: SplitMode = "by_file",
+    host_features_mode: HostFeaturesMode = "full",
 ):
     """
     Convert MG24Data + edges into a PyG HeteroData object.
@@ -1144,6 +1145,12 @@ def to_pyg_hetero_data(
         test_ratio: Fraction assigned to test.
         seed:       Random seed for the stratified splits.
         split_mode: One of "row", "by_file", "hybrid". See above.
+        host_features_mode: DD-8 host-feature fairness mode. One of:
+                    "full"         keep all 9 features incl. mal_flow_count
+                    "no_mal_count" drop mal_flow_count (Fix 1)
+                    "zeroed"       zero all host features (Fix 3)
+                    For Fix 4 (host_node removed from detection entirely),
+                    use CI_RCT(backbone_exclude_node_types=["host_node"]).
 
     Returns:
         torch_geometric.data.HeteroData
@@ -1154,7 +1161,7 @@ def to_pyg_hetero_data(
     hd = HeteroData()
 
     # ── Node feature tensors ──────────────────────────────────────
-    hd["host_node"].x = _host_features(data.hosts)
+    hd["host_node"].x = _host_features(data.hosts, mode=host_features_mode)
     hd["process_node"].x = _process_features(data.processes)
     hd["flow_node"].x = _flow_features(data.flows)
     hd["device_node"].x = _device_features(data.devices)
@@ -1239,22 +1246,53 @@ def _log1p_zscore(arr: np.ndarray, eps: float = 1e-6) -> np.ndarray:
     return arr.astype(np.float32, copy=False)
 
 
-def _host_features(hosts: pd.DataFrame):
+HostFeaturesMode = Literal["full", "no_mal_count", "zeroed"]
+
+
+def _host_features(
+    hosts: pd.DataFrame,
+    mode: HostFeaturesMode = "full",
+):
     """
-    host_node features (9-dim): 6 numeric stats + 3-dim one-hot host_kind.
+    host_node features, controlled by DD-8 Fix 1–3 fairness mode.
+
+    Modes (input to ablation study quantifying host-level leakage):
+      "full":          9-dim — 6 numeric stats (including the label-derived
+                       `mal_flow_count`) + 3-dim one-hot host_kind. Baseline.
+      "no_mal_count":  8-dim — drop `mal_flow_count`. Removes the direct
+                       label leakage; keeps all other host statistics.
+      "zeroed":        9-dim — same shape as "full" but every value is 0.
+                       Eliminates all feature signal while preserving the
+                       host_node as a topology placeholder in the graph
+                       (HGT message passing can still flow through it).
     """
     import torch
 
+    base_dim = 9 if mode in ("full", "zeroed") else 8
     if hosts.empty:
-        return torch.zeros((0, 9), dtype=torch.float32)
+        return torch.zeros((0, base_dim), dtype=torch.float32)
 
-    numeric = hosts[[
-        "flow_count_total", "flow_count_src", "flow_count_dst",
-        "mal_flow_count", "is_internal_subnet", "procmon_event_count",
-    ]].fillna(0).astype(float).values
+    if mode == "zeroed":
+        return torch.zeros((len(hosts), base_dim), dtype=torch.float32)
 
-    # log1p the count columns (heavy-tailed), keep boolean as-is (column 4).
-    log_cols = [0, 1, 2, 3, 5]
+    if mode == "full":
+        numeric_cols = [
+            "flow_count_total", "flow_count_src", "flow_count_dst",
+            "mal_flow_count", "is_internal_subnet", "procmon_event_count",
+        ]
+        # log1p the count columns; keep boolean is_internal_subnet (idx 4) as-is.
+        log_cols = [0, 1, 2, 3, 5]
+    elif mode == "no_mal_count":
+        numeric_cols = [
+            "flow_count_total", "flow_count_src", "flow_count_dst",
+            "is_internal_subnet", "procmon_event_count",
+        ]
+        # log1p the count columns; keep boolean is_internal_subnet (idx 3) as-is.
+        log_cols = [0, 1, 2, 4]
+    else:
+        raise ValueError(f"Unknown host_features mode: {mode!r}")
+
+    numeric = hosts[numeric_cols].fillna(0).astype(float).values
     numeric[:, log_cols] = np.log1p(np.maximum(numeric[:, log_cols], 0.0))
 
     # One-hot host_kind (ip / hostname / audit_source).
