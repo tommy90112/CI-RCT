@@ -1,0 +1,229 @@
+Loading dataset: unsw_mg24
+=== Loading MG24 from data/unsw_mg24 ===
+[flows] loading network flows...
+  benign  admin      admin traffic.csv: 305,919 rows
+  benign  microgrid  microgrid traffic.csv: 3,616 rows
+  benign  research   research traffic.csv: 163,101 rows
+  benign  teaching   teaching traffic.csv: 402,833 rows
+  attack  mitm           MITM1.pcap_Flow.csv: 253 rows
+  attack  backdoor       backdoor1.pcap_Flow.csv: 794 rows
+  attack  backdoor       backdoor2.pcap_Flow.csv: 990 rows
+  attack  ddos           ddos1.pcap_Flow.csv: 2,233,313 rows
+  attack  dos            dos1.pcap_Flow.csv: 131,308 rows
+  attack  credential     ftp_password.pcap_Flow.csv: 257 rows
+  attack  credential     hydra_password.pcap_Flow.csv: 2,037 rows
+  attack  ransomware     ransomware.pcap_Flow.csv: 294 rows
+  attack  samba          samba_permission.pcap_Flow.csv: 118 rows
+  attack  recon          scan1_nmap.pcap_Flow.csv: 66,141 rows
+  attack  recon          scan2_nikto.pcap_Flow.csv: 337 rows
+  attack  shellshock     shellshock.pcap_Flow.csv: 241 rows
+  attack  sql_injection  sql_injection.pcap_Flow.csv: 2,212 rows
+  ddos subsample: 2,233,313 → 223,331 (10%); seed=42
+[flows] total: 1,303,782 rows (428,313 malicious)
+[audit] loading Linux audit logs...
+  benign  Admin department: 31,754 events
+  benign  Research department: 50,444 events
+  benign  Teaching department: 42,576 events
+  attack  mitm           audit_MITM1.log: 11,524 events
+  attack  mitm           audit_MITM2.log: 7,315 events
+  attack  backdoor       audit_backdoor.log: 11,033 events
+  attack  backdoor       audit_backdoor2.log: 16,585 events
+  attack  backdoor       audit_backdoor_3.log: 11,724 events
+  attack  dos            audit_dos1.log: 18,527 events
+  attack  dos            audit_dos2.log: 1,690 events
+  attack  credential     audit_ftp_password.log: 8,058 events
+  attack  credential     audit_hydra_passowrd_1.log: 9,455 events
+  attack  credential     audit_password.log: 13,479 events
+  attack  ransomware     audit_ransomware_1.log: 8,080 events
+  attack  reverse_shell  audit_reverse_shell.log: 9,024 events
+  attack  samba          audit_samaba_permission.log: 15,519 events
+  attack  recon          audit_scan_nikto1.log: 8,977 events
+  attack  recon          audit_scan_nikto2.log: 3,554 events
+  attack  recon          audit_scan_nmap1.log: 4,104 events
+  attack  sql_injection  audit_sql1.log: 2,715 events
+  attack  sql_injection  audit_sql2.log: 3,114 events
+  attack  sql_injection  audit_sql3.log: 5,681 events
+  attack  ddos           ddos1.log: 9,986 events
+  attack  mimicry        mimicry1.log: 7,309 events
+  attack  mimicry        mimicry2.log: 5,452 events
+  attack  ransomware     ransomware2.log: 5,833 events
+  attack  shellshock     shellshock1.log: 14,602 events
+  attack  shellshock     shellshock2.log: 13,154 events
+  attack  shellshock     shellshock3.log: 15,840 events
+[audit] total: 367,108 events (242,334 malicious)
+[procmon] loading Windows Procmon CSVs...
+  central  ben central_normal_system_calls.CSV: 12,170 events
+  local1   ben local1_normal_system_calls.CSV: 305,994 events
+  local2   ben local2_normal_system_calls.CSV: 92,149 events
+  central  mal central_malicious.CSV: 6,947 events
+  local1   mal local1_macilious.CSV: 279,994 events
+  local2   mal local2_macilious.CSV: 227,253 events
+[procmon] total: 924,507 events (514,194 malicious)
+[power] loading power measurements...
+  local1 ben local1_normal.csv: 893 samples (mechanical)
+  local1 mal local1_malicious.csv: 987 samples (mechanical)
+  local2 ben local2_normal.csv: 833 samples (electrical)
+  local2 mal local2_malicious.csv: 903 samples (electrical)
+[power] total: 3,616 samples
+[hosts] pruned 379,240 → 255,283 (retained: {'ip': 255238, 'audit_source': 37, 'hostname': 8}; min_flows=5)
+=== Done. Node counts: hosts=255283 processes=1500 flows=1303782 devices=2 measurements=3616 ===
+  Split mode: hybrid (DD-8)
+  Host role:  no_mal_count  (features=no_mal_count)
+Building TypedCausalGraph...
+  Causal graph: 10000 nodes, 11917 directed edges
+  [debug] target_node=875471, in_graph=True, parents={1412138}
+  Class weight: licit=1.00  illicit=2.67  (pos=229735, neg=612829)
+  Multi-task NCM supervision: ['flow_node', 'measurement_node', 'process_node']
+
+Training [Phase 1 (No GAN)] for 100 epochs on cuda...
+Epoch 001 | Loss 0.7653 (det=0.6921, stab=0.00e+00, ncm=0.7323) | Val F1=0.3982  AUC=0.1720
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 002 | Loss 0.7468 (det=0.6759, stab=4.99e-06, ncm=0.7091) | Val F1=0.3939  AUC=0.1750
+Epoch 003 | Loss 0.7286 (det=0.6595, stab=3.22e-07, ncm=0.6903) | Val F1=0.3916  AUC=0.1748
+Epoch 004 | Loss 0.7060 (det=0.6388, stab=1.81e-06, ncm=0.6711) | Val F1=0.3901  AUC=0.1976
+Epoch 005 | Loss 0.6858 (det=0.6218, stab=1.68e-06, ncm=0.6397) | Val F1=0.3891  AUC=0.2232
+Epoch 006 | Loss 0.6632 (det=0.6008, stab=2.68e-06, ncm=0.6241) | Val F1=0.3882  AUC=0.2423
+Epoch 007 | Loss 0.6367 (det=0.5766, stab=7.12e-06, ncm=0.6013) | Val F1=0.3879  AUC=0.2589
+Epoch 008 | Loss 0.6079 (det=0.5502, stab=2.70e-05, ncm=0.5775) | Val F1=0.3874  AUC=0.2952
+Epoch 009 | Loss 0.5753 (det=0.5201, stab=2.19e-05, ncm=0.5522) | Val F1=0.3872  AUC=0.3444
+Epoch 010 | Loss 0.5407 (det=0.4892, stab=9.81e-06, ncm=0.5158) | Val F1=0.3871  AUC=0.4342
+Epoch 011 | Loss 0.5132 (det=0.4650, stab=8.23e-06, ncm=0.4825) | Val F1=0.3870  AUC=0.4928
+Epoch 012 | Loss 0.4697 (det=0.4250, stab=1.45e-06, ncm=0.4467) | Val F1=0.3870  AUC=0.5490
+Epoch 013 | Loss 0.4421 (det=0.4020, stab=9.89e-06, ncm=0.4012) | Val F1=0.3867  AUC=0.6660
+Epoch 014 | Loss 0.4065 (det=0.3707, stab=3.56e-06, ncm=0.3571) | Val F1=0.3891  AUC=0.9148
+Epoch 015 | Loss 0.3716 (det=0.3388, stab=1.07e-05, ncm=0.3279) | Val F1=0.9637  AUC=0.9986
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 016 | Loss 0.3345 (det=0.3047, stab=7.91e-06, ncm=0.2978) | Val F1=0.9631  AUC=0.9986
+Epoch 017 | Loss 0.3046 (det=0.2779, stab=5.80e-06, ncm=0.2672) | Val F1=0.9627  AUC=0.9986
+Epoch 018 | Loss 0.2770 (det=0.2529, stab=1.57e-05, ncm=0.2416) | Val F1=0.9595  AUC=0.9988
+Epoch 019 | Loss 0.2489 (det=0.2269, stab=2.52e-07, ncm=0.2196) | Val F1=0.9558  AUC=0.9989
+Epoch 020 | Loss 0.2236 (det=0.2026, stab=1.05e-05, ncm=0.2099) | Val F1=0.9530  AUC=0.9989
+Epoch 021 | Loss 0.1997 (det=0.1778, stab=9.64e-10, ncm=0.2190) | Val F1=0.9507  AUC=0.9989
+Epoch 022 | Loss 0.1772 (det=0.1532, stab=1.87e-05, ncm=0.2394) | Val F1=0.9487  AUC=0.9990
+Epoch 023 | Loss 0.1600 (det=0.1330, stab=1.31e-06, ncm=0.2703) | Val F1=0.9466  AUC=0.9989
+Epoch 024 | Loss 0.1420 (det=0.1152, stab=9.67e-06, ncm=0.2681) | Val F1=0.9443  AUC=0.9989
+Epoch 025 | Loss 0.1354 (det=0.1085, stab=4.79e-05, ncm=0.2685) | Val F1=0.9424  AUC=0.9991
+Epoch 026 | Loss 0.1230 (det=0.0966, stab=3.94e-05, ncm=0.2636) | Val F1=0.9419  AUC=0.9998
+Epoch 027 | Loss 0.1253 (det=0.0985, stab=3.28e-06, ncm=0.2686) | Val F1=0.9408  AUC=0.9999
+Epoch 028 | Loss 0.1104 (det=0.0864, stab=4.76e-06, ncm=0.2403) | Val F1=0.9413  AUC=0.9994
+Epoch 029 | Loss 0.1090 (det=0.0852, stab=1.95e-05, ncm=0.2388) | Val F1=0.9422  AUC=0.9993
+Epoch 030 | Loss 0.1010 (det=0.0797, stab=1.89e-05, ncm=0.2124) | Val F1=0.9438  AUC=0.9993
+Epoch 031 | Loss 0.1010 (det=0.0801, stab=1.95e-07, ncm=0.2097) | Val F1=0.9459  AUC=0.9994
+Epoch 032 | Loss 0.0904 (det=0.0683, stab=2.94e-06, ncm=0.2211) | Val F1=0.9477  AUC=0.9998
+Epoch 033 | Loss 0.0839 (det=0.0630, stab=3.11e-06, ncm=0.2092) | Val F1=0.9498  AUC=0.9995
+Epoch 034 | Loss 0.0818 (det=0.0597, stab=3.73e-07, ncm=0.2204) | Val F1=0.9511  AUC=0.9948
+Epoch 035 | Loss 0.0729 (det=0.0520, stab=8.33e-06, ncm=0.2091) | Val F1=0.9542  AUC=0.9981
+Epoch 036 | Loss 0.0720 (det=0.0515, stab=1.84e-05, ncm=0.2044) | Val F1=0.9548  AUC=0.9982
+Epoch 037 | Loss 0.0672 (det=0.0463, stab=8.70e-05, ncm=0.2087) | Val F1=0.9576  AUC=0.9982
+Epoch 038 | Loss 0.0666 (det=0.0455, stab=3.84e-07, ncm=0.2107) | Val F1=0.9580  AUC=0.9982
+Epoch 039 | Loss 0.0650 (det=0.0444, stab=2.35e-05, ncm=0.2062) | Val F1=0.9626  AUC=0.9982
+Epoch 040 | Loss 0.0616 (det=0.0408, stab=3.60e-05, ncm=0.2079) | Val F1=0.9636  AUC=0.9982
+Epoch 041 | Loss 0.0761 (det=0.0555, stab=5.65e-05, ncm=0.2052) | Val F1=0.9636  AUC=0.9986
+Epoch 042 | Loss 0.0584 (det=0.0380, stab=6.44e-06, ncm=0.2038) | Val F1=0.9636  AUC=0.9987
+Epoch 043 | Loss 0.0604 (det=0.0397, stab=1.38e-06, ncm=0.2070) | Val F1=0.9637  AUC=0.9987
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 044 | Loss 0.0604 (det=0.0405, stab=1.36e-05, ncm=0.1986) | Val F1=0.9637  AUC=0.9987
+Epoch 045 | Loss 0.0605 (det=0.0405, stab=6.74e-08, ncm=0.2004) | Val F1=0.9637  AUC=0.9987
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 046 | Loss 0.0603 (det=0.0407, stab=4.72e-05, ncm=0.1967) | Val F1=0.9637  AUC=0.9987
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 047 | Loss 0.0587 (det=0.0390, stab=1.67e-05, ncm=0.1969) | Val F1=0.9634  AUC=0.9986
+Epoch 048 | Loss 0.0637 (det=0.0433, stab=4.62e-06, ncm=0.2036) | Val F1=0.9634  AUC=0.9986
+Epoch 049 | Loss 0.0575 (det=0.0375, stab=2.88e-06, ncm=0.1996) | Val F1=0.9635  AUC=0.9986
+Epoch 050 | Loss 0.0584 (det=0.0385, stab=4.98e-06, ncm=0.1992) | Val F1=0.9640  AUC=0.9987
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 051 | Loss 0.0539 (det=0.0341, stab=1.66e-05, ncm=0.1979) | Val F1=0.9638  AUC=0.9987
+Epoch 052 | Loss 0.0528 (det=0.0333, stab=6.23e-07, ncm=0.1949) | Val F1=0.9638  AUC=0.9989
+Epoch 053 | Loss 0.0570 (det=0.0377, stab=4.65e-05, ncm=0.1934) | Val F1=0.9639  AUC=0.9989
+Epoch 054 | Loss 0.0549 (det=0.0357, stab=4.89e-05, ncm=0.1917) | Val F1=0.9639  AUC=0.9987
+Epoch 055 | Loss 0.0542 (det=0.0350, stab=5.12e-06, ncm=0.1914) | Val F1=0.9639  AUC=0.9987
+Epoch 056 | Loss 0.0539 (det=0.0348, stab=9.48e-08, ncm=0.1906) | Val F1=0.9633  AUC=0.9611
+Epoch 057 | Loss 0.0578 (det=0.0388, stab=1.39e-06, ncm=0.1909) | Val F1=0.9634  AUC=0.9668
+Epoch 058 | Loss 0.0615 (det=0.0423, stab=6.46e-05, ncm=0.1914) | Val F1=0.9640  AUC=0.9988
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 059 | Loss 0.0560 (det=0.0366, stab=4.53e-06, ncm=0.1936) | Val F1=0.9641  AUC=0.9994
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 060 | Loss 0.0593 (det=0.0401, stab=1.26e-05, ncm=0.1918) | Val F1=0.9641  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 061 | Loss 0.0604 (det=0.0412, stab=2.92e-05, ncm=0.1923) | Val F1=0.9642  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 062 | Loss 0.0572 (det=0.0380, stab=3.16e-05, ncm=0.1925) | Val F1=0.9643  AUC=0.9998
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 063 | Loss 0.0619 (det=0.0422, stab=2.13e-05, ncm=0.1973) | Val F1=0.9644  AUC=0.9999
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 064 | Loss 0.0589 (det=0.0400, stab=4.23e-06, ncm=0.1894) | Val F1=0.9646  AUC=0.9999
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 065 | Loss 0.0574 (det=0.0387, stab=5.48e-05, ncm=0.1870) | Val F1=0.9647  AUC=0.9999
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 066 | Loss 0.0542 (det=0.0356, stab=5.74e-06, ncm=0.1853) | Val F1=0.9649  AUC=0.9999
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 067 | Loss 0.0547 (det=0.0360, stab=7.56e-05, ncm=0.1867) | Val F1=0.9648  AUC=0.9997
+Epoch 068 | Loss 0.0504 (det=0.0315, stab=7.91e-05, ncm=0.1884) | Val F1=0.9654  AUC=0.9995
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 069 | Loss 0.0598 (det=0.0409, stab=1.32e-10, ncm=0.1892) | Val F1=0.9660  AUC=0.9996
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 070 | Loss 0.0540 (det=0.0352, stab=3.91e-06, ncm=0.1874) | Val F1=0.9670  AUC=0.9998
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 071 | Loss 0.0512 (det=0.0325, stab=1.37e-06, ncm=0.1867) | Val F1=0.9673  AUC=0.9999
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 072 | Loss 0.0497 (det=0.0312, stab=1.27e-05, ncm=0.1852) | Val F1=0.9679  AUC=0.9998
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 073 | Loss 0.0511 (det=0.0325, stab=3.11e-06, ncm=0.1857) | Val F1=0.9681  AUC=0.9998
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 074 | Loss 0.0511 (det=0.0328, stab=1.53e-05, ncm=0.1834) | Val F1=0.9684  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 075 | Loss 0.0506 (det=0.0322, stab=6.95e-05, ncm=0.1835) | Val F1=0.9685  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 076 | Loss 0.0484 (det=0.0303, stab=7.52e-05, ncm=0.1804) | Val F1=0.9688  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 077 | Loss 0.0475 (det=0.0294, stab=5.10e-06, ncm=0.1813) | Val F1=0.9690  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 078 | Loss 0.0472 (det=0.0291, stab=6.30e-07, ncm=0.1802) | Val F1=0.9695  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 079 | Loss 0.0472 (det=0.0291, stab=1.72e-06, ncm=0.1813) | Val F1=0.9704  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 080 | Loss 0.0465 (det=0.0281, stab=2.16e-07, ncm=0.1838) | Val F1=0.9708  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 081 | Loss 0.0468 (det=0.0284, stab=1.58e-06, ncm=0.1838) | Val F1=0.9711  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 082 | Loss 0.0463 (det=0.0283, stab=4.28e-06, ncm=0.1803) | Val F1=0.9714  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 083 | Loss 0.0463 (det=0.0283, stab=1.69e-06, ncm=0.1804) | Val F1=0.9719  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 084 | Loss 0.0457 (det=0.0280, stab=9.39e-07, ncm=0.1779) | Val F1=0.9722  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 085 | Loss 0.0457 (det=0.0280, stab=1.34e-05, ncm=0.1765) | Val F1=0.9729  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 086 | Loss 0.0452 (det=0.0276, stab=2.92e-06, ncm=0.1762) | Val F1=0.9736  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 087 | Loss 0.0446 (det=0.0273, stab=1.31e-06, ncm=0.1732) | Val F1=0.9742  AUC=0.9997
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 088 | Loss 0.0446 (det=0.0271, stab=2.28e-06, ncm=0.1752) | Val F1=0.9748  AUC=0.9998
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 089 | Loss 0.0446 (det=0.0273, stab=1.46e-05, ncm=0.1737) | Val F1=0.9755  AUC=0.9998
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 090 | Loss 0.0450 (det=0.0277, stab=2.34e-05, ncm=0.1724) | Val F1=0.9761  AUC=0.9998
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 091 | Loss 0.0430 (det=0.0257, stab=2.70e-06, ncm=0.1722) | Val F1=0.9765  AUC=0.9998
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 092 | Loss 0.0438 (det=0.0266, stab=5.67e-06, ncm=0.1717) | Val F1=0.9771  AUC=0.9999
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 093 | Loss 0.0437 (det=0.0266, stab=6.71e-06, ncm=0.1706) | Val F1=0.9777  AUC=0.9999
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 094 | Loss 0.0426 (det=0.0255, stab=6.89e-07, ncm=0.1709) | Val F1=0.9783  AUC=0.9999
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 095 | Loss 0.0428 (det=0.0259, stab=1.30e-05, ncm=0.1690) | Val F1=0.9790  AUC=0.9999
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 096 | Loss 0.0422 (det=0.0254, stab=5.96e-06, ncm=0.1675) | Val F1=0.9796  AUC=0.9999
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 097 | Loss 0.0428 (det=0.0257, stab=1.30e-05, ncm=0.1709) | Val F1=0.9799  AUC=0.9999
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 098 | Loss 0.0420 (det=0.0252, stab=2.90e-07, ncm=0.1679) | Val F1=0.9804  AUC=0.9999
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 099 | Loss 0.0416 (det=0.0252, stab=2.62e-07, ncm=0.1639) | Val F1=0.9809  AUC=0.9999
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+Epoch 100 | Loss 0.0411 (det=0.0242, stab=4.81e-06, ncm=0.1681) | Val F1=0.9814  AUC=0.9999
+  ↑ Best checkpoint saved → checkpoints/ablation_no_mal_count/ci_rct_unsw_mg24_best.pt
+
+Loading best checkpoint for test evaluation...
+Test  F1=0.9873  AUC=0.9999
