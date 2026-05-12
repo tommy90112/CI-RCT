@@ -1117,6 +1117,7 @@ def to_pyg_hetero_data(
     seed: int = 42,
     split_mode: SplitMode = "by_file",
     host_features_mode: HostFeaturesMode = "full",
+    flow_features_exclude: Optional[List[str]] = None,
 ):
     """
     Convert MG24Data + edges into a PyG HeteroData object.
@@ -1151,6 +1152,11 @@ def to_pyg_hetero_data(
                     "zeroed"       zero all host features (Fix 3)
                     For Fix 4 (host_node removed from detection entirely),
                     use CI_RCT(backbone_exclude_node_types=["host_node"]).
+        flow_features_exclude: List of CICFlowMeter columns to drop from
+                    flow_node features (DD-8 Fix 5). Used to ablate the
+                    "Active Std/Max/Mean" timing-fingerprint trio that
+                    fairness_audit.py flagged with univariate AUC > 0.95.
+                    Columns absent from flows are silently ignored.
 
     Returns:
         torch_geometric.data.HeteroData
@@ -1163,7 +1169,9 @@ def to_pyg_hetero_data(
     # ── Node feature tensors ──────────────────────────────────────
     hd["host_node"].x = _host_features(data.hosts, mode=host_features_mode)
     hd["process_node"].x = _process_features(data.processes)
-    hd["flow_node"].x = _flow_features(data.flows)
+    hd["flow_node"].x = _flow_features(
+        data.flows, exclude_columns=flow_features_exclude,
+    )
     hd["device_node"].x = _device_features(data.devices)
     hd["measurement_node"].x = _measurement_features(data.power)
 
@@ -1327,20 +1335,34 @@ def _process_features(processes: pd.DataFrame):
     return torch.from_numpy(feats)
 
 
-def _flow_features(flows: pd.DataFrame):
+def _flow_features(
+    flows: pd.DataFrame,
+    exclude_columns: Optional[List[str]] = None,
+):
     """
     flow_node features: all numeric CICFlowMeter columns minus identifiers,
     log1p-compressed and z-scored so heavy-tailed columns (durations, byte
     counts) do not dominate the HGT input. See `_log1p_zscore` for rationale.
+
+    Args:
+        flows:           Flows DataFrame.
+        exclude_columns: CICFlowMeter columns to drop before z-scoring (DD-8
+                         Fix 5 fairness ablation). Use this to disable
+                         "attack-tool fingerprint" features such as the
+                         Active Std/Max/Mean trio identified by
+                         fairness_audit.py to have univariate AUC > 0.95.
+                         Columns not present in `flows` are silently ignored.
     """
     import torch
 
     if flows.empty:
         return torch.zeros((0, 0), dtype=torch.float32)
 
+    drop = set(exclude_columns or [])
+    non_features = set(_FLOW_NON_FEATURE_COLS) | drop
     feature_cols = [
         c for c in flows.columns
-        if c not in _FLOW_NON_FEATURE_COLS
+        if c not in non_features
         and pd.api.types.is_numeric_dtype(flows[c])
     ]
     if not feature_cols:

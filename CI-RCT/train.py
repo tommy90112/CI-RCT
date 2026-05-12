@@ -122,6 +122,11 @@ def parse_args() -> argparse.Namespace:
                              "  detection_excluded Fix 4: remove host_node from HGT\n"
                              "host_node stays in the graph for RootCauseTracer "
                              "in all modes.")
+    parser.add_argument("--mg24_drop_features", type=str, default="",
+                        help="DD-8 Fix 5: comma-separated CICFlowMeter "
+                             "feature columns to remove from flow_node. "
+                             "Example for ablating Active timing fingerprint: "
+                             "'Active Std,Active Max,Active Mean'.")
     return parser.parse_args()
 
 
@@ -188,16 +193,24 @@ def load_dataset(name: str, root: str, **kwargs):
             host_role if host_role in ("full", "no_mal_count", "zeroed")
             else "full"
         )
+        drop_raw = kwargs.get("mg24_drop_features", "") or ""
+        flow_features_exclude = [
+            c.strip() for c in drop_raw.split(",") if c.strip()
+        ]
         print(
             f"  Split mode: {split_mode} (DD-8)\n"
             f"  Host role:  {host_role}  "
             f"(features={host_features_mode})"
         )
+        if flow_features_exclude:
+            print(f"  Dropping flow features (DD-8 Fix 5): "
+                  f"{flow_features_exclude}")
         hd = to_pyg_hetero_data(
             mg24, edges,
             seed=kwargs.get("seed", 42),
             split_mode=split_mode,
             host_features_mode=host_features_mode,
+            flow_features_exclude=flow_features_exclude or None,
         )
         # DD-3 primary target: flow_node (main detection task; baseline-comparable).
         return hd, "flow_node"
@@ -429,6 +442,7 @@ def main() -> None:
         mg24_prune_external=args.mg24_prune_external,
         mg24_split_mode=args.mg24_split_mode,
         mg24_host_role=args.mg24_host_role,
+        mg24_drop_features=args.mg24_drop_features,
         seed=args.seed,
     )
 
