@@ -45,7 +45,8 @@ from utils.metrics import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a trained CI-RCT model")
     parser.add_argument("--dataset", type=str, default="dblp",
-                        choices=["dblp", "acm", "imdb", "elliptic", "elliptic++", "unsw_nb15"])
+                        choices=["dblp", "acm", "imdb", "elliptic", "elliptic++",
+                                 "unsw_nb15", "unsw_mg24"])
     parser.add_argument("--data_root", type=str, default="data")
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--max_hops", type=int, default=5)
@@ -67,6 +68,18 @@ def parse_args() -> argparse.Namespace:
                         default=False)
     parser.add_argument("--fraud_subgraph_hops", type=int, default=2)
     parser.add_argument("--max_flows", type=int, default=200_000)
+    # ── UNSW-MG24 specific (mirror train.py) ─────────────────────────────────
+    parser.add_argument("--mg24_subsample_ddos", type=float, default=1.0)
+    parser.add_argument("--mg24_min_host_flows", type=int, default=5)
+    parser.add_argument("--mg24_prune_external", type=lambda x: x.lower() == "true",
+                        default=True)
+    parser.add_argument("--mg24_split_mode", type=str, default="by_file",
+                        choices=("row", "by_file", "hybrid"))
+    parser.add_argument("--mg24_host_role", type=str, default="full",
+                        choices=("full", "no_mal_count", "zeroed",
+                                 "detection_excluded"))
+    parser.add_argument("--mg24_drop_features", type=str, default="")
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--lfpn_mode", type=str, default="both",
                         choices=["strict", "extended", "both"])
     parser.add_argument("--lfpn_k", type=int, default=2)
@@ -103,6 +116,42 @@ def load_dataset(name, root, **kwargs):
             os.path.join(root, "unsw_nb15"),
             max_flows=kwargs.get("max_flows", 200_000),
         )
+    if name == "unsw_mg24":
+        # Mirrors train.py's load_dataset(unsw_mg24, ...) so that the
+        # HeteroData produced for evaluation has the SAME node/edge layout
+        # and SAME split masks as the training run.
+        from utils.mg24_loader import (
+            build_edges,
+            load_mg24_data,
+            to_pyg_hetero_data,
+        )
+        mg24 = load_mg24_data(
+            root=os.path.join(root, "unsw_mg24"),
+            subsample_ddos=kwargs.get("mg24_subsample_ddos", 1.0),
+            seed=kwargs.get("seed", 42),
+            prune_external_hosts=kwargs.get("mg24_prune_external", True),
+            min_host_flows=kwargs.get("mg24_min_host_flows", 5),
+            verbose=True,
+        )
+        edges = build_edges(mg24)
+        host_role = kwargs.get("mg24_host_role", "full")
+        host_features_mode = (
+            host_role if host_role in ("full", "no_mal_count", "zeroed")
+            else "full"
+        )
+        drop_raw = kwargs.get("mg24_drop_features", "") or ""
+        flow_features_exclude = [
+            c.strip() for c in drop_raw.split(",") if c.strip()
+        ]
+        hd = to_pyg_hetero_data(
+            mg24, edges,
+            seed=kwargs.get("seed", 42),
+            split_mode=kwargs.get("mg24_split_mode", "by_file"),
+            host_features_mode=host_features_mode,
+            flow_features_exclude=flow_features_exclude or None,
+        )
+        # DD-3 primary target: flow_node (same as train.py).
+        return hd, "flow_node"
     raise ValueError(f"Unknown dataset: {name!r}")
  
  
@@ -455,6 +504,13 @@ def main():
         fraud_subgraph=args.fraud_subgraph,
         fraud_subgraph_hops=args.fraud_subgraph_hops,
         max_flows=args.max_flows,
+        mg24_subsample_ddos=args.mg24_subsample_ddos,
+        mg24_min_host_flows=args.mg24_min_host_flows,
+        mg24_prune_external=args.mg24_prune_external,
+        mg24_split_mode=args.mg24_split_mode,
+        mg24_host_role=args.mg24_host_role,
+        mg24_drop_features=args.mg24_drop_features,
+        seed=args.seed,
     )
     data = data.to(device)
     labels    = data[target_type].y
