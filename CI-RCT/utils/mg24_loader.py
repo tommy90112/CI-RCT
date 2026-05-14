@@ -880,36 +880,43 @@ def _read_flow_csv(path: Path) -> pd.DataFrame:
 # Canonical edge type triples following PyG convention: (src_type, rel, dst_type)
 EdgeKey = Tuple[str, str, str]
 
+EDGE_FLOW_TARGETS_HOST: EdgeKey = ("flow_node", "targets", "host_node")
 EDGE_HOST_RUNS_PROCESS: EdgeKey = ("host_node", "runs", "process_node")
 EDGE_PROCESS_FORKS_PROCESS: EdgeKey = ("process_node", "forks", "process_node")
-EDGE_FLOW_TARGETS_HOST: EdgeKey = ("flow_node", "targets", "host_node")
-EDGE_HOST_SOURCES_FLOW: EdgeKey = ("host_node", "sources", "flow_node")
+EDGE_PROCESS_CONTROLS_DEVICE: EdgeKey = ("process_node", "controls", "device_node")
 EDGE_DEVICE_REPORTS_MEASUREMENT: EdgeKey = ("device_node", "reports", "measurement_node")
 
 
 def build_edges(data: MG24Data) -> Dict[EdgeKey, np.ndarray]:
     """
-    Construct edge_index arrays for all edge types.
+    Construct edge_index arrays for all edge types (DD-9: kill-chain DAG).
 
     Returns a dict keyed by (src_type, rel, dst_type) PyG triples; each value
     is an int64 array of shape (2, num_edges) where row 0 is source node
     indices and row 1 is destination node indices.
 
-    Phase 1 implements 5 edge types listed in unsw_mg24_plan.md § 4.2.
-    Deferred edges (mark in plan as TODO):
-        - process -[generates]→ flow      (cross-modal, requires host↔IP map)
-        - host -[pivots_to]→ host         (from pivot pcap analysis)
-        - flow -[commands]→ device        (port-based, requires SCADA port catalog)
+    Kill-chain DAG ordering (each edge follows temporal/causal precedence):
+
+        flow_node ──→ host_node ──→ process_node ──→ device_node ──→ measurement_node
+                                          │
+                                          └─→ (process_forks_process, lateral)
+
+    Removed in DD-9 (was creating a 2-cycle with flow_targets_host):
+        - host_sources_flow              (host as Src IP source of a flow)
+          The Src-IP information is preserved via the process_node chain:
+          host_runs_process → process which generated the outgoing flow.
+
+    Deferred edges (would require additional inference NOT present in raw
+    dataset columns; see DD-9 in unsw_mg24_plan.md):
+        - process → flow      (requires sockaddr parsing of audit SOCKETCALL
+                               records + fuzzy timestamp alignment)
+        - host → host         (lateral pivot; requires pivot-pcap semantics)
     """
     edges: Dict[EdgeKey, np.ndarray] = {}
+    edges[EDGE_FLOW_TARGETS_HOST] = _build_flow_targets_host(data)
     edges[EDGE_HOST_RUNS_PROCESS] = _build_host_runs_process(data)
     edges[EDGE_PROCESS_FORKS_PROCESS] = _build_process_forks_process(data)
-
-    flow_targets = _build_flow_targets_host(data)
-    edges[EDGE_FLOW_TARGETS_HOST] = flow_targets
-    # Build the reverse `sources` edge from the same Src IP lookup.
-    edges[EDGE_HOST_SOURCES_FLOW] = _build_host_sources_flow(data)
-
+    edges[EDGE_PROCESS_CONTROLS_DEVICE] = _build_process_controls_device(data)
     edges[EDGE_DEVICE_REPORTS_MEASUREMENT] = _build_device_reports_measurement(data)
     return edges
 
@@ -1024,29 +1031,53 @@ def _build_flow_targets_host(data: MG24Data) -> np.ndarray:
     return np.stack([src, dst])
 
 
-def _build_host_sources_flow(data: MG24Data) -> np.ndarray:
+def _build_process_controls_device(data: MG24Data) -> np.ndarray:
     """
-    Edges host_node → flow_node, where host is the flow's Src IP.
+    Edges process_node → device_node (DD-9, kill-chain DAG).
 
-    Symmetric to _build_flow_targets_host; lets the GNN propagate signal
-    in both directions across the flow/host boundary.
+    Pure mapping from existing dataset columns — NO inferred information:
+      - Procmon CSV records `host_id ∈ {central, local1, local2}`
+      - Dataset has device_node entries `device_id ∈ {local1, local2}`
+      - We connect:
+          process on host:local1  → device:local1
+          process on host:local2  → device:local2
+          process on host:central → both local1 and local2 (central is the
+                                    SCADA aggregator — see _PROCMON_FILES)
+
+    Linux-audit-derived processes carry host_ref="audit:<filename>" and are
+    NOT connected here, because the dataset does not provide a mapping
+    from audit-source filenames to physical SCADA devices.
     """
-    if data.flow_nodes.empty or data.flows.empty or data.hosts.empty:
+    if data.processes.empty or data.devices.empty:
         return _empty_edge()
 
-    ip_hosts = data.hosts[data.hosts["host_kind"] == "ip"]
-    if ip_hosts.empty or "Src IP" not in data.flows.columns:
+    procmon_processes = data.processes[data.processes["source"] == "procmon"]
+    if procmon_processes.empty:
         return _empty_edge()
 
-    ip_to_idx = pd.Series(ip_hosts["node_idx"].values, index=ip_hosts["raw_value"].values)
-    source_idx = data.flows["Src IP"].astype(str).map(ip_to_idx)
-    valid = source_idx.notna()
-    if not valid.any():
-        return _empty_edge()
+    device_lookup = pd.Series(
+        data.devices["node_idx"].values, index=data.devices["device_id"].values
+    )
 
-    src = source_idx[valid].astype(np.int64).values
-    dst = data.flow_nodes.loc[valid.values, "node_idx"].astype(np.int64).values
-    return np.stack([src, dst])
+    src_list: List[int] = []
+    dst_list: List[int] = []
+    for _, row in procmon_processes.iterrows():
+        host_id = row["host_ref"].replace("host:", "")  # "host:local1" → "local1"
+        proc_idx = int(row["node_idx"])
+        if host_id == "central":
+            # Central SCADA aggregator controls both local sub-devices.
+            for d in ("local1", "local2"):
+                if d in device_lookup.index:
+                    src_list.append(proc_idx)
+                    dst_list.append(int(device_lookup[d]))
+        elif host_id in device_lookup.index:
+            src_list.append(proc_idx)
+            dst_list.append(int(device_lookup[host_id]))
+
+    if not src_list:
+        return _empty_edge()
+    return np.stack([np.array(src_list, dtype=np.int64),
+                     np.array(dst_list, dtype=np.int64)])
 
 
 def _build_device_reports_measurement(data: MG24Data) -> np.ndarray:
