@@ -880,50 +880,67 @@ def _read_flow_csv(path: Path) -> pd.DataFrame:
 # Canonical edge type triples following PyG convention: (src_type, rel, dst_type)
 EdgeKey = Tuple[str, str, str]
 
-EDGE_FLOW_TARGETS_HOST: EdgeKey = ("flow_node", "targets", "host_node")
-EDGE_HOST_RUNS_PROCESS: EdgeKey = ("host_node", "runs", "process_node")
+EDGE_HOST_SOURCES_FLOW: EdgeKey = ("host_node", "sources", "flow_node")
+EDGE_PROCESS_RUNS_ON_HOST: EdgeKey = ("process_node", "runs_on", "host_node")
 EDGE_PROCESS_FORKS_PROCESS: EdgeKey = ("process_node", "forks", "process_node")
-EDGE_PROCESS_CONTROLS_DEVICE: EdgeKey = ("process_node", "controls", "device_node")
+EDGE_DEVICE_HOSTS_PROCESS: EdgeKey = ("device_node", "hosts", "process_node")
 EDGE_DEVICE_REPORTS_MEASUREMENT: EdgeKey = ("device_node", "reports", "measurement_node")
 
 
 def build_edges(data: MG24Data) -> Dict[EdgeKey, np.ndarray]:
     """
-    Construct edge_index arrays for all edge types (DD-9: kill-chain DAG).
+    Construct edge_index arrays for all edge types (DD-10: reversed kill-chain DAG).
 
     Returns a dict keyed by (src_type, rel, dst_type) PyG triples; each value
     is an int64 array of shape (2, num_edges) where row 0 is source node
     indices and row 1 is destination node indices.
 
-    Kill-chain DAG ordering (each edge follows temporal/causal precedence):
+    Kill-chain DAG ordering (DD-10): edges point from upstream cause →
+    downstream effect, so backward BFS from a labelled target (e.g. fraud
+    flow_node) can reach its causal parents:
 
-        flow_node ──→ host_node ──→ process_node ──→ device_node ──→ measurement_node
-                                          │
-                                          └─→ (process_forks_process, lateral)
+        device_node ──→ process_node ──→ host_node ──→ flow_node
+                              │                   ↘
+                              └→ process_forks      → (downstream)
+        device_node ──→ measurement_node
 
-    Removed in DD-9 (was creating a 2-cycle with flow_targets_host):
-        - host_sources_flow              (host as Src IP source of a flow)
-          The Src-IP information is preserved via the process_node chain:
-          host_runs_process → process which generated the outgoing flow.
+    Why reversed vs. DD-9: DD-9 used flow→host→process→device direction,
+    which made flow_node a DAG source with no parents. Backward tracing
+    from a fraud flow_node terminated at depth=0 (see eval_dag_v1.log).
+    DD-10 flips this so the attacker-origin direction (device controls
+    process, process runs on host, host sources flow) matches the
+    backward-tracing semantics needed for root-cause analysis.
+
+    Edge details:
+        host → flow      uses Src IP (host as flow origin); replaces DD-9's
+                         flow → host (Dst IP). No 2-cycle: only this one
+                         direction exists.
+        process → host   process runs on host (was host → process in DD-9).
+        device → process device hosts process (was process → device in DD-9).
+        device → measurement, process → process: unchanged from DD-9.
 
     Deferred edges (would require additional inference NOT present in raw
-    dataset columns; see DD-9 in unsw_mg24_plan.md):
+    dataset columns):
         - process → flow      (requires sockaddr parsing of audit SOCKETCALL
                                records + fuzzy timestamp alignment)
         - host → host         (lateral pivot; requires pivot-pcap semantics)
     """
     edges: Dict[EdgeKey, np.ndarray] = {}
-    edges[EDGE_FLOW_TARGETS_HOST] = _build_flow_targets_host(data)
-    edges[EDGE_HOST_RUNS_PROCESS] = _build_host_runs_process(data)
+    edges[EDGE_HOST_SOURCES_FLOW] = _build_host_sources_flow(data)
+    edges[EDGE_PROCESS_RUNS_ON_HOST] = _build_process_runs_on_host(data)
     edges[EDGE_PROCESS_FORKS_PROCESS] = _build_process_forks_process(data)
-    edges[EDGE_PROCESS_CONTROLS_DEVICE] = _build_process_controls_device(data)
+    edges[EDGE_DEVICE_HOSTS_PROCESS] = _build_device_hosts_process(data)
     edges[EDGE_DEVICE_REPORTS_MEASUREMENT] = _build_device_reports_measurement(data)
     return edges
 
 
-def _build_host_runs_process(data: MG24Data) -> np.ndarray:
+def _build_process_runs_on_host(data: MG24Data) -> np.ndarray:
     """
-    Edges from host_node to process_node.
+    Edges from process_node to host_node (DD-10: reversed direction).
+
+    Causal interpretation: a process is the active agent; running it on a
+    host can compromise that host. The edge therefore points from the
+    process (potential attack vector) to the host (affected resource).
 
     Procmon-derived processes carry host_ref like "host:central"; these match
     a host_node directly. Audit-derived processes carry host_ref like
@@ -941,8 +958,8 @@ def _build_host_runs_process(data: MG24Data) -> np.ndarray:
     if not valid.any():
         return _empty_edge()
 
-    src = proc_host_idx[valid].astype(np.int64).values
-    dst = data.processes.loc[valid, "node_idx"].astype(np.int64).values
+    src = data.processes.loc[valid, "node_idx"].astype(np.int64).values
+    dst = proc_host_idx[valid].astype(np.int64).values
     return np.stack([src, dst])
 
 
@@ -1005,11 +1022,17 @@ def _build_process_forks_process(data: MG24Data) -> np.ndarray:
     return arr
 
 
-def _build_flow_targets_host(data: MG24Data) -> np.ndarray:
+def _build_host_sources_flow(data: MG24Data) -> np.ndarray:
     """
-    Edges flow_node → host_node, where host is the flow's Dst IP.
+    Edges host_node → flow_node, where host is the flow's Src IP
+    (DD-10: reversed direction + switched from Dst IP to Src IP).
 
-    Flows whose Dst IP was pruned in Stage 2a are silently dropped from the
+    Causal interpretation: the host at the flow's Src IP is the originator
+    of that flow — if the flow is malicious, the Src-IP host is the
+    upstream cause. This makes flow_node have a non-empty parent set so
+    backward BFS from a fraud flow can reach the responsible host.
+
+    Flows whose Src IP was pruned in Stage 2a are silently dropped from the
     edge set (the flow_node still exists in the graph, just disconnected on
     this edge type).
     """
@@ -1017,32 +1040,37 @@ def _build_flow_targets_host(data: MG24Data) -> np.ndarray:
         return _empty_edge()
 
     ip_hosts = data.hosts[data.hosts["host_kind"] == "ip"]
-    if ip_hosts.empty or "Dst IP" not in data.flows.columns:
+    if ip_hosts.empty or "Src IP" not in data.flows.columns:
         return _empty_edge()
 
     ip_to_idx = pd.Series(ip_hosts["node_idx"].values, index=ip_hosts["raw_value"].values)
-    target_idx = data.flows["Dst IP"].astype(str).map(ip_to_idx)
-    valid = target_idx.notna()
+    source_idx = data.flows["Src IP"].astype(str).map(ip_to_idx)
+    valid = source_idx.notna()
     if not valid.any():
         return _empty_edge()
 
-    src = data.flow_nodes.loc[valid.values, "node_idx"].astype(np.int64).values
-    dst = target_idx[valid].astype(np.int64).values
+    src = source_idx[valid].astype(np.int64).values
+    dst = data.flow_nodes.loc[valid.values, "node_idx"].astype(np.int64).values
     return np.stack([src, dst])
 
 
-def _build_process_controls_device(data: MG24Data) -> np.ndarray:
+def _build_device_hosts_process(data: MG24Data) -> np.ndarray:
     """
-    Edges process_node → device_node (DD-9, kill-chain DAG).
+    Edges device_node → process_node (DD-10: reversed direction).
+
+    Causal interpretation: the SCADA device is the physical substrate;
+    processes run on top of it, so the device is the upstream cause of
+    those processes existing. Backward BFS from a malicious process can
+    reach the underlying device.
 
     Pure mapping from existing dataset columns — NO inferred information:
       - Procmon CSV records `host_id ∈ {central, local1, local2}`
       - Dataset has device_node entries `device_id ∈ {local1, local2}`
       - We connect:
-          process on host:local1  → device:local1
-          process on host:local2  → device:local2
-          process on host:central → both local1 and local2 (central is the
-                                    SCADA aggregator — see _PROCMON_FILES)
+          device:local1  → process on host:local1
+          device:local2  → process on host:local2
+          {device:local1, device:local2} → process on host:central
+              (central is the SCADA aggregator — see _PROCMON_FILES)
 
     Linux-audit-derived processes carry host_ref="audit:<filename>" and are
     NOT connected here, because the dataset does not provide a mapping
@@ -1065,14 +1093,15 @@ def _build_process_controls_device(data: MG24Data) -> np.ndarray:
         host_id = row["host_ref"].replace("host:", "")  # "host:local1" → "local1"
         proc_idx = int(row["node_idx"])
         if host_id == "central":
-            # Central SCADA aggregator controls both local sub-devices.
+            # Central SCADA aggregator: both local sub-devices host
+            # central processes.
             for d in ("local1", "local2"):
                 if d in device_lookup.index:
-                    src_list.append(proc_idx)
-                    dst_list.append(int(device_lookup[d]))
+                    src_list.append(int(device_lookup[d]))
+                    dst_list.append(proc_idx)
         elif host_id in device_lookup.index:
-            src_list.append(proc_idx)
-            dst_list.append(int(device_lookup[host_id]))
+            src_list.append(int(device_lookup[host_id]))
+            dst_list.append(proc_idx)
 
     if not src_list:
         return _empty_edge()
