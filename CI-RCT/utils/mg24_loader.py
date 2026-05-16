@@ -27,9 +27,9 @@ from __future__ import annotations
 
 import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from typing import Dict, List, Literal, Optional, Set, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -177,6 +177,11 @@ class MG24Data:
     devices: pd.DataFrame
     measurements: pd.DataFrame
 
+    # DD-11: per-audit-log set of remote IPv4 addresses extracted from
+    # SOCKADDR records (used to build the audit_source ↔ ip_host bridge
+    # that connects the network island to the SCADA island).
+    audit_source_ips: Dict[str, Set[str]] = field(default_factory=dict)
+
     def summary(self) -> str:
         """Return a one-line summary of node counts per type."""
         return (
@@ -229,6 +234,12 @@ def load_mg24_data(
     procmon = _load_procmon(root, verbose=verbose)
     power = _load_power(root, verbose=verbose)
 
+    # ── DD-11 bridge: per-log SOCKADDR IP extraction ──────────────
+    # The bundled audit_parser drops SOCKADDR records (it only keeps
+    # SYSCALL / PATH / SOCKETCALL), so we re-parse the raw .log files
+    # here in a focused pass that only collects IPv4 destinations.
+    audit_source_ips = _extract_audit_log_ips(root, verbose=verbose)
+
     # ── 5 node tables ─────────────────────────────────────────────
     hosts = _build_host_table(flows, audit, procmon)
     hosts = _enrich_host_table(hosts, flows, procmon)
@@ -244,6 +255,7 @@ def load_mg24_data(
             flows=flows, audit=audit, procmon=procmon, power=power,
             hosts=hosts, processes=processes, flow_nodes=flow_nodes,
             devices=devices, measurements=measurements,
+            audit_source_ips=audit_source_ips,
         )
         print(f"=== Done. Node counts: {data.summary()} ===")
         return data
@@ -252,7 +264,102 @@ def load_mg24_data(
         flows=flows, audit=audit, procmon=procmon, power=power,
         hosts=hosts, processes=processes, flow_nodes=flow_nodes,
         devices=devices, measurements=measurements,
+        audit_source_ips=audit_source_ips,
     )
+
+
+# ── DD-11 bridge helper: audit log → remote IPv4 set ─────────────────────────
+
+
+_SOCKADDR_AF_INET_PREFIX = "0200"   # AF_INET in little-endian hex
+_SADDR_RE = re.compile(r"saddr=([0-9A-Fa-f]+)")
+
+
+def _extract_audit_log_ips(
+    root: Path,
+    verbose: bool = True,
+) -> Dict[str, Set[str]]:
+    """
+    Extract per-audit-log unique remote IPv4 addresses from SOCKADDR records.
+
+    DD-11 bridges the two disjoint islands of the kill-chain DAG (the
+    network-side ip-kind hosts and the SCADA-side audit_source-kind hosts)
+    by adding edges audit_source_host → ip_host wherever an audit log
+    recorded a SOCKADDR with that destination IP.
+
+    The bundled audit_parser silently drops SOCKADDR records (it keeps only
+    SYSCALL / PATH / SOCKETCALL — see audit_parser._OUTPUT_COLUMNS), so this
+    function does a focused single-pass scan of the raw .log files that
+    only collects IPv4 sa_family records.
+
+    SOCKADDR hex layout (Linux audit, AF_INET case):
+        bytes 0-1 : sa_family (0x0002, little-endian → '0200')
+        bytes 2-3 : port      (big-endian uint16)
+        bytes 4-7 : IPv4 addr (big-endian, dotted)
+        bytes 8-15: zero padding
+
+    Non-IPv4 families (AF_UNIX 0x0100, AF_INET6 0x0A00, …) are skipped.
+    Loopback (127.0.0.0/8) and the unspecified address (0.0.0.0) are
+    filtered because they cannot meaningfully bridge to a flow's Src IP.
+
+    Returns:
+        Dict[str, Set[str]] keyed by log file basename
+        (e.g. "audit_MITM1.log") — matches `source_file` column added by
+        audit_parser.parse_audit_dir().
+    """
+    result: Dict[str, Set[str]] = {}
+
+    candidates: List[Path] = []
+    mal_dir = root / "Malicious system call traces"
+    if mal_dir.is_dir():
+        candidates.extend(sorted(mal_dir.glob("audit_*.log")))
+    ben_dir = root / "Benign system call traces"
+    if ben_dir.is_dir():
+        for dept_dir in sorted(ben_dir.iterdir()):
+            if not dept_dir.is_dir() or dept_dir.name == "Microgrid department":
+                continue
+            candidates.extend(sorted(dept_dir.glob("*.log")))
+
+    total_records = 0
+    total_ipv4 = 0
+    for log_path in candidates:
+        ips: Set[str] = set()
+        try:
+            with open(log_path, "r", errors="ignore") as fh:
+                for line in fh:
+                    if "type=SOCKADDR" not in line:
+                        continue
+                    total_records += 1
+                    m = _SADDR_RE.search(line)
+                    if not m:
+                        continue
+                    hexstr = m.group(1)
+                    if len(hexstr) < 16:
+                        continue
+                    if hexstr[:4].upper() != _SOCKADDR_AF_INET_PREFIX.upper():
+                        continue
+                    try:
+                        b = bytes.fromhex(hexstr[:16])
+                    except ValueError:
+                        continue
+                    ip = ".".join(str(x) for x in b[4:8])
+                    if ip.startswith("127.") or ip == "0.0.0.0":
+                        continue
+                    ips.add(ip)
+                    total_ipv4 += 1
+        except OSError as e:
+            if verbose:
+                print(f"  [bridge] failed to read {log_path.name}: {e}")
+            continue
+        if ips:
+            result[log_path.name] = ips
+
+    if verbose:
+        n_pairs = sum(len(v) for v in result.values())
+        print(f"[bridge] SOCKADDR scan: {total_records:,} records, "
+              f"{total_ipv4:,} IPv4 decoded; {len(result)} logs contributed "
+              f"{n_pairs} (log,IP) pairs")
+    return result
 
 
 # ── Modality loaders ──────────────────────────────────────────────────────────
@@ -885,11 +992,14 @@ EDGE_PROCESS_RUNS_ON_HOST: EdgeKey = ("process_node", "runs_on", "host_node")
 EDGE_PROCESS_FORKS_PROCESS: EdgeKey = ("process_node", "forks", "process_node")
 EDGE_DEVICE_HOSTS_PROCESS: EdgeKey = ("device_node", "hosts", "process_node")
 EDGE_DEVICE_REPORTS_MEASUREMENT: EdgeKey = ("device_node", "reports", "measurement_node")
+# DD-11: bridge edge linking the audit-source island to the network-IP island.
+EDGE_HOST_RESOLVES_TO_IP: EdgeKey = ("host_node", "resolves_to_ip", "host_node")
 
 
 def build_edges(data: MG24Data) -> Dict[EdgeKey, np.ndarray]:
     """
-    Construct edge_index arrays for all edge types (DD-10: reversed kill-chain DAG).
+    Construct edge_index arrays for all edge types
+    (DD-10 reversed kill-chain DAG + DD-11 audit↔ip bridge).
 
     Returns a dict keyed by (src_type, rel, dst_type) PyG triples; each value
     is an int64 array of shape (2, num_edges) where row 0 is source node
@@ -904,26 +1014,33 @@ def build_edges(data: MG24Data) -> Dict[EdgeKey, np.ndarray]:
                               └→ process_forks      → (downstream)
         device_node ──→ measurement_node
 
-    Why reversed vs. DD-9: DD-9 used flow→host→process→device direction,
-    which made flow_node a DAG source with no parents. Backward tracing
-    from a fraud flow_node terminated at depth=0 (see eval_dag_v1.log).
-    DD-10 flips this so the attacker-origin direction (device controls
-    process, process runs on host, host sources flow) matches the
-    backward-tracing semantics needed for root-cause analysis.
+    DD-11 bridge: audit_source-kind hosts → ip-kind hosts wherever the
+    audit log recorded a SOCKADDR with that destination IP. Connects the
+    two previously disjoint islands (network ip-hosts vs SCADA audit-source
+    hosts) so backward BFS from a fraud flow can reach the audited host,
+    its process, and from there the device/measurement subgraph.
+
+    Why DD-10 reversed vs. DD-9: DD-9 used flow→host→process→device, making
+    flow_node a DAG source with no parents (trace stuck at depth=0;
+    see eval_dag_v1.log). DD-10 flips this to attacker-origin direction.
 
     Edge details:
-        host → flow      uses Src IP (host as flow origin); replaces DD-9's
-                         flow → host (Dst IP). No 2-cycle: only this one
-                         direction exists.
-        process → host   process runs on host (was host → process in DD-9).
-        device → process device hosts process (was process → device in DD-9).
-        device → measurement, process → process: unchanged from DD-9.
+        host → flow         uses Src IP (host as flow origin); replaces
+                            DD-9's flow → host (Dst IP).
+        process → host      process runs on host (DD-10).
+        device → process    device hosts process (DD-10).
+        device → measurement, process → process: unchanged.
+        host → host         DD-11 audit_source → ip_host bridge
+                            (type-level self-loop; src/dst are different
+                            host nodes of different sub-kinds).
 
     Deferred edges (would require additional inference NOT present in raw
     dataset columns):
-        - process → flow      (requires sockaddr parsing of audit SOCKETCALL
-                               records + fuzzy timestamp alignment)
-        - host → host         (lateral pivot; requires pivot-pcap semantics)
+        - procmon hostname ↔ ip   (procmon CSV records local hostname
+                                   `L-79GJ5Y2`, not remote IPs of its
+                                   connections; would need IP-by-hostname
+                                   lookup or testbed config)
+        - host → host (lateral)   (would require pivot-pcap semantics)
     """
     edges: Dict[EdgeKey, np.ndarray] = {}
     edges[EDGE_HOST_SOURCES_FLOW] = _build_host_sources_flow(data)
@@ -931,6 +1048,7 @@ def build_edges(data: MG24Data) -> Dict[EdgeKey, np.ndarray]:
     edges[EDGE_PROCESS_FORKS_PROCESS] = _build_process_forks_process(data)
     edges[EDGE_DEVICE_HOSTS_PROCESS] = _build_device_hosts_process(data)
     edges[EDGE_DEVICE_REPORTS_MEASUREMENT] = _build_device_reports_measurement(data)
+    edges[EDGE_HOST_RESOLVES_TO_IP] = _build_host_resolves_to_ip(data)
     return edges
 
 
@@ -1123,6 +1241,66 @@ def _build_device_reports_measurement(data: MG24Data) -> np.ndarray:
     src = data.measurements["device_id"].map(dev_lookup).astype(np.int64).values
     dst = data.measurements["node_idx"].astype(np.int64).values
     return np.stack([src, dst])
+
+
+def _build_host_resolves_to_ip(data: MG24Data) -> np.ndarray:
+    """
+    DD-11 bridge edges: audit_source host → ip host.
+
+    For each audit log, the SOCKADDR records contain destination IPv4
+    addresses that the audited host made connections to. We treat the
+    audit_source host as the upstream cause for any ip-kind host whose
+    IP appears in that log's SOCKADDR set. This adds a parent for
+    ip-kind hosts so backward BFS from a fraud flow can cross from
+    the network island into the SCADA / audit island.
+
+    Edge direction (audit_source → ip_host) chosen so that
+    parents(ip_host) ⊇ {audit_source}, enabling the depth ≥ 2
+    backward trace fraud_flow → Src-IP-host → audit_source_host →
+    process → … instead of bottoming out at the Src-IP-host.
+
+    Silently skips any (log, ip) pair where either the audit_source
+    host or the ip host is missing from the pruned host table.
+    """
+    if data.hosts.empty or not data.audit_source_ips:
+        return _empty_edge()
+
+    audit_hosts = data.hosts[data.hosts["host_kind"] == "audit_source"]
+    ip_hosts = data.hosts[data.hosts["host_kind"] == "ip"]
+    if audit_hosts.empty or ip_hosts.empty:
+        return _empty_edge()
+
+    audit_lookup = pd.Series(
+        audit_hosts["node_idx"].values, index=audit_hosts["raw_value"].values
+    )
+    ip_lookup = pd.Series(
+        ip_hosts["node_idx"].values, index=ip_hosts["raw_value"].values
+    )
+
+    src_list: List[int] = []
+    dst_list: List[int] = []
+    seen: set = set()
+    for log_name, ips in data.audit_source_ips.items():
+        # `raw_value` on audit_source hosts == log filename (set in
+        # _build_host_table from audit.source_file). Both keys are str.
+        if log_name not in audit_lookup.index:
+            continue
+        src_idx = int(audit_lookup[log_name])
+        for ip in ips:
+            if ip not in ip_lookup.index:
+                continue
+            dst_idx = int(ip_lookup[ip])
+            pair = (src_idx, dst_idx)
+            if pair in seen:
+                continue
+            seen.add(pair)
+            src_list.append(src_idx)
+            dst_list.append(dst_idx)
+
+    if not src_list:
+        return _empty_edge()
+    return np.stack([np.array(src_list, dtype=np.int64),
+                     np.array(dst_list, dtype=np.int64)])
 
 
 def _empty_edge() -> np.ndarray:
