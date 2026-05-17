@@ -135,13 +135,16 @@ def parse_args() -> argparse.Namespace:
                         default=True,
                         help="Whether to prune external-only IP hosts in unsw_mg24.")
     parser.add_argument("--mg24_split_mode", type=str, default="by_file",
-                        choices=("row", "by_file", "hybrid"),
+                        choices=("row", "by_file", "hybrid", "by_incident"),
                         help="Train/val/test split strategy for unsw_mg24 "
-                             "(DD-8). 'row' = row-level random (data-leaky); "
-                             "'by_file' = by-file stratified (default, "
-                             "honest cross-session generalisation); "
+                             "(DD-8/DD-13). 'row' = row-level random "
+                             "(data-leaky); 'by_file' = by-file stratified "
+                             "(default, honest cross-session generalisation); "
                              "'hybrid' = benign row-level + malicious "
-                             "by-file (production deployment scenario).")
+                             "by-file (production deployment scenario); "
+                             "'by_incident' = attack_type aligned across "
+                             "flow/audit modalities (DD-13, cuts cross-modal "
+                             "label leakage).")
     parser.add_argument("--mg24_host_role", type=str, default="full",
                         choices=("full", "no_mal_count", "zeroed",
                                  "detection_excluded"),

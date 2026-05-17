@@ -1344,7 +1344,7 @@ _POWER_FEATURE_COLS: List[str] = [
 ]
 
 
-SplitMode = Literal["row", "by_file", "hybrid"]
+SplitMode = Literal["row", "by_file", "hybrid", "by_incident"]
 
 
 def to_pyg_hetero_data(
@@ -1432,11 +1432,23 @@ def to_pyg_hetero_data(
 
     # ── Train / val / test masks (stratified) ─────────────────────
     rng = np.random.default_rng(seed)
-    split_groups: Dict[str, np.ndarray] = {
-        "flow_node": _split_groups_for_flows(data.flows),
-        "process_node": _split_groups_for_processes(data.processes),
-        "measurement_node": _split_groups_for_measurements(data.measurements),
-    }
+    if split_mode == "by_incident":
+        split_groups: Dict[str, np.ndarray] = {
+            "flow_node": _incident_groups_for_flows(data.flows),
+            "process_node": _incident_groups_for_processes(data.processes),
+            "measurement_node": _incident_groups_for_measurements(data.measurements),
+        }
+        incident_split_map = _build_global_incident_split(
+            split_groups,
+            val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        )
+    else:
+        split_groups = {
+            "flow_node": _split_groups_for_flows(data.flows),
+            "process_node": _split_groups_for_processes(data.processes),
+            "measurement_node": _split_groups_for_measurements(data.measurements),
+        }
+        incident_split_map = None
     for ntype in ("flow_node", "process_node", "measurement_node"):
         labels = hd[ntype].y.numpy()
         groups = split_groups[ntype]
@@ -1444,6 +1456,7 @@ def to_pyg_hetero_data(
             labels, groups,
             val_ratio=val_ratio, test_ratio=test_ratio,
             mode=split_mode, rng=rng,
+            incident_split_map=incident_split_map,
         )
         hd[ntype].train_mask = torch.from_numpy(train_mask)
         hd[ntype].val_mask = torch.from_numpy(val_mask)
@@ -1737,6 +1750,250 @@ def _split_groups_for_measurements(measurements: pd.DataFrame) -> np.ndarray:
     return np.array([f"{dev[i]}:mal{is_mal[i]}" for i in range(len(measurements))], dtype=object)
 
 
+# ── DD-13: incident-level (cross-modal) stratified split ────────────────────
+#
+# Rationale: by_file splits each node-type independently, so a malicious
+# pcap can land in test while its paired audit log lands in train. The
+# backbone then learns the label from one modality and predicts it on the
+# other → F1 stays ~0.99 even after host_features_mode="zeroed".
+#
+# by_incident aligns split assignment across modalities by reusing the
+# `attack_type` already present on flows/audit (mapped via _ATTACK_TYPE_MAP
+# from filename stems). All rows tagged with the same attack_type — pcap,
+# audit log, derived process_node — go into the same split. Benign rows
+# fall back to per-file/per-host grouping (no cross-modal leakage risk
+# since labels are uniformly 0).
+#
+# Procmon-derived processes have no attack_type concept (one CSV per host
+# × is_malicious pair), and Power measurements live on an independent SCADA
+# modality with no network/audit overlap; both keep their by_file group key
+# under a namespace prefix that excludes them from incident alignment.
+
+
+_INCIDENT_PREFIX = "incident:"
+_BENIGN_PREFIX = "benign:"
+
+
+def _attack_type_from_audit_host_ref(host_ref: str, is_malicious: int) -> Optional[str]:
+    """
+    Reverse-derive attack_type from a process_node's host_ref string.
+
+    audit-derived host_ref takes the form "audit:<source_file>" (malicious)
+    or "audit:<dept>" (benign). For malicious rows we strip the prefix and
+    run the resulting filename through the same _stem_for_attack_lookup +
+    _ATTACK_TYPE_MAP path that _load_flows / _load_audit use.
+
+    Returns None when the row is benign or the host_ref does not resolve.
+    """
+    if is_malicious != 1:
+        return None
+    if not host_ref.startswith("audit:"):
+        return None
+    file_part = host_ref.split(":", 1)[1]
+    stem = _stem_for_attack_lookup(Path(file_part))
+    return _ATTACK_TYPE_MAP.get(stem, "other_malicious")
+
+
+def _incident_groups_for_flows(flows: pd.DataFrame) -> np.ndarray:
+    """
+    Per-row incident-group identifier for flow_node.
+
+    Malicious rows are keyed by `incident:<attack_type>` so they align with
+    audit-derived process rows from the same attack. Benign rows keep a
+    `benign:<source_file>` key — by_file behaviour, namespaced to avoid
+    accidental collision with incident keys.
+    """
+    if flows.empty:
+        return np.array([], dtype=object)
+    is_mal = flows["is_malicious"].astype(int).values
+    attack = flows["attack_type"].fillna("unknown").astype(str).values
+    source = flows.get("source_file", pd.Series([""] * len(flows))).fillna("unknown").astype(str).values
+    out = np.empty(len(flows), dtype=object)
+    for i in range(len(flows)):
+        if is_mal[i] == 1:
+            out[i] = f"{_INCIDENT_PREFIX}{attack[i]}"
+        else:
+            out[i] = f"{_BENIGN_PREFIX}{source[i]}"
+    return out
+
+
+def _incident_groups_for_processes(processes: pd.DataFrame) -> np.ndarray:
+    """
+    Per-row incident-group identifier for process_node.
+
+    Audit-derived malicious rows reverse-derive attack_type from host_ref
+    so they align with the matching flow_node rows. Audit-derived benign
+    rows keep the host_ref as a benign group (one per dept). Procmon-derived
+    rows have no attack_type — they stay under a `procmon:` namespace so
+    the incident-split path falls back to by_file behaviour for them.
+    """
+    if processes.empty:
+        return np.array([], dtype=object)
+    src = processes["source"].astype(str).values
+    host_ref = processes["host_ref"].astype(str).values
+    is_mal = processes["is_malicious"].astype(int).values
+    out = np.empty(len(processes), dtype=object)
+    for i in range(len(processes)):
+        if src[i] == "audit":
+            attack = _attack_type_from_audit_host_ref(host_ref[i], int(is_mal[i]))
+            if attack is not None:
+                out[i] = f"{_INCIDENT_PREFIX}{attack}"
+            else:
+                out[i] = f"{_BENIGN_PREFIX}{host_ref[i]}"
+        else:
+            out[i] = f"procmon:{host_ref[i]}:mal{is_mal[i]}"
+    return out
+
+
+def _incident_groups_for_measurements(measurements: pd.DataFrame) -> np.ndarray:
+    """
+    Per-row incident-group identifier for measurement_node.
+
+    Power telemetry lives on a separate SCADA modality with no shared
+    filename or attack_type with the network/audit side, so measurements
+    do not participate in incident alignment — they stay under a
+    `measure:` namespace and fall back to by_file behaviour.
+    """
+    if measurements.empty:
+        return np.array([], dtype=object)
+    dev = measurements["device_id"].astype(str).values
+    is_mal = measurements["is_malicious"].astype(int).values
+    return np.array(
+        [f"measure:{dev[i]}:mal{is_mal[i]}" for i in range(len(measurements))],
+        dtype=object,
+    )
+
+
+def _build_global_incident_split(
+    incident_groups: Dict[str, np.ndarray],
+    *,
+    val_ratio: float,
+    test_ratio: float,
+    rng: np.random.Generator,
+) -> Dict[str, str]:
+    """
+    Build a deterministic group → split assignment shared across all node
+    types. Only `incident:*` groups are aligned globally; `benign:*` /
+    `procmon:*` / `measure:*` groups are assigned per-namespace using the
+    same stratified-by-file routine so that within each namespace val/test
+    receive a balanced size mix.
+
+    Args:
+        incident_groups: {node_type: per-row group array}
+        val_ratio:       Fraction of (incident or per-namespace) groups
+                         routed to val.
+        test_ratio:      Fraction routed to test.
+        rng:             Shared numpy Generator.
+
+    Returns:
+        {group_key: "train" | "val" | "test"}
+    """
+    # Aggregate group sizes across all node types (a group's "size" is the
+    # union of rows tagged with it; this matches what the size-tier logic
+    # in _stratified_split_by_file uses for balancing).
+    group_size: Dict[str, int] = {}
+    for arr in incident_groups.values():
+        if len(arr) == 0:
+            continue
+        unique, counts = np.unique(arr, return_counts=True)
+        for g, c in zip(unique, counts):
+            group_size[g] = group_size.get(g, 0) + int(c)
+
+    # Bucket groups by namespace.
+    incidents: List[str] = sorted(g for g in group_size if g.startswith(_INCIDENT_PREFIX))
+    benigns: List[str] = sorted(g for g in group_size if g.startswith(_BENIGN_PREFIX))
+    procmons: List[str] = sorted(g for g in group_size if g.startswith("procmon:"))
+    measures: List[str] = sorted(g for g in group_size if g.startswith("measure:"))
+
+    assignment: Dict[str, str] = {}
+
+    def _assign_bucket(groups: List[str]) -> None:
+        if not groups:
+            return
+        # Sort by size descending then partition into 3 tiers so val/test
+        # each get a balanced large/medium/small mix (mirrors DD-8 logic).
+        groups_sorted = sorted(groups, key=lambda g: -group_size[g])
+        n = len(groups_sorted)
+        tiers = 3 if n >= 6 else 1
+        tier_chunks = np.array_split(groups_sorted, tiers)
+        for tier_arr in tier_chunks:
+            tier = list(tier_arr)
+            rng.shuffle(tier)
+            n_tier = len(tier)
+            n_test = max(1, int(round(n_tier * test_ratio))) if n_tier >= 2 else 0
+            n_val = max(1, int(round(n_tier * val_ratio))) if n_tier >= 3 else 0
+            if n_test + n_val >= n_tier:
+                n_val = max(0, n_tier - n_test - 1)
+            for g in tier[:n_test]:
+                assignment[g] = "test"
+            for g in tier[n_test:n_test + n_val]:
+                assignment[g] = "val"
+            for g in tier[n_test + n_val:]:
+                assignment[g] = "train"
+
+    _assign_bucket(incidents)
+    _assign_bucket(benigns)
+    _assign_bucket(procmons)
+    _assign_bucket(measures)
+
+    return assignment
+
+
+def _stratified_split_by_incident(
+    labels: np.ndarray,
+    groups: np.ndarray,
+    incident_split_map: Dict[str, str],
+    *,
+    val_ratio: float,
+    test_ratio: float,
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Apply a precomputed global group → split mapping to one node type.
+
+    Rows whose group is in `incident_split_map` follow the global
+    assignment (this is what aligns audit & pcap across modalities).
+    Rows whose group is unknown fall back to _stratified_split_by_file
+    using the original groups (defensive — should not happen when the
+    mapping was built from these same groups).
+    """
+    n = len(labels)
+    train = np.zeros(n, dtype=bool)
+    val = np.zeros(n, dtype=bool)
+    test = np.zeros(n, dtype=bool)
+
+    if len(groups) != n:
+        return _stratified_split(
+            labels, val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        )
+
+    fallback_idx: List[int] = []
+    for i in range(n):
+        split = incident_split_map.get(groups[i])
+        if split == "train":
+            train[i] = True
+        elif split == "val":
+            val[i] = True
+        elif split == "test":
+            test[i] = True
+        else:
+            fallback_idx.append(i)
+
+    if fallback_idx:
+        sub_labels = labels[fallback_idx]
+        sub_groups = groups[fallback_idx]
+        sub_train, sub_val, sub_test = _stratified_split_by_file(
+            sub_labels, sub_groups,
+            val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        )
+        fb = np.array(fallback_idx, dtype=int)
+        train[fb[sub_train]] = True
+        val[fb[sub_val]] = True
+        test[fb[sub_test]] = True
+
+    return train, val, test
+
+
 def _build_split_masks(
     labels: np.ndarray,
     groups: np.ndarray,
@@ -1745,6 +2002,7 @@ def _build_split_masks(
     test_ratio: float,
     mode: SplitMode,
     rng: np.random.Generator,
+    incident_split_map: Optional[Dict[str, str]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Dispatch to the requested split strategy.
@@ -1763,6 +2021,16 @@ def _build_split_masks(
     if mode == "hybrid":
         return _stratified_split_hybrid(
             labels, groups,
+            val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        )
+    if mode == "by_incident":
+        if incident_split_map is None:
+            raise ValueError(
+                "split_mode='by_incident' requires a precomputed "
+                "incident_split_map (built in to_pyg_hetero_data)."
+            )
+        return _stratified_split_by_incident(
+            labels, groups, incident_split_map,
             val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
         )
     raise ValueError(f"Unknown split_mode: {mode!r}")

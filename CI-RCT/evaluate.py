@@ -78,7 +78,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mg24_prune_external", type=lambda x: x.lower() == "true",
                         default=True)
     parser.add_argument("--mg24_split_mode", type=str, default="by_file",
-                        choices=("row", "by_file", "hybrid"))
+                        choices=("row", "by_file", "hybrid", "by_incident"))
     parser.add_argument("--mg24_host_role", type=str, default="full",
                         choices=("full", "no_mal_count", "zeroed",
                                  "detection_excluded"))
