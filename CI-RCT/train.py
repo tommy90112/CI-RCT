@@ -32,7 +32,12 @@ from torch_geometric.data import HeteroData
 
 from configs.config import CI_RCT_Config
 from model.ci_rct import CI_RCT
-from utils.data_utils import build_typed_causal_graph_from_hetero, compute_type_offsets
+from utils.data_utils import (
+    build_typed_causal_graph_from_hetero,
+    compute_type_offsets,
+    default_blocked_edge_types,
+    default_rare_edge_types,
+)
 from utils.metrics import compute_classification_metrics
 
 
@@ -55,6 +60,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_hops", type=int, default=5)
     parser.add_argument("--ce_threshold", type=float, default=0.1)
     parser.add_argument("--node_limit", type=int, default=500)
+    # B1: rare-edge guarantee — see _expand_rare_edge_chain in data_utils.py.
+    # Train-time NCM must see the same sparse-edge subgraph as eval, otherwise
+    # the bridge / process / device edges never accumulate gradient.
+    # Mirrors evaluate.py's --rare_edge_types / --rare_reserve / --rare_max_hops.
+    parser.add_argument(
+        "--rare_edge_types", type=str, default="",
+        help="Comma-separated edge-type strings ('src__to__dst') the BFS "
+             "must preserve. Empty string falls back to the per-dataset "
+             "default; pass 'none' to disable the rare-edge pass entirely.",
+    )
+    parser.add_argument(
+        "--rare_reserve", type=int, default=100,
+        help="Node budget reserved for the rare-edge chain expansion pass.",
+    )
+    parser.add_argument(
+        "--rare_max_hops", type=int, default=5,
+        help="Maximum chain depth followed during the rare-edge pass.",
+    )
+    parser.add_argument(
+        "--blocked_edge_types", type=str, default="",
+        help="Comma-separated edge-type strings dropped from BOTH the BFS "
+             "expansion and the final causal graph. Symmetric to "
+             "--rare_edge_types. Empty falls back to "
+             "default_blocked_edge_types(dataset); 'none' disables.",
+    )
     # Joint loss weights
     parser.add_argument("--lambda_adversarial", type=float, default=0.1,
                         help="λ1: weight of WGAN-GP adversarial loss")
@@ -496,10 +526,46 @@ def main() -> None:
     ]
     seed_ids = fraud_global_ids[:20]  # up to 20 fraud seeds for multi-source BFS
 
+    # B1: same rare-edge handling as evaluate.py — explicit > default > none.
+    raw_rare = args.rare_edge_types.strip()
+    if raw_rare.lower() == "none":
+        rare_edge_types = set()
+        rare_src = "disabled"
+    elif raw_rare:
+        rare_edge_types = {t.strip() for t in raw_rare.split(",") if t.strip()}
+        rare_src = "explicit"
+    else:
+        rare_edge_types = default_rare_edge_types(args.dataset)
+        rare_src = "dataset-default"
+    if rare_edge_types:
+        print(f"  [BFS] rare edge types ({len(rare_edge_types)}, "
+              f"reserve={args.rare_reserve}, "
+              f"max_hops={args.rare_max_hops}, src={rare_src}): "
+              f"{sorted(rare_edge_types)}")
+
+    # Symmetric: --blocked_edge_types (replaces the legacy block_addr_to_addr).
+    raw_b = args.blocked_edge_types.strip()
+    if raw_b.lower() == "none":
+        blocked_edge_types = set()
+        blocked_src = "disabled"
+    elif raw_b:
+        blocked_edge_types = {t.strip() for t in raw_b.split(",") if t.strip()}
+        blocked_src = "explicit"
+    else:
+        blocked_edge_types = default_blocked_edge_types(args.dataset)
+        blocked_src = "dataset-default"
+    if blocked_edge_types:
+        print(f"  [BFS] blocked edge types ({len(blocked_edge_types)}, "
+              f"src={blocked_src}): {sorted(blocked_edge_types)}")
+
     causal_graph = build_typed_causal_graph_from_hetero(
         data,
         seed_node_ids=seed_ids if seed_ids else None,
         node_limit=config.node_limit,
+        blocked_edge_types=blocked_edge_types if blocked_edge_types else None,
+        rare_edge_types=rare_edge_types if rare_edge_types else None,
+        rare_reserve=args.rare_reserve,
+        rare_max_hops=args.rare_max_hops,
     )
     topo_order = causal_graph.topological_order()
 

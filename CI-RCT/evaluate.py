@@ -25,8 +25,7 @@ Usage:
 import argparse
 import os
 from collections import Counter, defaultdict
-from typing import Dict, List, Set, Tuple
- 
+
 import numpy as np
 import torch
 from sklearn.metrics import recall_score
@@ -35,7 +34,12 @@ from configs.config import CI_RCT_Config
 from model.causal_shapley import compute_asymmetric_causal_shapley
 from model.ci_rct import CI_RCT
 from model.root_cause_tracer import RootCauseTracer
-from utils.data_utils import build_typed_causal_graph_from_hetero, compute_type_offsets
+from utils.data_utils import (
+    build_typed_causal_graph_from_hetero,
+    compute_type_offsets,
+    default_blocked_edge_types,
+    default_rare_edge_types,
+)
 from utils.metrics import (
     compute_classification_metrics,
     compute_root_cause_metrics,
@@ -86,9 +90,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--debug", action="store_true",
                         help="Print tracer diagnostics: CE distribution by edge "
                              "type, chain length histogram, stuck-trace analysis.")
+    # ── B1: type-aware BFS sampling for rare/bridge edges ────────────────────
+    parser.add_argument("--rare_edge_types", type=str, default="",
+                        help="Comma-separated edge-type strings "
+                             "(formatted 'src__to__dst') that the BFS "
+                             "subgraph sampler must guarantee inclusion of. "
+                             "Designed for sparse bridge edges crowded out "
+                             "by high-degree types. Empty string falls back "
+                             "to default_rare_edge_types(dataset). Pass "
+                             "'none' to disable the rare-edge pass entirely.")
+    parser.add_argument("--rare_edge_reserve", type=int, default=500,
+                        help="Node-budget reserve for the rare-edge pass.")
+    parser.add_argument("--rare_edge_max_hops", type=int, default=5,
+                        help="Chain depth for the rare-edge expansion.")
+    parser.add_argument("--blocked_edge_types", type=str, default="",
+                        help="Comma-separated edge-type strings dropped "
+                             "from BOTH BFS expansion and the final causal "
+                             "graph. Symmetric to --rare_edge_types. Empty "
+                             "string falls back to "
+                             "default_blocked_edge_types(dataset). Pass "
+                             "'none' to disable the filter entirely.")
     return parser.parse_args()
- 
- 
+
+
 def load_dataset(name, root, **kwargs):
     if name == "dblp":
         from torch_geometric.datasets import DBLP
@@ -532,11 +556,53 @@ def main():
     seed_ids = list(dict.fromkeys(
         fraud_global_ids[:args.num_seeds] + gt_tx_ids
     ))
+
+    # B1: resolve rare-edge-type set. Explicit --rare_edge_types wins;
+    # the literal string "none" disables the pass; empty string falls back
+    # to the per-dataset default from default_rare_edge_types().
+    raw = args.rare_edge_types.strip()
+    if raw.lower() == "none":
+        rare_edge_types = set()
+        source = "disabled"
+    elif raw:
+        rare_edge_types = {tok.strip() for tok in raw.split(",") if tok.strip()}
+        source = "explicit"
+    else:
+        rare_edge_types = default_rare_edge_types(args.dataset)
+        source = "dataset-default"
+
+    if rare_edge_types:
+        print(f"  [BFS] rare edge types ({len(rare_edge_types)}, "
+              f"reserve={args.rare_edge_reserve}, "
+              f"max_hops={args.rare_edge_max_hops}, src={source}): "
+              f"{sorted(rare_edge_types)}")
+
+    # Symmetric resolution for blocked_edge_types (replaces the legacy
+    # block_addr_to_addr param; Elliptic-style wallet/address self-loops
+    # come from default_blocked_edge_types).
+    raw_b = args.blocked_edge_types.strip()
+    if raw_b.lower() == "none":
+        blocked_edge_types = set()
+        blocked_src = "disabled"
+    elif raw_b:
+        blocked_edge_types = {tok.strip() for tok in raw_b.split(",") if tok.strip()}
+        blocked_src = "explicit"
+    else:
+        blocked_edge_types = default_blocked_edge_types(args.dataset)
+        blocked_src = "dataset-default"
+    if blocked_edge_types:
+        print(f"  [BFS] blocked edge types ({len(blocked_edge_types)}, "
+              f"src={blocked_src}): {sorted(blocked_edge_types)}")
+
     causal_graph = build_typed_causal_graph_from_hetero(
         data,
         seed_node_ids=seed_ids if seed_ids else None,
         hop_limit=args.hop_limit,
         node_limit=args.node_limit,
+        blocked_edge_types=blocked_edge_types if blocked_edge_types else None,
+        rare_edge_types=rare_edge_types if rare_edge_types else None,
+        rare_reserve=args.rare_edge_reserve,
+        rare_max_hops=args.rare_edge_max_hops,
     )
     print(f"  Causal graph: {len(causal_graph.v)} nodes, "
           f"{len(causal_graph.edge_type_map)} directed edges")
