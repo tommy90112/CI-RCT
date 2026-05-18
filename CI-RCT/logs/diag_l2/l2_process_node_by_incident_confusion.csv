@@ -1,0 +1,8 @@
+,backdoor,benign,credential,mimicry,mitm,procmon_benign,ransomware
+backdoor,0,0,0,0,0,0,0
+benign,2,100,0,9,0,0,0
+credential,0,143,0,32,0,0,0
+mimicry,0,0,0,0,0,0,0
+mitm,2,50,0,6,0,0,0
+procmon_benign,0,0,0,24,0,0,0
+ransomware,0,44,0,7,0,0,0

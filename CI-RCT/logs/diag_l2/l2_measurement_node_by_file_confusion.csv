@@ -1,0 +1,5 @@
+,local1_benign,local1_mal,local2_benign,local2_mal
+local1_benign,129,9,0,0
+local1_mal,0,129,0,0
+local2_benign,0,0,139,0
+local2_mal,0,0,0,136
