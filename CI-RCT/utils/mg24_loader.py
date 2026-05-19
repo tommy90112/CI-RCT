@@ -1774,6 +1774,28 @@ _INCIDENT_PREFIX = "incident:"
 _BENIGN_PREFIX = "benign:"
 
 
+def _normalize_incident_stem(stem: str) -> str:
+    """
+    Normalise a file stem into a cross-modal incident core-id.
+
+    Strips the `audit_` prefix so pcap-side stems align with their
+    audit-side counterparts of the same attack execution
+    (e.g. `dos1` ↔ `audit_dos1` → `dos1`).
+
+    Why: the previous incident key was `incident:<attack_type>` — one
+    group per attack_type — so the entire attack landed in a single
+    split (L1 diagnostic showed 10/12 attack_types were exclusive to
+    train, val, or test). Including the normalised stem in the key
+    lets each attack_type's distinct executions (e.g. dos1, dos2)
+    distribute across splits while still aligning the pcap side and
+    audit side of the SAME execution to one split.
+    """
+    s = stem.lower().strip()
+    if s.startswith("audit_"):
+        s = s[len("audit_"):]
+    return s
+
+
 def _attack_type_from_audit_host_ref(host_ref: str, is_malicious: int) -> Optional[str]:
     """
     Reverse-derive attack_type from a process_node's host_ref string.
@@ -1798,10 +1820,15 @@ def _incident_groups_for_flows(flows: pd.DataFrame) -> np.ndarray:
     """
     Per-row incident-group identifier for flow_node.
 
-    Malicious rows are keyed by `incident:<attack_type>` so they align with
-    audit-derived process rows from the same attack. Benign rows keep a
-    `benign:<source_file>` key — by_file behaviour, namespaced to avoid
-    accidental collision with incident keys.
+    Malicious rows are keyed by `incident:<attack_type>:<core_stem>`
+    where core_stem is the source filename stem with the `audit_`
+    prefix stripped (see _normalize_incident_stem). This makes each
+    distinct attack execution (e.g. dos1 vs dos2) its own group while
+    still aligning the pcap and audit sides of the same execution
+    (`dos1.pcap_Flow.csv` and `audit_dos1.log` both → core_stem `dos1`).
+
+    Benign rows keep a `benign:<source_file>` key — by_file behaviour,
+    namespaced to avoid accidental collision with incident keys.
     """
     if flows.empty:
         return np.array([], dtype=object)
@@ -1811,7 +1838,9 @@ def _incident_groups_for_flows(flows: pd.DataFrame) -> np.ndarray:
     out = np.empty(len(flows), dtype=object)
     for i in range(len(flows)):
         if is_mal[i] == 1:
-            out[i] = f"{_INCIDENT_PREFIX}{attack[i]}"
+            stem = _stem_for_attack_lookup(Path(source[i]))
+            core_id = _normalize_incident_stem(stem)
+            out[i] = f"{_INCIDENT_PREFIX}{attack[i]}:{core_id}"
         else:
             out[i] = f"{_BENIGN_PREFIX}{source[i]}"
     return out
@@ -1821,11 +1850,13 @@ def _incident_groups_for_processes(processes: pd.DataFrame) -> np.ndarray:
     """
     Per-row incident-group identifier for process_node.
 
-    Audit-derived malicious rows reverse-derive attack_type from host_ref
-    so they align with the matching flow_node rows. Audit-derived benign
-    rows keep the host_ref as a benign group (one per dept). Procmon-derived
-    rows have no attack_type — they stay under a `procmon:` namespace so
-    the incident-split path falls back to by_file behaviour for them.
+    Audit-derived malicious rows reverse-derive both attack_type and
+    core_stem from host_ref so they align with the matching flow_node
+    rows under the key `incident:<attack_type>:<core_stem>` (same scheme
+    as _incident_groups_for_flows). Audit-derived benign rows keep the
+    host_ref as a benign group (one per dept). Procmon-derived rows have
+    no attack_type — they stay under a `procmon:` namespace so the
+    incident-split path falls back to by_file behaviour for them.
     """
     if processes.empty:
         return np.array([], dtype=object)
@@ -1837,7 +1868,10 @@ def _incident_groups_for_processes(processes: pd.DataFrame) -> np.ndarray:
         if src[i] == "audit":
             attack = _attack_type_from_audit_host_ref(host_ref[i], int(is_mal[i]))
             if attack is not None:
-                out[i] = f"{_INCIDENT_PREFIX}{attack}"
+                file_part = host_ref[i].split(":", 1)[1] if ":" in host_ref[i] else host_ref[i]
+                stem = _stem_for_attack_lookup(Path(file_part))
+                core_id = _normalize_incident_stem(stem)
+                out[i] = f"{_INCIDENT_PREFIX}{attack}:{core_id}"
             else:
                 out[i] = f"{_BENIGN_PREFIX}{host_ref[i]}"
         else:
@@ -1899,6 +1933,13 @@ def _build_global_incident_split(
         for g, c in zip(unique, counts):
             group_size[g] = group_size.get(g, 0) + int(c)
 
+    # Modality-presence sets — used to make sure each split receives at
+    # least one pcap-bearing (= flow-row-bearing) stem per attack_type.
+    # Without this, a per-attack random shuffle frequently sends every
+    # aligned pcap+audit stem to train and leaves val/test with only
+    # audit-only stems (which contribute 0 flow_node rows).
+    flow_set: Set[str] = set(np.unique(incident_groups.get("flow_node", np.array([], dtype=object))).tolist())
+
     # Bucket groups by namespace.
     incidents: List[str] = sorted(g for g in group_size if g.startswith(_INCIDENT_PREFIX))
     benigns: List[str] = sorted(g for g in group_size if g.startswith(_BENIGN_PREFIX))
@@ -1931,8 +1972,144 @@ def _build_global_incident_split(
             for g in tier[n_test + n_val:]:
                 assignment[g] = "train"
 
-    _assign_bucket(incidents)
-    _assign_bucket(benigns)
+    def _stratify_three_way(stems: List[str]) -> None:
+        """≥3 stems: shuffled 70/15/15 with ≥1 stem per split."""
+        n = len(stems)
+        n_test = max(1, int(round(n * test_ratio)))
+        n_val = max(1, int(round(n * val_ratio)))
+        if n_test + n_val >= n:
+            n_val = max(1, n - n_test - 1)
+        shuffled = list(stems)
+        rng.shuffle(shuffled)
+        for g in shuffled[:n_test]:
+            assignment[g] = "test"
+        for g in shuffled[n_test:n_test + n_val]:
+            assignment[g] = "val"
+        for g in shuffled[n_test + n_val:]:
+            assignment[g] = "train"
+
+    def _assign_per_attack(incidents: List[str]) -> None:
+        """
+        Per-attack-type, modality-aware stratification.
+
+        Each incident key has the form `incident:<attack_type>:<core_stem>`.
+        Within each attack_type we partition stems by whether they
+        contribute flow_node rows (pcap-bearing, in `flow_set`) or only
+        process_node rows (audit-only), then allocate splits with three
+        invariants:
+
+          1. n_total = 1 → train (no choice).
+          2. Pcap-bearing stems are distributed across splits whenever
+             possible (n_pcap ≥ 2). Largest pcap → train (training signal),
+             remaining pcap stems fill val/test. This is the fix for the
+             initial dryrun where every aligned pcap+audit stem landed in
+             train and val/test had 0 malicious flow rows.
+          3. Audit-only stems are also distributed when n_audit ≥ 2.
+             When n_audit = 1 and pcap stems exist, the audit-only stem
+             goes to val/test (alternating) so the audit modality reaches
+             eval splits without sacrificing flow training signal.
+
+        Alternation between val and test uses the sorted attack_idx so
+        coverage is roughly balanced across many attack_types.
+        """
+        if not incidents:
+            return
+        by_attack: Dict[str, List[str]] = {}
+        for g in incidents:
+            parts = g.split(":", 2)  # "incident", attack_type, core_stem
+            attack_type = parts[1] if len(parts) >= 3 else "_unknown"
+            by_attack.setdefault(attack_type, []).append(g)
+
+        for idx, attack_type in enumerate(sorted(by_attack.keys())):
+            stems = by_attack[attack_type]
+            pcap_stems = sorted(
+                (s for s in stems if s in flow_set),
+                key=lambda g: -group_size[g],
+            )
+            audit_stems = sorted(
+                (s for s in stems if s not in flow_set),
+                key=lambda g: -group_size[g],
+            )
+            n_pcap = len(pcap_stems)
+            n_audit = len(audit_stems)
+            if n_pcap + n_audit == 1:
+                assignment[(pcap_stems + audit_stems)[0]] = "train"
+                continue
+
+            # Allocate pcap-bearing stems first and track which splits the
+            # pcap side already covers — the audit side then fills the
+            # remaining splits so the attack spans train AND val AND test
+            # whenever there are enough stems for it.
+            pcap_covers: Set[str] = set()
+            if n_pcap >= 3:
+                _stratify_three_way(pcap_stems)
+                pcap_covers = {"train", "val", "test"}
+            elif n_pcap == 2:
+                second = "val" if idx % 2 == 0 else "test"
+                assignment[pcap_stems[0]] = "train"
+                assignment[pcap_stems[1]] = second
+                pcap_covers = {"train", second}
+            elif n_pcap == 1:
+                assignment[pcap_stems[0]] = "train"
+                pcap_covers = {"train"}
+
+            remaining = {"train", "val", "test"} - pcap_covers
+
+            def _eval_priority(split: str) -> int:
+                # When picking 1 split, prefer val|test (the eval splits)
+                # over train (pcap usually covers it). val/test alternate
+                # by attack_idx parity.
+                eval_first = "val" if idx % 2 == 0 else "test"
+                eval_second = "test" if eval_first == "val" else "val"
+                order = {eval_first: 0, eval_second: 1, "train": 2}
+                return order[split]
+
+            if n_audit >= 3:
+                _stratify_three_way(audit_stems)
+            elif n_audit == 2:
+                if len(remaining) >= 2:
+                    # Cover two missing splits — favour val/test over train
+                    # so the attack reaches both eval splits.
+                    prio = sorted(remaining, key=_eval_priority)
+                    assignment[audit_stems[0]] = prio[0]
+                    assignment[audit_stems[1]] = prio[1]
+                elif len(remaining) == 1:
+                    sole = next(iter(remaining))
+                    assignment[audit_stems[0]] = sole
+                    assignment[audit_stems[1]] = (
+                        "test" if sole == "val" else "val"
+                    )
+                else:
+                    # pcap already covers all 3 → second audit goes to eval.
+                    assignment[audit_stems[0]] = "train"
+                    assignment[audit_stems[1]] = "val" if idx % 2 == 0 else "test"
+            elif n_audit == 1:
+                if remaining:
+                    target = sorted(remaining, key=_eval_priority)[0]
+                else:
+                    target = "val" if idx % 2 == 0 else "test"
+                assignment[audit_stems[0]] = target
+
+    def _assign_benigns(benign_groups: List[str]) -> None:
+        """
+        Modality-aware benign assignment.
+
+        The benign bucket mixes pcap-derived groups (e.g. `benign:admin
+        traffic.csv`, 4 dept files dominating flow row count) with audit-
+        derived groups (e.g. `benign:audit:audit_admin_3.log`, many small
+        per-dept logs). A single tier-shuffle over all of them frequently
+        sent every pcap-bearing benign to train+test, leaving val with 0
+        benign flow rows — which destroys the val base-rate. Splitting by
+        modality forces each split to receive at least one pcap-bearing
+        benign whenever ≥3 dept files exist.
+        """
+        pcap_benigns = [g for g in benign_groups if g in flow_set]
+        audit_benigns = [g for g in benign_groups if g not in flow_set]
+        _assign_bucket(pcap_benigns)
+        _assign_bucket(audit_benigns)
+
+    _assign_per_attack(incidents)
+    _assign_benigns(benigns)
     _assign_bucket(procmons)
     _assign_bucket(measures)
 
