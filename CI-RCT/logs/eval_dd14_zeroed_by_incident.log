@@ -92,33 +92,33 @@ Loaded checkpoint: checkpoints/ci_rct_unsw_mg24_best.pt
 [fraud_label_set] flow fraud (test): 594; added malicious nodes: process_node=861, measurement_node=1,890; total fraud_label_set size: 3,345
 
 [diagnostic 4/4] Predicted root cause type breakdown
-  root type = host_node           :    4  (0 in fraud_label_set, 0.0%)
-  root type = process_node        :   46  (46 in fraud_label_set, 100.0%)
+  root type = host_node           :    7  (0 in fraud_label_set, 0.0%)
+  root type = process_node        :  117  (117 in fraud_label_set, 100.0%)
 
-[diagnostic 2/3] Chain depth histogram (num_traced=50, max_hops=5)
+[diagnostic 2/3] Chain depth histogram (num_traced=124, max_hops=5)
   depth= 1:    1  
-  depth= 2:    3  ██
-  depth= 3:   46  ████████████████████████████████████
+  depth= 2:    6  █
+  depth= 3:  117  █████████████████████████████████████
 
-[diagnostic 3/3] Stuck-at-target trace analysis (0/50 chains have depth 0)
+[diagnostic 3/3] Stuck-at-target trace analysis (0/124 chains have depth 0)
   reason: target has no parents in causal graph : 0
   reason: parents exist but max CE < threshold  : 0
 
 ───────────────────────────────────────────────────────
   B. Root Cause Tracing Metrics
 ───────────────────────────────────────────────────────
-  Root Cause Precision                    : 0.9200
-  Root Cause Hit Rate                     : 0.9200
-  Chain Validity                          : 0.4900
-  Mean Tracing Depth                      : 2.9000
-  Num Traced                              : 50
+  Root Cause Precision                    : 0.9435
+  Root Cause Hit Rate                     : 0.9435
+  Chain Validity                          : 0.4919
+  Mean Tracing Depth                      : 2.9355
+  Num Traced                              : 124
 
 ───────────────────────────────────────────────────────
   D. φ-Stability Metrics
 ───────────────────────────────────────────────────────
   Phi Stability Std                       : 0.0001
   Phi Stability Mean Abs                  : 0.0002
-  Num Nodes Explained                     : 50
+  Num Nodes Explained                     : 124
 
   Metric C: no ground-truth available — skipping.
 
