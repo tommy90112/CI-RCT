@@ -89,9 +89,11 @@ Loaded checkpoint: checkpoints/ci_rct_unsw_mg24_best.pt
   process_node__to__host_node             495    +0.0006    0.0003   -0.0000   +0.0011      4.04%
   process_node__to__process_node          111    +0.0003    0.0002   -0.0001   +0.0007      0.00%
 
+[fraud_label_set] flow fraud (test): 594; added malicious nodes: process_node=861, measurement_node=1,890; total fraud_label_set size: 3,345
+
 [diagnostic 4/4] Predicted root cause type breakdown
   root type = host_node           :    4  (0 in fraud_label_set, 0.0%)
-  root type = process_node        :   46  (0 in fraud_label_set, 0.0%)
+  root type = process_node        :   46  (46 in fraud_label_set, 100.0%)
 
 [diagnostic 2/3] Chain depth histogram (num_traced=50, max_hops=5)
   depth= 1:    1  
@@ -105,9 +107,9 @@ Loaded checkpoint: checkpoints/ci_rct_unsw_mg24_best.pt
 ───────────────────────────────────────────────────────
   B. Root Cause Tracing Metrics
 ───────────────────────────────────────────────────────
-  Root Cause Precision                    : 0.0000
-  Root Cause Hit Rate                     : 0.0000
-  Chain Validity                          : 0.2600
+  Root Cause Precision                    : 0.9200
+  Root Cause Hit Rate                     : 0.9200
+  Chain Validity                          : 0.4900
   Mean Tracing Depth                      : 2.9000
   Num Traced                              : 50
 
