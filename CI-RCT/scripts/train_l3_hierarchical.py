@@ -155,15 +155,27 @@ def apply_l3_freeze(model: CI_RCT, n_unfrozen_hgt_layers: int) -> Tuple[int, int
 # ── Class-weighted loss helper ───────────────────────────────────────────────
 
 
-def inverse_freq_weights(
-    labels: np.ndarray, label_to_idx: Dict[str, int], device: torch.device,
+def compute_class_weights(
+    labels: np.ndarray,
+    label_to_idx: Dict[str, int],
+    device: torch.device,
+    mode: str = "sqrt",
 ) -> torch.Tensor:
     """
-    Inverse-frequency class weights normalised to mean=1.
+    Class weights normalised to mean=1, with a tunable severity.
 
-    Classes absent in `labels` receive weight=1.0 (no contribution because
-    CrossEntropyLoss only weights observed targets, but we still need a full
-    vector of length num_classes).
+    The first L3 run used ``mode='inverse'`` (1/N_class) which crushed
+    macro-F1 below random: with a 1000-vs-3 class ratio, the minority
+    weight ends up ~67× the majority and the optimiser pushes every
+    prediction toward the rarest classes. The default here is
+    ``mode='sqrt'`` (1/sqrt(N_class)), which keeps imbalance pressure
+    without that runaway.
+
+    mode:
+      - ``'none'``    : uniform weight 1.0 (vanilla CE; majority baseline check)
+      - ``'sqrt'``    : 1/sqrt(N_class)            ← default (recommended)
+      - ``'log'``     : 1/log(N_class + e)         ← even gentler
+      - ``'inverse'`` : 1/N_class                  ← legacy, do not use
     """
     num_classes = len(label_to_idx)
     counts = np.zeros(num_classes, dtype=np.float64)
@@ -171,13 +183,45 @@ def inverse_freq_weights(
         idx = label_to_idx.get(str(lab))
         if idx is not None:
             counts[idx] += 1
+
     weights = np.ones(num_classes, dtype=np.float64)
     observed = counts > 0
-    if observed.any():
-        inv = 1.0 / counts[observed]
-        inv = inv * (inv.size / inv.sum())  # normalise so mean=1
-        weights[observed] = inv
+    if mode == "none" or not observed.any():
+        return torch.tensor(weights, dtype=torch.float32, device=device)
+
+    obs_counts = counts[observed]
+    if mode == "inverse":
+        raw = 1.0 / obs_counts
+    elif mode == "log":
+        raw = 1.0 / np.log(obs_counts + np.e)
+    elif mode == "sqrt":
+        raw = 1.0 / np.sqrt(obs_counts)
+    else:
+        raise ValueError(f"Unknown class_weight_mode: {mode!r}")
+
+    raw = raw * (raw.size / raw.sum())  # normalise so observed weights mean=1
+    weights[observed] = raw
     return torch.tensor(weights, dtype=torch.float32, device=device)
+
+
+def majority_baseline_accuracy(
+    label_idx: torch.Tensor, mask: torch.Tensor, num_classes: int,
+) -> Tuple[float, int, int]:
+    """
+    Majority-class baseline accuracy on the masked subset.
+
+    Returns (accuracy_if_predicting_majority, majority_class_idx, n_majority).
+    Useful as a sanity floor: any model worth training must beat this.
+    """
+    if int(mask.sum().item()) == 0:
+        return 0.0, -1, 0
+    sub = label_idx[mask].cpu().numpy()
+    if len(sub) == 0:
+        return 0.0, -1, 0
+    counts = np.bincount(sub, minlength=num_classes)
+    maj_idx = int(np.argmax(counts))
+    maj_n = int(counts[maj_idx])
+    return maj_n / len(sub), maj_idx, maj_n
 
 
 # ── Per-type Stage-2 supervision tensors ─────────────────────────────────────
@@ -350,6 +394,11 @@ def main() -> None:
     parser.add_argument("--head_dropout", type=float, default=0.1)
     parser.add_argument("--head_weight_flow", type=float, default=1.0)
     parser.add_argument("--head_weight_process", type=float, default=1.0)
+    parser.add_argument("--class_weight_mode", default="sqrt",
+                        choices=("none", "sqrt", "log", "inverse"),
+                        help="Class-weight severity for the CE loss. "
+                             "'sqrt' (default) avoids the minority-runaway "
+                             "seen with 'inverse' in the v1 run.")
     parser.add_argument("--smoke", action="store_true",
                         help="Single-epoch dry run (skip checkpoint save).")
     args = parser.parse_args()
@@ -430,6 +479,8 @@ def main() -> None:
     masks_val: Dict[str, torch.Tensor] = {}
     masks_test: Dict[str, torch.Tensor] = {}
     class_weights: Dict[str, torch.Tensor] = {}
+    majority_baseline_val: Dict[str, float] = {}
+    majority_baseline_test: Dict[str, float] = {}
 
     for ntype in target_types:
         raw = raw_label_builders[ntype]()
@@ -452,7 +503,9 @@ def main() -> None:
         masks_test[ntype] = m_te
 
         train_raw = raw[(is_mal.astype(bool)) & train_np]
-        class_weights[ntype] = inverse_freq_weights(train_raw, l2i, device)
+        class_weights[ntype] = compute_class_weights(
+            train_raw, l2i, device, mode=args.class_weight_mode,
+        )
 
         unseen_val = int(((data[ntype].val_mask.cpu().numpy()
                            & is_mal.astype(bool))
@@ -469,6 +522,32 @@ def main() -> None:
         )
         print(f"       train dist (top 10): "
               f"{dict(sorted(train_dist.items(), key=lambda kv: -kv[1])[:10])}")
+
+        n_cls = max(1, len(i2l))
+        cw_vec = class_weights[ntype].cpu().numpy()
+        cw_max = float(cw_vec.max()) if cw_vec.size else 0.0
+        cw_min = float(cw_vec[cw_vec > 0].min()) if (cw_vec > 0).any() else 0.0
+        cw_ratio = cw_max / cw_min if cw_min > 0 else float("inf")
+        maj_acc_va, maj_idx_va, maj_n_va = majority_baseline_accuracy(
+            idx_tensor, m_va, n_cls,
+        )
+        maj_acc_te, maj_idx_te, maj_n_te = majority_baseline_accuracy(
+            idx_tensor, m_te, n_cls,
+        )
+        majority_baseline_val[ntype] = maj_acc_va
+        majority_baseline_test[ntype] = maj_acc_te
+        maj_lbl_va = i2l[maj_idx_va] if 0 <= maj_idx_va < len(i2l) else "n/a"
+        maj_lbl_te = i2l[maj_idx_te] if 0 <= maj_idx_te < len(i2l) else "n/a"
+        print(
+            f"       class_weight[{args.class_weight_mode}] max/min ratio = "
+            f"{cw_ratio:.2f} (max={cw_max:.3f}, min={cw_min:.3f})"
+        )
+        print(
+            f"       MAJORITY-BASELINE: val acc={maj_acc_va:.4f} "
+            f"(class={maj_lbl_va!r}, n={maj_n_va})  "
+            f"test acc={maj_acc_te:.4f} (class={maj_lbl_te!r}, n={maj_n_te})  "
+            f"random = {1.0/max(1,n_cls):.4f}"
+        )
 
     # ── Attack-type heads ──
     heads: Dict[str, AttackTypeHead] = {
@@ -538,9 +617,12 @@ def main() -> None:
                 eval_strs.append(f"{ntype}: skip ({r['error']})")
                 continue
             val_f1_avg.append(r["macro_f1"])
+            maj = majority_baseline_val.get(ntype, 0.0)
+            beats_str = "+" if r["accuracy"] > maj else "-"
             eval_strs.append(
                 f"{ntype}: macro-F1={r['macro_f1']:.4f} "
-                f"acc={r['accuracy']:.4f} n={r['n']}"
+                f"acc={r['accuracy']:.4f}{beats_str}maj={maj:.4f} "
+                f"n={r['n']}"
             )
 
         val_avg = float(np.mean(val_f1_avg)) if val_f1_avg else 0.0
@@ -581,10 +663,15 @@ def main() -> None:
             "lr_backbone": args.lr_backbone,
             "n_unfrozen_hgt_layers": args.n_unfrozen_hgt_layers,
             "head_weights": head_weights,
+            "class_weight_mode": args.class_weight_mode,
             "host_role": args.mg24_host_role,
             "subsample_ddos": args.subsample_ddos,
             "best_val_epoch": (best_state or {}).get("epoch"),
             "best_val_macro_f1_avg": best_val_f1,
+        },
+        "majority_baseline": {
+            "val": majority_baseline_val,
+            "test": majority_baseline_test,
         },
         "results": {},
     }
