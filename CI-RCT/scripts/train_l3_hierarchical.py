@@ -105,6 +105,75 @@ def attack_labels_for_processes(processes: pd.DataFrame) -> np.ndarray:
     return out
 
 
+# ── Stage 2 fraud-row stratified split (by_file) ─────────────────────────────
+
+
+def stratified_fraud_split(
+    raw_labels: np.ndarray,
+    is_malicious: np.ndarray,
+    *,
+    val_ratio: float,
+    test_ratio: float,
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Row-level random split over fraud rows only, **stratified by
+    attack_type** so every class with ≥ 4 samples appears in
+    train/val/test proportionally.
+
+    Why this exists:
+      DD-14's by_incident split was designed for Stage-1 fraud/benign
+      generalisation testing. When inherited by Stage 2 attack-type
+      classification it shatters the class distribution — concretely,
+      val ended up 100% backdoor while ddos/dos/recon went entirely
+      into train, so the head had no class-aligned validation signal
+      and best-val selection picked the noisiest pre-convergence epoch.
+
+      L2 by_file probe showed flow_node macro-F1 = 0.66 under row-level
+      random split (vs 0.14 by_incident) — so the embedding *does*
+      carry attack-type signal, the by_incident split just doesn't let
+      a classifier read it. This function reproduces the L2-probe-style
+      split for Stage 2 training.
+
+    Classes with < 4 samples are placed entirely in train (cannot be
+    stratified into 3 buckets). Their val/test support becomes 0; the
+    caller's metrics naturally exclude them.
+    """
+    n_total = len(raw_labels)
+    fraud_idx = np.flatnonzero(is_malicious.astype(bool))
+    if fraud_idx.size == 0:
+        empty = np.zeros(n_total, dtype=bool)
+        return empty, empty.copy(), empty.copy()
+
+    fraud_labels = raw_labels[fraud_idx]
+    classes = sorted(set(fraud_labels.tolist()))
+
+    train_parts: List[np.ndarray] = []
+    val_parts: List[np.ndarray] = []
+    test_parts: List[np.ndarray] = []
+    for c in classes:
+        cls_mask = fraud_labels == c
+        cls_idx = fraud_idx[cls_mask].copy()
+        rng.shuffle(cls_idx)
+        n = len(cls_idx)
+        if n < 4:
+            train_parts.append(cls_idx)
+            continue
+        n_test = max(1, int(round(n * test_ratio)))
+        n_val = max(1, int(round(n * val_ratio)))
+        test_parts.append(cls_idx[:n_test])
+        val_parts.append(cls_idx[n_test:n_test + n_val])
+        train_parts.append(cls_idx[n_test + n_val:])
+
+    def _to_mask(parts: List[np.ndarray]) -> np.ndarray:
+        m = np.zeros(n_total, dtype=bool)
+        if parts:
+            m[np.concatenate(parts)] = True
+        return m
+
+    return _to_mask(train_parts), _to_mask(val_parts), _to_mask(test_parts)
+
+
 # ── Stage-2 attack-type head ─────────────────────────────────────────────────
 
 
@@ -399,6 +468,17 @@ def main() -> None:
                         help="Class-weight severity for the CE loss. "
                              "'sqrt' (default) avoids the minority-runaway "
                              "seen with 'inverse' in the v1 run.")
+    parser.add_argument("--stage2_split_mode", default="by_file",
+                        choices=("by_file", "by_incident"),
+                        help="Train/val/test split for the Stage-2 "
+                             "attack-type head. Default 'by_file' (row-level "
+                             "stratified random over fraud rows) avoids the "
+                             "class-shatter that 'by_incident' caused in v2. "
+                             "Stage-1 fraud/benign generalisation is already "
+                             "established via DD-14 by_incident — no need to "
+                             "re-test it at Stage 2.")
+    parser.add_argument("--stage2_val_ratio", type=float, default=0.15)
+    parser.add_argument("--stage2_test_ratio", type=float, default=0.15)
     parser.add_argument("--smoke", action="store_true",
                         help="Single-epoch dry run (skip checkpoint save).")
     args = parser.parse_args()
@@ -482,12 +562,24 @@ def main() -> None:
     majority_baseline_val: Dict[str, float] = {}
     majority_baseline_test: Dict[str, float] = {}
 
+    stage2_split_rng = np.random.default_rng(args.seed)
+    print(f"[L3] stage2_split_mode = {args.stage2_split_mode}")
+
     for ntype in target_types:
         raw = raw_label_builders[ntype]()
         is_mal = data[ntype].y.cpu().numpy().astype(int)
-        train_np = data[ntype].train_mask.cpu().numpy()
-        val_np = data[ntype].val_mask.cpu().numpy()
-        test_np = data[ntype].test_mask.cpu().numpy()
+
+        if args.stage2_split_mode == "by_incident":
+            train_np = data[ntype].train_mask.cpu().numpy()
+            val_np = data[ntype].val_mask.cpu().numpy()
+            test_np = data[ntype].test_mask.cpu().numpy()
+        else:  # by_file — row-level stratified over fraud rows
+            train_np, val_np, test_np = stratified_fraud_split(
+                raw, is_mal,
+                val_ratio=args.stage2_val_ratio,
+                test_ratio=args.stage2_test_ratio,
+                rng=stage2_split_rng,
+            )
 
         (
             idx_tensor, l2i, i2l,
@@ -664,6 +756,9 @@ def main() -> None:
             "n_unfrozen_hgt_layers": args.n_unfrozen_hgt_layers,
             "head_weights": head_weights,
             "class_weight_mode": args.class_weight_mode,
+            "stage2_split_mode": args.stage2_split_mode,
+            "stage2_val_ratio": args.stage2_val_ratio,
+            "stage2_test_ratio": args.stage2_test_ratio,
             "host_role": args.mg24_host_role,
             "subsample_ddos": args.subsample_ddos,
             "best_val_epoch": (best_state or {}).get("epoch"),
