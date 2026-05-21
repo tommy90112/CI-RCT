@@ -369,6 +369,30 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
                   f"{sum(1 for i in test_indices if labels[i].item() == 1)}, "
                   f"illicit wallets added: {len(illicit_wallet_globals):,}, "
                   f"total fraud_label_set size: {len(fraud_label_set):,}")
+    elif args.dataset == "unsw_mg24":
+        # DAG is `device → process → host → flow`, so backward trace from a
+        # fraud flow_node walks through host_node / process_node / device_node.
+        # Add malicious node ids on every labelled type so reaching them counts.
+        n_flow_fraud = sum(1 for i in test_indices if labels[i].item() == 1)
+        per_type_added: dict = {}
+        for ntype in ("process_node", "measurement_node"):
+            if ntype not in data.node_types or not hasattr(data[ntype], "y"):
+                continue
+            ntype_offset = type_offsets.get(ntype, 0)
+            ntype_labels = data[ntype].y
+            added = {
+                ntype_offset + i for i in range(ntype_labels.size(0))
+                if int(ntype_labels[i].item()) == 1
+            }
+            per_type_added[ntype] = len(added)
+            fraud_label_set |= added
+        if args.debug:
+            extras = ", ".join(
+                f"{t}={n:,}" for t, n in per_type_added.items()
+            )
+            print(f"\n[fraud_label_set] flow fraud (test): {n_flow_fraud:,}; "
+                  f"added malicious nodes: {extras}; "
+                  f"total fraud_label_set size: {len(fraud_label_set):,}")
  
     rct_metrics = compute_root_cause_metrics(
         predicted_roots, causal_chains, fraud_label_set
