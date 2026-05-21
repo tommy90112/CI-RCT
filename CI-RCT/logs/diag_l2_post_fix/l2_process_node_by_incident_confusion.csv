@@ -1,0 +1,13 @@
+,backdoor,benign,credential,dos,mimicry,mitm,procmon_benign,ransomware,recon,samba,shellshock,sql_injection
+backdoor,0,18,0,0,0,0,0,0,0,0,7,0
+benign,0,140,0,0,0,0,0,0,0,0,2,0
+credential,0,94,0,0,0,0,0,0,0,0,3,0
+dos,0,2,0,0,0,0,0,0,0,0,0,0
+mimicry,0,45,0,0,0,0,0,0,0,0,2,0
+mitm,0,26,0,0,0,0,0,0,0,0,0,0
+procmon_benign,0,0,0,0,0,0,0,0,0,0,1,0
+ransomware,0,20,0,0,0,0,0,0,0,0,3,0
+recon,0,22,0,0,0,0,0,0,0,0,2,0
+samba,0,40,0,0,0,0,0,0,0,0,5,0
+shellshock,0,43,0,0,0,0,0,0,0,0,5,0
+sql_injection,0,21,0,0,0,0,0,0,0,0,4,0

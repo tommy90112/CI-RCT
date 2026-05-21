@@ -1,0 +1,6 @@
+,precision,recall,f1-score,support
+local1_benign,0.0,0.0,0.0,0.0
+local1_mal,0.0,0.0,0.0,987.0
+accuracy,0.0,0.0,0.0,0.0
+macro avg,0.0,0.0,0.0,987.0
+weighted avg,0.0,0.0,0.0,987.0
