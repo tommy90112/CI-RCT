@@ -293,6 +293,37 @@ def majority_baseline_accuracy(
     return maj_n / len(sub), maj_idx, maj_n
 
 
+# ── Loss helpers (CE / Focal) ───────────────────────────────────────────────
+
+
+def focal_cross_entropy(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    weight: Optional[torch.Tensor] = None,
+    gamma: float = 2.0,
+) -> torch.Tensor:
+    """
+    α-balanced focal loss:  FL(p_t) = -α_t · (1 − p_t)^γ · log(p_t)
+
+    Reduces to class-weighted CE when γ=0. Down-weights well-classified
+    examples by (1 − p_t)^γ so the optimiser focuses on hard / minority
+    samples. For our setting (10-class flow / 13-class process under
+    severe imbalance) this can lift macro-F1 above what sqrt-weighted
+    CE produces, since rare classes that are *occasionally* correct keep
+    contributing strong gradient.
+    """
+    log_probs = F.log_softmax(logits, dim=-1)
+    probs = log_probs.exp()
+    # gather log_p_t and p_t per sample
+    log_pt = log_probs.gather(1, targets.unsqueeze(1)).squeeze(1)
+    pt = probs.gather(1, targets.unsqueeze(1)).squeeze(1)
+    focal_factor = (1.0 - pt).clamp(min=0.0) ** gamma
+    loss = -focal_factor * log_pt
+    if weight is not None:
+        loss = loss * weight[targets]
+    return loss.mean()
+
+
 # ── Per-type Stage-2 supervision tensors ─────────────────────────────────────
 
 
@@ -367,8 +398,11 @@ def stage2_loss(
     masks: Dict[str, torch.Tensor],
     class_weights: Dict[str, torch.Tensor],
     head_weights: Dict[str, float],
+    *,
+    loss_type: str = "ce",
+    focal_gamma: float = 2.0,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
-    """Per-head class-weighted CE, masked to fraud nodes only."""
+    """Per-head loss (CE or focal), masked to fraud nodes only."""
     total = None
     by_head: Dict[str, float] = {}
     for ntype, head in heads.items():
@@ -380,7 +414,13 @@ def stage2_loss(
             continue
         logits = head(h_dict[ntype][mask])
         targets = label_tensors[ntype][mask]
-        loss = F.cross_entropy(logits, targets, weight=class_weights[ntype])
+        if loss_type == "focal":
+            loss = focal_cross_entropy(
+                logits, targets,
+                weight=class_weights[ntype], gamma=focal_gamma,
+            )
+        else:
+            loss = F.cross_entropy(logits, targets, weight=class_weights[ntype])
         weighted = head_weights[ntype] * loss
         total = weighted if total is None else total + weighted
         by_head[ntype] = float(loss.detach().item())
@@ -479,6 +519,13 @@ def main() -> None:
                              "re-test it at Stage 2.")
     parser.add_argument("--stage2_val_ratio", type=float, default=0.15)
     parser.add_argument("--stage2_test_ratio", type=float, default=0.15)
+    parser.add_argument("--loss_type", default="ce", choices=("ce", "focal"),
+                        help="'ce' (default, class-weighted) or 'focal' "
+                             "(α-balanced focal loss). Focal can lift "
+                             "minority macro-F1 above sqrt-CE plateau.")
+    parser.add_argument("--focal_gamma", type=float, default=2.0,
+                        help="γ for focal loss. 0=plain CE, 2=default, "
+                             "5=aggressive minority focus.")
     parser.add_argument("--smoke", action="store_true",
                         help="Single-epoch dry run (skip checkpoint save).")
     args = parser.parse_args()
@@ -686,6 +733,7 @@ def main() -> None:
         loss, by_head = stage2_loss(
             h_dict, heads, label_tensors, masks_train,
             class_weights, head_weights,
+            loss_type=args.loss_type, focal_gamma=args.focal_gamma,
         )
         loss.backward()
         optimizer.step()
@@ -759,6 +807,8 @@ def main() -> None:
             "stage2_split_mode": args.stage2_split_mode,
             "stage2_val_ratio": args.stage2_val_ratio,
             "stage2_test_ratio": args.stage2_test_ratio,
+            "loss_type": args.loss_type,
+            "focal_gamma": args.focal_gamma,
             "host_role": args.mg24_host_role,
             "subsample_ddos": args.subsample_ddos,
             "best_val_epoch": (best_state or {}).get("epoch"),
