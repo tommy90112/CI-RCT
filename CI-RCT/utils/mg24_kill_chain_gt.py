@@ -242,7 +242,11 @@ def compute_mg24_kill_chain_gt(
         explanation chain}. Empty dict if the dataset has no labelled
         attack flows.
     """
-    flows = mg24_data.flows
+    # node_idx lives in flow_nodes (built by _build_flow_node_table), not in
+    # the raw flows DataFrame — merge it in so the rest of this function can
+    # use flows["node_idx"] without a KeyError.
+    flows = mg24_data.flows.copy()
+    flows["node_idx"] = mg24_data.flow_nodes["node_idx"].values
     processes = mg24_data.processes
     hosts = mg24_data.hosts
     devices = mg24_data.devices
