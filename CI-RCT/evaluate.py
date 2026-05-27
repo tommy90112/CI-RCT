@@ -175,6 +175,9 @@ def load_dataset(name, root, **kwargs):
             flow_features_exclude=flow_features_exclude or None,
         )
         # DD-3 primary target: flow_node (same as train.py).
+        # DD-16: stash the raw MG24Data on hd so build_gt_list can derive
+        # kill-chain explanation ground truth from the original DataFrames.
+        hd._mg24 = mg24  # type: ignore[attr-defined]
         return hd, "flow_node"
     raise ValueError(f"Unknown dataset: {name!r}")
  
@@ -518,6 +521,22 @@ def build_gt_list(args, data, type_offsets):
         )
         if gt:
             gt_list.append(("Granger", gt))
+    elif args.dataset == "unsw_mg24" and hasattr(data, "_mg24"):
+        print("Computing kill-chain ground-truth for Metric C (UNSW-MG24)...")
+        from utils.mg24_kill_chain_gt import compute_mg24_kill_chain_gt
+        test_mask = (
+            data["flow_node"].test_mask.cpu().numpy()
+            if hasattr(data["flow_node"], "test_mask") else None
+        )
+        gt = compute_mg24_kill_chain_gt(
+            mg24_data=data._mg24,  # type: ignore[attr-defined]
+            type_offsets=type_offsets,
+            test_mask=test_mask,
+            include_devices=True,
+            verbose=True,
+        )
+        if gt:
+            gt_list.append(("KillChain", gt))
     elif args.dataset == "elliptic++":
         from utils.lfpn_utils import compute_lfpn_ground_truth
         modes = ["strict", "extended"] if args.lfpn_mode == "both" else [args.lfpn_mode]
