@@ -92,6 +92,13 @@ def parse_args() -> argparse.Namespace:
                         help="λ2: weight of Causal Shapley stability loss")
     parser.add_argument("--lambda_ncm", type=float, default=0.1,
                         help="λ3: weight of NCM supervision (BCE) loss")
+    parser.add_argument("--ncm_edge_balance", type=str, default="none",
+                        choices=("none", "uniform", "sqrt", "inverse"),
+                        help="Per-edge-type NCM loss balancing (DD-17). "
+                             "'sqrt' is recommended for highly imbalanced "
+                             "hetero-graphs (e.g. MG24 host→flow has 200× "
+                             "more edges than process→host, leaving sparse "
+                             "edges' NCM CE≈0.001 at eval time).")
     # GAN settings
     parser.add_argument("--use_gan", type=lambda x: x.lower() == "true",
                         default=False,
@@ -254,7 +261,8 @@ def load_dataset(name: str, root: str, **kwargs):
 
 def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
                       target_node, device, type_offsets, target_type,
-                      class_weight=None, multi_task_labels=None):
+                      class_weight=None, multi_task_labels=None,
+                      ncm_edge_balance="none"):
     """
     Single training step without GAN (Phase 1).
     L_total = L_detection + λ2 · L_stability + λ3 · L_ncm
@@ -314,6 +322,7 @@ def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
         wallet_type_offset=type_offsets.get("wallet", 0),
         multi_task_labels=multi_task_labels,
         type_offsets=type_offsets if multi_task_labels is not None else None,
+        edge_balance=ncm_edge_balance,
     )
 
     total_loss = (
@@ -679,6 +688,7 @@ def main() -> None:
                 causal_graph, target_node, device,
                 type_offsets, target_type, class_weight=class_weight,
                 multi_task_labels=multi_task_labels,
+                ncm_edge_balance=args.ncm_edge_balance,
             )
             loss_str = (f"Loss {total_loss:.4f} "
                         f"(det={det_loss:.4f}, stab={stab_loss:.2e}, ncm={ncm_loss:.4f})")
