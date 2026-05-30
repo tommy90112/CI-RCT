@@ -674,6 +674,17 @@ def main():
         use_gan=False,
     ).to(device)
     if args.checkpoint:
+        # PyG's HGTConv has per-relation lazy weights that only materialise
+        # on the first forward(). If load_state_dict(strict=False) is called
+        # before that, those weights' state-dict keys silently skip — the
+        # subsequent forward then initialises them randomly, leaving the
+        # model with checkpoint weights elsewhere but random per-relation
+        # heads. Symptom: AUC roughly correct (ranking preserved by trained
+        # layers) but F1 collapses (argmax bias from random heads).
+        # Warm up with a dummy forward, then load.
+        model.eval()
+        with torch.no_grad():
+            model.forward(data)
         model.load_checkpoint(args.checkpoint, device=args.device)
         print(f"Loaded checkpoint: {args.checkpoint}")
     else:
