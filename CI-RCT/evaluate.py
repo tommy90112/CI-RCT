@@ -62,7 +62,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_explain", type=int, default=50)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--hidden_dim", type=int, default=128)
-    parser.add_argument("--num_hgt_layers", type=int, default=3)
+    # default=2 matches train.py default & DD-14 training recipe. If you
+    # trained with --num_hgt_layers 3 you MUST pass the same flag here, or
+    # the extra layer stays randomly initialised (silently, since
+    # state_dict load is strict=False), giving correct AUC but F1≈0.
+    parser.add_argument("--num_hgt_layers", type=int, default=2)
     parser.add_argument("--num_heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--type_emb_dim", type=int, default=16)
