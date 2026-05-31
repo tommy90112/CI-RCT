@@ -44,6 +44,7 @@ from utils.metrics import (
     compute_classification_metrics,
     compute_root_cause_metrics,
 )
+from utils.threshold_utils import sweep_best_threshold
  
  
 def parse_args() -> argparse.Namespace:
@@ -76,6 +77,18 @@ def parse_args() -> argparse.Namespace:
                         default=False)
     parser.add_argument("--fraud_subgraph_hops", type=int, default=2)
     parser.add_argument("--max_flows", type=int, default=200_000)
+    # ── Decision-threshold tuning (binary detection; no retrain needed) ──────
+    # 'none' keeps the legacy argmax (==0.5) cut. 'val' sweeps a threshold on
+    # the validation split to maximise --threshold_objective, then applies it
+    # to the test split (test distribution never leaks into the choice).
+    # --threshold >= 0 overrides the sweep with a fixed manual cut.
+    parser.add_argument("--threshold_tuning", type=str, default="none",
+                        choices=["none", "val"])
+    parser.add_argument("--threshold_objective", type=str, default="macro_f1",
+                        choices=["macro_f1", "fraud_f1"])
+    parser.add_argument("--threshold", type=float, default=-1.0,
+                        help="Manual class-1 probability cut in (0,1); "
+                             "overrides --threshold_tuning when >= 0.")
     # ── UNSW-MG24 specific (mirror train.py) ─────────────────────────────────
     parser.add_argument("--mg24_subsample_ddos", type=float, default=1.0)
     parser.add_argument("--mg24_min_host_flows", type=int, default=5)
@@ -275,16 +288,28 @@ def _load_illicit_wallet_globals(
  
  
 @torch.no_grad()
-def eval_classification(model, data, labels, test_mask):
+def eval_classification(model, data, labels, test_mask, threshold=None):
+    """
+    Binary classification metrics on the test split.
+
+    threshold: if None, use argmax (== 0.5 cut, legacy). If a float in (0, 1),
+    predict fraud where P(class-1) > threshold. AUC is threshold-independent
+    (computed from scores) so it is unaffected.
+    """
     model.eval()
     logits, _ = model.forward(data)
-    preds  = logits[test_mask].argmax(dim=-1).cpu()
     scores = torch.softmax(logits[test_mask], dim=-1)[:, 1].cpu()
+    if threshold is None:
+        preds = logits[test_mask].argmax(dim=-1).cpu()
+    else:
+        preds = (scores > threshold).long()
     y_true = labels[test_mask].cpu()
     metrics = compute_classification_metrics(preds, y_true, scores)
     metrics["recall_fraud"] = float(
         recall_score(y_true.numpy(), preds.numpy(), pos_label=1, zero_division=0)
     )
+    if threshold is not None:
+        metrics["threshold"] = float(threshold)
     return metrics
  
  
@@ -694,7 +719,31 @@ def main():
     else:
         print("No checkpoint — evaluating randomly initialised model (baseline).")
  
-    cls_metrics = eval_classification(model, data, labels, test_mask)
+    # Resolve the decision threshold (argmax by default; manual or val-tuned).
+    chosen_threshold = None
+    if args.threshold >= 0.0:
+        chosen_threshold = args.threshold
+        print(f"\n[threshold] using manual cut = {chosen_threshold:.3f}")
+    elif args.threshold_tuning == "val":
+        val_mask = getattr(data[target_type], "val_mask", None)
+        if val_mask is None:
+            print("\n[threshold] --threshold_tuning val requested but no val_mask; "
+                  "falling back to argmax.")
+        else:
+            model.eval()
+            with torch.no_grad():
+                logits, _ = model.forward(data)
+            val_scores = torch.softmax(logits[val_mask], dim=-1)[:, 1].cpu().numpy()
+            val_true = labels[val_mask].cpu().numpy()
+            chosen_threshold, val_obj = sweep_best_threshold(
+                val_scores, val_true, objective=args.threshold_objective
+            )
+            print(f"\n[threshold] val-tuned cut = {chosen_threshold:.3f} "
+                  f"({args.threshold_objective}={val_obj:.4f} on val)")
+
+    cls_metrics = eval_classification(
+        model, data, labels, test_mask, threshold=chosen_threshold
+    )
     print_section("A. Classification Metrics", cls_metrics)
  
     rct_metrics, stab_metrics = eval_root_cause_and_stability(

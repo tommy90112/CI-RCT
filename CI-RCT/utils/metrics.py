@@ -41,6 +41,24 @@ def compute_f1(y_true: Tensor, y_pred: Tensor, average: str = "macro") -> float:
     )
 
 
+def compute_fraud_f1(y_true: Tensor, y_pred: Tensor) -> float:
+    """
+    Binary F1 of the fraud (positive, label=1) class only.
+
+    Unlike macro F1 — which averages the licit and fraud F1 and so dilutes
+    the minority signal — this reports the detector's performance on the
+    fraud class directly. Useful as an early-stopping / model-selection
+    criterion on heavily imbalanced data (see train.py --early_stop_metric).
+    """
+    _validate_1d_tensors(y_true, y_pred, "compute_fraud_f1")
+    return float(
+        f1_score(
+            y_true.numpy(), y_pred.numpy(),
+            average="binary", pos_label=1, zero_division=0,
+        )
+    )
+
+
 def compute_auc(y_true: Tensor, y_scores: Tensor) -> float:
     """
     AUC-ROC score. Supports binary and multi-class (OvR macro).

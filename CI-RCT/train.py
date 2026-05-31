@@ -38,7 +38,7 @@ from utils.data_utils import (
     default_blocked_edge_types,
     default_rare_edge_types,
 )
-from utils.metrics import compute_classification_metrics
+from utils.metrics import compute_classification_metrics, compute_fraud_f1
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
@@ -107,6 +107,14 @@ def parse_args() -> argparse.Namespace:
                         help="Discriminator updates per Generator update (WGAN)")
     parser.add_argument("--gp_weight", type=float, default=10.0)
     parser.add_argument("--noise_std", type=float, default=0.05)
+    # Model selection / early stopping (imbalance-aware)
+    parser.add_argument(
+        "--early_stop_metric", type=str, default="macro_f1",
+        choices=["macro_f1", "fraud_f1", "weighted_f1"],
+        help="Val metric used to pick the best checkpoint. macro_f1 (default, "
+             "legacy behaviour) dilutes the minority class; fraud_f1 selects on "
+             "the fraud class directly; weighted_f1 = (macro_f1 + fraud_f1) / 2.",
+    )
     # Misc
     parser.add_argument("--eval_every", type=int, default=10)
     parser.add_argument("--device", type=str, default="cpu")
@@ -135,7 +143,7 @@ def parse_args() -> argparse.Namespace:
     # UNSW-MG24 specific options (see DD-1 in unsw_mg24_plan.md)
     parser.add_argument("--mg24_subsample_ddos", type=float, default=1.0,
                         help="Fraction of ddos1 flows to retain for unsw_mg24. "
-                             "1.0 = full graph (DD-1 default); 0.1 = 10% (OOM fallback).")
+                             "1.0 = full graph (DD-1 default); 0.1 = 10%% (OOM fallback).")
     parser.add_argument("--mg24_min_host_flows", type=int, default=5,
                         help="External-IP host pruning threshold for unsw_mg24.")
     parser.add_argument("--mg24_prune_external", type=lambda x: x.lower() == "true",
@@ -407,9 +415,18 @@ def evaluate_split(model, data, labels, mask):
         scores = probs[:, 1]
     else:
         scores = probs
-    return compute_classification_metrics(
-        preds.cpu(), labels[mask].cpu(), scores.cpu()
-    )
+    y_true = labels[mask].cpu()
+    preds_cpu = preds.cpu()
+    metrics = compute_classification_metrics(preds_cpu, y_true, scores.cpu())
+    # Imbalance-aware extras for model selection (binary detection only).
+    if probs.size(1) == 2:
+        fraud_f1 = compute_fraud_f1(y_true, preds_cpu)
+        metrics["fraud_f1"] = fraud_f1
+        metrics["weighted_f1"] = 0.5 * metrics["f1"] + 0.5 * fraud_f1
+    else:
+        metrics["fraud_f1"] = metrics["f1"]
+        metrics["weighted_f1"] = metrics["f1"]
+    return metrics
 
 
 # ── Graph subsampling ───────────────────────────────────────────────────────────
@@ -676,8 +693,11 @@ def main() -> None:
     # --- Training loop ---
     mode_str = "Phase 2 (GAN)" if args.use_gan else "Phase 1 (No GAN)"
     print(f"\nTraining [{mode_str}] for {args.epochs} epochs on {device}...")
-    best_val_f1 = 0.0
+    sel_key = {"macro_f1": "f1", "fraud_f1": "fraud_f1",
+               "weighted_f1": "weighted_f1"}[args.early_stop_metric]
+    best_val_score = 0.0
     ckpt_path = os.path.join(args.checkpoint_dir, f"ci_rct_{args.dataset}_best.pt")
+    print(f"  Model selection metric: {args.early_stop_metric} (val['{sel_key}'])")
 
     model.reset_phi_buffer()  # initialise once before training starts
     for epoch in range(1, args.epochs + 1):
@@ -708,18 +728,21 @@ def main() -> None:
             val_metrics = evaluate_split(model, data, labels, val_mask)
             print(
                 f"Epoch {epoch:03d} | {loss_str} | "
-                f"Val F1={val_metrics['f1']:.4f}  AUC={val_metrics['auc']:.4f}"
+                f"Val macroF1={val_metrics['f1']:.4f}  fraudF1={val_metrics['fraud_f1']:.4f}  "
+                f"AUC={val_metrics['auc']:.4f}"
             )
-            if val_metrics["f1"] > best_val_f1:
-                best_val_f1 = val_metrics["f1"]
+            if val_metrics[sel_key] > best_val_score:
+                best_val_score = val_metrics[sel_key]
                 model.save_checkpoint(ckpt_path)
-                print(f"  ↑ Best checkpoint saved → {ckpt_path}")
+                print(f"  ↑ Best checkpoint saved (val {args.early_stop_metric}"
+                      f"={best_val_score:.4f}) → {ckpt_path}")
 
     # --- Final test ---
     print("\nLoading best checkpoint for test evaluation...")
     model.load_checkpoint(ckpt_path)
     test_metrics = evaluate_split(model, data, labels, test_mask)
-    print(f"Test  F1={test_metrics['f1']:.4f}  AUC={test_metrics['auc']:.4f}")
+    print(f"Test  macroF1={test_metrics['f1']:.4f}  "
+          f"fraudF1={test_metrics['fraud_f1']:.4f}  AUC={test_metrics['auc']:.4f}")
 
 
 if __name__ == "__main__":
