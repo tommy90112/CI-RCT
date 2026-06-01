@@ -42,6 +42,7 @@ from utils.data_utils import (
 )
 from utils.metrics import (
     compute_classification_metrics,
+    compute_fraud_f1,
     compute_root_cause_metrics,
 )
 from utils.threshold_utils import sweep_best_threshold
@@ -56,6 +57,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--max_hops", type=int, default=5)
     parser.add_argument("--ce_threshold", type=float, default=0.1)
+    # Type-aware tie-break for the tracer (opt-in; empty string = legacy
+    # |CE|-only ranking). Comma-separated node types that are "root-capable"
+    # (labelable malicious types). When set, the greedy search prefers
+    # climbing to these over same-type relay hops (e.g. the host→host bridge),
+    # recovering RCP on models whose CE landscape diverts the trace to host.
+    # Example: --prefer_root_types process_node,measurement_node
+    parser.add_argument("--prefer_root_types", type=str, default="")
     parser.add_argument("--top_k", type=int, default=3)
     parser.add_argument("--node_limit", type=int, default=5000)
     parser.add_argument("--hop_limit", type=int, default=2)
@@ -199,6 +207,12 @@ def load_dataset(name, root, **kwargs):
     raise ValueError(f"Unknown dataset: {name!r}")
  
  
+def _parse_prefer_root_types(raw: str):
+    """Parse --prefer_root_types CSV into a set, or None when empty (legacy)."""
+    types = {t.strip() for t in (raw or "").split(",") if t.strip()}
+    return types or None
+
+
 def print_section(title, metrics):
     print(f"\n{'─' * 55}")
     print(f"  {title}")
@@ -305,9 +319,14 @@ def eval_classification(model, data, labels, test_mask, threshold=None):
         preds = (scores > threshold).long()
     y_true = labels[test_mask].cpu()
     metrics = compute_classification_metrics(preds, y_true, scores)
+    metrics["fraud_f1"] = compute_fraud_f1(y_true, preds)
     metrics["recall_fraud"] = float(
         recall_score(y_true.numpy(), preds.numpy(), pos_label=1, zero_division=0)
     )
+    # Fraction predicted fraud — a degenerate threshold (≈1.0 → "everything is
+    # fraud", or ≈0.0 → "nothing is fraud") shows up here immediately and
+    # explains a collapsed macro F1.
+    metrics["pred_fraud_rate"] = float(preds.float().mean())
     if threshold is not None:
         metrics["threshold"] = float(threshold)
     return metrics
@@ -344,6 +363,7 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         causal_graph=causal_graph,
         max_hops=args.max_hops,
         threshold=args.ce_threshold,
+        prefer_root_types=_parse_prefer_root_types(args.prefer_root_types),
     )
  
     offset = type_offsets[target_type]
@@ -524,6 +544,7 @@ def eval_explanation_quality(model, data, labels, test_mask,
         causal_graph=causal_graph,
         max_hops=args.max_hops,
         threshold=0.0,
+        prefer_root_types=_parse_prefer_root_types(args.prefer_root_types),
     )
     preds_list, gts_list = [], []
     for node_id, gt_set in eligible.items():

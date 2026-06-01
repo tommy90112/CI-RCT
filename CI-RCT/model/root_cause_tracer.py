@@ -38,7 +38,7 @@ Stopping conditions (priority order):
 Reference: CI-RCT_Thesis_Plan.md § 5.4
 """
 import heapq
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from model.typed_causal_graph import TypedCausalGraph
 
@@ -58,6 +58,7 @@ class RootCauseTracer:
         causal_graph: TypedCausalGraph,
         max_hops: int = 5,
         threshold: float = 0.1,
+        prefer_root_types: Optional[Set[str]] = None,
     ) -> None:
         if max_hops < 1:
             raise ValueError(f"max_hops must be >= 1, got {max_hops}")
@@ -67,6 +68,15 @@ class RootCauseTracer:
         self.graph = causal_graph
         self.max_hops = max_hops
         self.threshold = threshold
+        # Opt-in type-aware tie-break. When set, among the upstream parents
+        # that clear the CE threshold, those whose node type is in
+        # prefer_root_types (the root-capable / labelable types, e.g.
+        # {"process_node"}) win over other types, ranked by |CE| within the
+        # preferred group. This stops the greedy search from being diverted
+        # into same-type relay hops (e.g. the host→host DD-11 bridge whose
+        # |CE| can marginally exceed process→host) and dead-ending at a node
+        # that can never be a true root cause. None ⇒ legacy |CE|-only ranking.
+        self.prefer_root_types = prefer_root_types
 
     # ── Primary tracing API ───────────────────────────────────────────────────
 
@@ -171,12 +181,28 @@ class RootCauseTracer:
         Return (upstream_node, |CE|) with the strongest absolute causal
         influence on `current`.  Magnitude is what determines tracing
         priority — see the module docstring for rationale.
+
+        When `prefer_root_types` is set, candidates that (a) clear the CE
+        threshold AND (b) have a preferred (root-capable) node type are
+        considered first, ranked by |CE|; only if none qualify does the
+        search fall back to the global |CE|-max over all parents. This keeps
+        the legacy behaviour identical when prefer_root_types is None.
         """
-        best = max(
-            upstream_nodes,
-            key=lambda u: abs(causal_effects.get((u, current), 0.0)),
-        )
-        return best, abs(causal_effects.get((best, current), 0.0))
+        def abs_ce(u):
+            return abs(causal_effects.get((u, current), 0.0))
+
+        if self.prefer_root_types:
+            preferred = [
+                u for u in upstream_nodes
+                if abs_ce(u) >= self.threshold
+                and self.graph.node_type.get(u) in self.prefer_root_types
+            ]
+            if preferred:
+                best = max(preferred, key=abs_ce)
+                return best, abs_ce(best)
+
+        best = max(upstream_nodes, key=abs_ce)
+        return best, abs_ce(best)
 
     @staticmethod
     def score_chain(chain: List, causal_effects: Dict[Tuple, float]) -> float:
