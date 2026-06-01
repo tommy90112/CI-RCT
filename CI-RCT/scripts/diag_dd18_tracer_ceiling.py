@@ -238,6 +238,45 @@ def l2_trace_dissection(g, ce, targets, fraud_label_set, prefer_set, threshold, 
     def abs_ce(u, cur):
         return abs(ce.get((u, cur), 0.0))
 
+    # ── L1.7 trace replay：對前 5 條停在 host 的 flow，逐跳印 tracer 真實決策 ──
+    print("\n  [L1.7 trace replay] 前 5 條停在 host 的 flow，逐跳真實決策")
+    replayed = 0
+    for t in targets:
+        root, chain = tracer.trace_root_cause(t, ce)
+        if g.node_type.get(root) in prefer_set:
+            continue  # 只看停在 host 的
+        replayed += 1
+        print(f"\n    ── flow {t} (chain len={len(chain)}, root={root} "
+              f"type={g.node_type.get(root)}) ──")
+        cur = t
+        visited = {t}
+        for hop in range(1, 7):
+            ups = list(g.parents(cur))
+            if not ups:
+                print(f"      hop{hop}: current={cur}({g.node_type.get(cur)}) "
+                      f"→ NO PARENTS, stop")
+                break
+            # 印每個 parent 的型別 + CE
+            desc = []
+            for u in ups[:6]:
+                et = g.get_edge_type(u, cur)
+                desc.append(f"{u}({g.node_type.get(u)},|CE|={abs_ce(u,cur):.5f},et={et})")
+            print(f"      hop{hop}: current={cur}({g.node_type.get(cur)}) "
+                  f"parents[{len(ups)}]: " + " | ".join(desc))
+            best = max(ups, key=lambda u: abs_ce(u, cur))
+            if abs_ce(best, cur) < threshold:
+                print(f"             → best={best} |CE|={abs_ce(best,cur):.5f} "
+                      f"< thresh {threshold} → STOP (weak CE)")
+                break
+            if best in visited:
+                print(f"             → best={best} already visited → STOP (cycle)")
+                break
+            print(f"             → pick {best}({g.node_type.get(best)})")
+            visited.add(best)
+            cur = best
+        if replayed >= 5:
+            break
+
     stop_reason = Counter()
     root_type = Counter()
     # 針對停在 host 的：當前節點上游有沒有「通過門檻的 process 候選」
