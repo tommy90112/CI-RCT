@@ -251,13 +251,34 @@ def l2_trace_dissection(g, ce, targets, fraud_label_set, prefer_set, threshold, 
     root_host_parent_cnt = Counter()  # trace 停下的 root host 實際 parent 數
     flow_has_proc_via_other = 0       # flow 的「非 trace 選中」host parent 裡有人連到 process
 
+    # ── L1.6：直接拆穿 L1(BFS走到process) vs L2(trace死在host) 的矛盾 ──
+    flow_parent_typecombo = Counter()   # flow 全部 parent 的型別組合（不只 host）
+    first_hop_type = Counter()          # trace 第一跳實際走到的型別
+    # L1-style BFS 路徑 vs L2-style 單路徑：對同一 flow，記錄 BFS 走到 process 的
+    # 第一步是什麼型別（看它跟 trace 第一跳是否同一個節點）
+    bfs_first_step_type = Counter()
+
     for t in targets:
         root, chain = tracer.trace_root_cause(t, ce)
         rtype = g.node_type.get(root, "unknown")
         root_type[rtype] += 1
 
+        # L1.6：flow 全部 parent 的型別（不分 host）+ trace 第一跳型別
+        all_parents = list(g.parents(t))
+        combo = tuple(sorted(Counter(g.node_type.get(p, "?") for p in all_parents).items()))
+        flow_parent_typecombo[combo] += 1
+        if len(chain) > 1:
+            first_hop_type[g.node_type.get(chain[1], "?")] += 1
+        else:
+            first_hop_type["(no hop / depth0)"] += 1
+        # BFS 一步：flow 的 parent 裡，哪個型別「往上還有 parent」（能繼續走）
+        for p in all_parents:
+            if g.parents(p):  # 這個 parent 自己還有 parent → BFS 走得動
+                bfs_first_step_type[g.node_type.get(p, "?")] += 1
+                break
+
         # L1.5：flow(target t) 的直接 parent 結構
-        t_parents = list(g.parents(t))
+        t_parents = all_parents
         host_parents = [p for p in t_parents if g.node_type.get(p) == "host_node"]
         multi_host_parent[min(len(host_parents), 5)] += 1  # 0,1,2,3,4,5+
         if rtype not in prefer_set:
@@ -324,6 +345,20 @@ def l2_trace_dissection(g, ce, targets, fraud_label_set, prefer_set, threshold, 
     print("\n  [停止原因]")
     for r in sorted(stop_reason):
         print(f"    {r:<22s}: {stop_reason[r]:>4d}  ({100*stop_reason[r]/n:.1f}%)")
+
+    print("\n  [L1.6 ★直接拆穿矛盾] flow 全部 parent 的型別組合（top 6）")
+    for combo, c in flow_parent_typecombo.most_common(6):
+        combo_str = ", ".join(f"{t}×{n}" for t, n in combo) or "(無 parent)"
+        print(f"    {c:>4d}×  parent={{{combo_str}}}")
+    print("\n  [L1.6] trace 第一跳實際走到的型別")
+    for ty in sorted(first_hop_type, key=lambda k: -first_hop_type[k]):
+        print(f"    第一跳 → {ty:<20s}: {first_hop_type[ty]:>4d}")
+    print("\n  [L1.6] flow 的 parent 裡，第一個『自己還有 parent（BFS走得動）』的型別")
+    if bfs_first_step_type:
+        for ty in sorted(bfs_first_step_type, key=lambda k: -bfs_first_step_type[k]):
+            print(f"    可續走的 parent 型別 = {ty:<18s}: {bfs_first_step_type[ty]:>4d}")
+    else:
+        print("    （沒有任何 flow 的 parent 還有 parent → BFS 也走不動，L1 數字存疑）")
 
     print("\n  [L1.5 矛盾拆解] flow 的 host-parent 個數分佈")
     for k in sorted(multi_host_parent):
