@@ -64,6 +64,15 @@ def parse_args() -> argparse.Namespace:
     # recovering RCP on models whose CE landscape diverts the trace to host.
     # Example: --prefer_root_types process_node,measurement_node
     parser.add_argument("--prefer_root_types", type=str, default="")
+    # DD-18 LOOKAHEAD tie-break depth. prefer_root_types alone only inspects
+    # the immediate upstream's type; on MG24 a fraud flow's hub host has an
+    # all-host upstream (bridge edges), so the greedy |CE|-max dead-ends at a
+    # 0-parent bridge host while the branch that actually leads to a process
+    # has marginally smaller |CE|. With d > 0, among threshold-passing upstream
+    # candidates the tracer prefers those that can REACH a prefer_root_types
+    # node within d backward hops. 0 = disabled (legacy). Needs prefer_root_types.
+    # Example: --prefer_root_types process_node --prefer_reachable_depth 3
+    parser.add_argument("--prefer_reachable_depth", type=int, default=0)
     parser.add_argument("--top_k", type=int, default=3)
     parser.add_argument("--node_limit", type=int, default=5000)
     parser.add_argument("--hop_limit", type=int, default=2)
@@ -364,6 +373,7 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         max_hops=args.max_hops,
         threshold=args.ce_threshold,
         prefer_root_types=_parse_prefer_root_types(args.prefer_root_types),
+        prefer_reachable_depth=args.prefer_reachable_depth,
     )
  
     offset = type_offsets[target_type]

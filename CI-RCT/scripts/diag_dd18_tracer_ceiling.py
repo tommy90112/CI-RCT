@@ -462,6 +462,34 @@ def l2_trace_dissection(g, ce, targets, fraud_label_set, prefer_set, threshold, 
     return root_type, stop_reason, host_stop_upstream
 
 
+def l3_lookahead_ab(g, ce, targets, fraud_label_set, prefer_set, threshold, max_hops):
+    """DD-18 lookahead A/B：對 depth 0/1/2/3 各跑一次 trace，估 RCP。"""
+    print("\n" + "=" * 60)
+    print("L3 — DD-18 lookahead A/B（prefer_reachable_depth 掃描）")
+    print("=" * 60)
+    print(f"  {'depth':>6s} {'root=process':>13s} {'root=host':>11s} "
+          f"{'est. RCP':>10s}")
+    for depth in (0, 1, 2, 3):
+        tracer = RootCauseTracer(
+            causal_graph=g, max_hops=max_hops, threshold=threshold,
+            prefer_root_types=prefer_set, prefer_reachable_depth=depth,
+        )
+        n_proc = n_host = n_hit = 0
+        for t in targets:
+            root, _ = tracer.trace_root_cause(t, ce)
+            if g.node_type.get(root) in prefer_set:
+                n_proc += 1
+            else:
+                n_host += 1
+            if root in fraud_label_set:
+                n_hit += 1
+        rcp = n_hit / max(1, len(targets))
+        tag = "  ← legacy(=L2)" if depth == 0 else ""
+        print(f"  {depth:>6d} {n_proc:>13d} {n_host:>11d} {rcp:>10.4f}{tag}")
+    print("\n  depth=0 應與 L2 root 分佈一致（驗證對照基準）。")
+    print("  depth>0 若 root=process 大幅上升、RCP 回到 ~0.9 → 修法有效。")
+
+
 def main():
     args = ev.parse_args()
     device = torch.device(args.device)
@@ -483,6 +511,10 @@ def main():
         g, P["causal_effects"], targets, P["fraud_label_set"],
         prefer_set, P["ce_threshold"], P["max_hops"],
     )
+    l3_lookahead_ab(
+        g, P["causal_effects"], targets, P["fraud_label_set"],
+        prefer_set, P["ce_threshold"], P["max_hops"],
+    )
 
     print("\n" + "=" * 60)
     print("判讀指引")
@@ -491,6 +523,8 @@ def main():
     print("     論文寫法：dd18 高 AUC / dd14 高 RCP 兩配置並陳 trade-off。")
     print("  ② L2 出現『停在 host 卻有通過門檻 process 上游』樣本 → tie-break BUG，")
     print("     需修 _select_best_upstream 或 evaluate wiring，修完 RCP 可再救。")
+    print("  ③ L3 lookahead RCP 大幅回升 → DD-18 修法有效，跑正式 evaluate 加")
+    print("     --prefer_reachable_depth 3 拿四維度定稿數字。")
 
 
 if __name__ == "__main__":
