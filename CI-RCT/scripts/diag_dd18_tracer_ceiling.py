@@ -244,10 +244,34 @@ def l2_trace_dissection(g, ce, targets, fraud_label_set, prefer_set, threshold, 
     host_stop_upstream = Counter()  # has_process_above_thresh / only_host / no_parents / all_below_thresh
     host_stop_examples = []
 
+    # ── L1.5 探針：解開 L1(全展開 BFS) vs L2(單一貪婪 trace) 的矛盾 ──
+    # 假設：flow 有多個 host parent，trace 貪婪選到「孤立 host」(no parent)死路，
+    # 但 BFS 從另一個 host parent 走到了 process。驗證只需這幾個結構數字。
+    multi_host_parent = Counter()     # flow 的 host parent 個數分佈
+    root_host_parent_cnt = Counter()  # trace 停下的 root host 實際 parent 數
+    flow_has_proc_via_other = 0       # flow 的「非 trace 選中」host parent 裡有人連到 process
+
     for t in targets:
         root, chain = tracer.trace_root_cause(t, ce)
         rtype = g.node_type.get(root, "unknown")
         root_type[rtype] += 1
+
+        # L1.5：flow(target t) 的直接 parent 結構
+        t_parents = list(g.parents(t))
+        host_parents = [p for p in t_parents if g.node_type.get(p) == "host_node"]
+        multi_host_parent[min(len(host_parents), 5)] += 1  # 0,1,2,3,4,5+
+        if rtype not in prefer_set:
+            # trace 停在 host：印它真實 parent 數 + 型別
+            rp = list(g.parents(root))
+            root_host_parent_cnt[min(len(rp), 5)] += 1
+            # flow 的「其他」host parent（非 trace 第一跳選中）裡，有沒有人連到 process？
+            chosen_first = chain[1] if len(chain) > 1 else None
+            for hp in host_parents:
+                if hp == chosen_first:
+                    continue
+                if any(g.node_type.get(pp) in prefer_set for pp in g.parents(hp)):
+                    flow_has_proc_via_other += 1
+                    break
 
         # 重判此條的停止原因（複製 tracer 的停止邏輯）
         current = chain[-1]
@@ -300,6 +324,19 @@ def l2_trace_dissection(g, ce, targets, fraud_label_set, prefer_set, threshold, 
     print("\n  [停止原因]")
     for r in sorted(stop_reason):
         print(f"    {r:<22s}: {stop_reason[r]:>4d}  ({100*stop_reason[r]/n:.1f}%)")
+
+    print("\n  [L1.5 矛盾拆解] flow 的 host-parent 個數分佈")
+    for k in sorted(multi_host_parent):
+        lbl = f"{k}+" if k == 5 else str(k)
+        print(f"    flow 有 {lbl:>2s} 個 host parent : {multi_host_parent[k]:>4d}")
+    print("\n  [L1.5] trace 停下的 root host 的【真實 parent 數】")
+    for k in sorted(root_host_parent_cnt):
+        lbl = f"{k}+" if k == 5 else str(k)
+        print(f"    root host 有 {lbl:>2s} 個 parent : {root_host_parent_cnt[k]:>4d}")
+    print(f"\n  [L1.5 ★關鍵] trace 停在 host 的條目中，flow 還有【另一個】"
+          f"host parent 能通到 process：{flow_has_proc_via_other}")
+    print("      >0 → trace 貪婪選錯岔路（活路存在但沒走）→ 可改 tracer 救回 RCP")
+    print("      =0 → flow 的所有 host parent 都是死路 → 真結構天花板")
 
     print("\n  [停在 host 的上游解剖]（關鍵：tie-break 為何沒選 process）")
     hs_total = max(1, sum(host_stop_upstream.values()))
