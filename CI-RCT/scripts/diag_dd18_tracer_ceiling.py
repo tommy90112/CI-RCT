@@ -256,14 +256,21 @@ def l2_trace_dissection(g, ce, targets, fraud_label_set, prefer_set, threshold, 
                 print(f"      hop{hop}: current={cur}({g.node_type.get(cur)}) "
                       f"→ NO PARENTS, stop")
                 break
-            # 印每個 parent 的型別 + CE
-            desc = []
-            for u in ups[:6]:
-                et = g.get_edge_type(u, cur)
-                desc.append(f"{u}({g.node_type.get(u)},|CE|={abs_ce(u,cur):.5f},et={et})")
-            print(f"      hop{hop}: current={cur}({g.node_type.get(cur)}) "
-                  f"parents[{len(ups)}]: " + " | ".join(desc))
+            # 統計這層 parent：幾個是死路(0 parent)、幾個自己還有 parent、
+            # 幾個的祖先 2 跳內有 process（=能通到 root 的活路）
+            n_dead = sum(1 for u in ups if not g.parents(u))
+            n_alive = len(ups) - n_dead
+            n_to_proc = 0
+            for u in ups:
+                if any(g.node_type.get(pp) in prefer_set for pp in g.parents(u)):
+                    n_to_proc += 1
             best = max(ups, key=lambda u: abs_ce(u, cur))
+            best_alive = "活路" if g.parents(best) else "★死路(0 parent)"
+            print(f"      hop{hop}: current={cur}({g.node_type.get(cur)}) "
+                  f"parents[{len(ups)}]: 死路={n_dead} 活路={n_alive} "
+                  f"祖先含process={n_to_proc}")
+            print(f"             |CE|-max pick → {best} ({best_alive}, "
+                  f"|CE|={abs_ce(best,cur):.5f})")
             if abs_ce(best, cur) < threshold:
                 print(f"             → best={best} |CE|={abs_ce(best,cur):.5f} "
                       f"< thresh {threshold} → STOP (weak CE)")
@@ -276,6 +283,28 @@ def l2_trace_dissection(g, ce, targets, fraud_label_set, prefer_set, threshold, 
             cur = best
         if replayed >= 5:
             break
+
+    # ── L1.8 全域結構：flow 的直接 host parent 這批節點，上游長怎樣 ──
+    # 回答「process→host 的 host 跟 flow→host 的 host 是不是同一批」
+    flow_host_parents = set()
+    for t in targets:
+        for p in g.parents(t):
+            if g.node_type.get(p) == "host_node":
+                flow_host_parents.add(p)
+    fhp_proc = fhp_bridge = fhp_dead = 0
+    for h in flow_host_parents:
+        ptypes = {g.node_type.get(pp) for pp in g.parents(h)}
+        if not ptypes:
+            fhp_dead += 1
+        elif "process_node" in ptypes:
+            fhp_proc += 1
+        else:
+            fhp_bridge += 1
+    nfhp = max(1, len(flow_host_parents))
+    print(f"\n  [L1.8 全域結構] flow 直接連到的 host 節點共 {len(flow_host_parents)} 個，其上游：")
+    print(f"    直接有 process parent : {fhp_proc:>4d} ({100*fhp_proc/nfhp:.1f}%) ← 一跳到 process")
+    print(f"    只有 host bridge      : {fhp_bridge:>4d} ({100*fhp_bridge/nfhp:.1f}%) ← 要繞 bridge")
+    print(f"    0 parent（孤立）      : {fhp_dead:>4d} ({100*fhp_dead/nfhp:.1f}%) ← 死路")
 
     stop_reason = Counter()
     root_type = Counter()
