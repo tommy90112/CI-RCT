@@ -80,11 +80,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_explain", type=int, default=50)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--hidden_dim", type=int, default=128)
-    # default=2 matches train.py default & DD-14 training recipe. If you
-    # trained with --num_hgt_layers 3 you MUST pass the same flag here, or
-    # the extra layer stays randomly initialised (silently, since
-    # state_dict load is strict=False), giving correct AUC but F1≈0.
-    parser.add_argument("--num_hgt_layers", type=int, default=2)
+    # NOTE: for v2 checkpoints this flag is a FALLBACK only — the layer count
+    # is read back from the checkpoint's embedded arch metadata and overrides
+    # this value (see main()'s arch_get). It matters only for legacy
+    # bare-state_dict checkpoints, where it MUST match the training recipe:
+    # train.py's default is 3, so a legacy checkpoint trained on defaults but
+    # evaluated with the old default 2 left the extra HGT layer randomly
+    # initialised (strict=False load), giving correct AUC but F1≈0. Default
+    # raised to 3 to match train.py and make that fallback safe-by-default.
+    parser.add_argument("--num_hgt_layers", type=int, default=3)
     parser.add_argument("--num_heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--type_emb_dim", type=int, default=16)
@@ -623,7 +627,31 @@ def build_gt_list(args, data, type_offsets):
 def main():
     args = parse_args()
     device = torch.device(args.device)
- 
+
+    # ── Restore architecture from the checkpoint (v2 format) ────────────────
+    # A v2 checkpoint stores the layer count / hidden dim / head count it was
+    # trained with. We prefer those over the CLI flags so the rebuilt model
+    # always matches the trained weights — eliminating the "eval default
+    # num_hgt_layers (2) ≠ train default (3) → AUC ok but F1≈0" trap. Legacy
+    # checkpoints return None here and the CLI flags are used unchanged.
+    ckpt_arch = None
+    if args.checkpoint and os.path.exists(args.checkpoint):
+        ckpt_arch = CI_RCT.read_arch_metadata(args.checkpoint, device=args.device)
+    if ckpt_arch is None and args.checkpoint:
+        print("  [arch] checkpoint has no embedded architecture (legacy "
+              "format) — using CLI flags; ensure --num_hgt_layers etc. match "
+              "the training recipe or F1 may silently collapse.")
+
+    def arch_get(key, cli_value):
+        """Prefer the checkpoint's stored architecture; fall back to CLI."""
+        if ckpt_arch and ckpt_arch.get(key) is not None:
+            stored = ckpt_arch[key]
+            if stored != cli_value:
+                print(f"  [arch] {key}: checkpoint={stored} "
+                      f"(overrides CLI={cli_value})")
+            return stored
+        return cli_value
+
     print(f"Loading dataset: {args.dataset}")
     data, target_type = load_dataset(
         args.dataset, args.data_root,
@@ -716,22 +744,26 @@ def main():
         max_hops=args.max_hops,
         ce_threshold=args.ce_threshold,
         top_k_paths=args.top_k,
-        hidden_dim=args.hidden_dim,
-        num_hgt_layers=args.num_hgt_layers,
-        num_heads=args.num_heads,
-        dropout=args.dropout,
-        node_type_emb_dim=args.type_emb_dim,
+        hidden_dim=arch_get("hidden_dim", args.hidden_dim),
+        num_hgt_layers=arch_get("num_hgt_layers", args.num_hgt_layers),
+        num_heads=arch_get("num_heads", args.num_heads),
+        dropout=arch_get("dropout", args.dropout),
+        node_type_emb_dim=arch_get("node_type_emb_dim", args.type_emb_dim),
     )
     in_channels_dict = {
         nt: data[nt].x.size(-1)
         for nt in sorted(data.node_types)
         if data[nt].x is not None
     }
+    # Restore the training-time backbone exclusion (e.g. MG24 DD-8 Fix 4 drops
+    # host_node from message passing). Defaults to [] for legacy checkpoints.
+    backbone_exclude_node_types = arch_get("backbone_exclude_node_types", [])
     model = CI_RCT(
         config=config,
         metadata=data.metadata(),
         in_channels_dict=in_channels_dict,
         use_gan=False,
+        backbone_exclude_node_types=backbone_exclude_node_types,
     ).to(device)
     if args.checkpoint:
         # PyG's HGTConv has per-relation lazy weights that only materialise
