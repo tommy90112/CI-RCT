@@ -472,7 +472,27 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         predicted_roots, causal_chains, fraud_label_set
     )
     rct_metrics["num_traced"] = len(predicted_roots)
- 
+
+    # ── True-positive-only RCP ──────────────────────────────────────────────
+    # The headline RCP above is computed over every *predicted* fraud target,
+    # so a classifier false positive (a licit tx wrongly flagged) — which has
+    # no real fraud trail and can never trace to a fraud root — counts as a
+    # miss and depresses the tracer's measured precision. Restricting to
+    # targets that are ACTUALLY illicit (label==1) isolates tracer quality
+    # from classifier precision. predicted_roots is aligned 1-to-1 with
+    # fraud_predicted_global, so we can recover each target's true label.
+    from utils.metrics import root_cause_precision
+    tp_roots = [
+        root
+        for root, gid in zip(predicted_roots, fraud_predicted_global)
+        if labels[gid - offset].item() == 1
+    ]
+    if tp_roots:
+        rct_metrics["root_cause_precision_true_pos"] = float(
+            np.mean([root_cause_precision(r, fraud_label_set) for r in tp_roots])
+        )
+        rct_metrics["num_true_pos_traced"] = len(tp_roots)
+
     # ── DIAGNOSTIC 4: root type breakdown ──────────────────────────────────
     if args.debug:
         root_type_counts = Counter()
