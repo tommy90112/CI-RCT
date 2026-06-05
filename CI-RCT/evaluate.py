@@ -125,6 +125,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lfpn_mode", type=str, default="both",
                         choices=["strict", "extended", "both"])
     parser.add_argument("--lfpn_k", type=int, default=2)
+    # Metric C "groundtruth match": the CXGNN-original "exact" requires the
+    # traced chain set to EQUAL the GT set, which is structurally impossible
+    # here (the chain always contains the queried tx, the LFPN GT is wallet-
+    # only) → always 0. "subset" instead asks whether the chain recovered ALL
+    # GT nodes (per-instance perfect recall). Default subset; pass exact to
+    # reproduce the CXGNN metric.
+    parser.add_argument("--gt_match_mode", type=str, default="subset",
+                        choices=["exact", "subset"])
     parser.add_argument("--debug", action="store_true",
                         help="Print tracer diagnostics: CE distribution by edge "
                              "type, chain length histogram, stuck-trace analysis.")
@@ -566,7 +574,9 @@ def eval_explanation_quality(model, data, labels, test_mask,
         preds_list.append(set(chain))
         gts_list.append(gt_set)
     from utils.metrics import compute_explanation_metrics
-    return compute_explanation_metrics(preds_list, gts_list)
+    return compute_explanation_metrics(
+        preds_list, gts_list, gt_match_mode=args.gt_match_mode
+    )
  
  
 def build_gt_list(args, data, type_offsets):
