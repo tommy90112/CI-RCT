@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<title>CI-RCT · 犯罪鏈 3D(真實 txId / 地址)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { --bg:#0e1117; --panel:rgba(22,27,34,.94); --border:#30363d; --ink:#e6edf3;
+          --muted:#8b949e; --tx:#4c9be8; --wallet:#d9a441; --fraud:#f0506e; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,"PingFang TC","Microsoft JhengHei",system-ui,sans-serif; }
+  #graph { position:fixed; inset:0; }
+  .panel { position:fixed; background:var(--panel); border:1px solid var(--border);
+    border-radius:10px; padding:12px 14px; backdrop-filter:blur(6px); font-size:13px;
+    z-index:10; box-shadow:0 4px 18px rgba(0,0,0,.4); }
+  #ctrl { top:14px; left:14px; width:330px; }
+  #legend { top:14px; right:14px; }
+  #detail { bottom:14px; left:14px; width:330px; max-height:38vh; overflow-y:auto;
+    font-family:ui-monospace,Menlo,monospace; font-size:12px; }
+  h1 { font-size:15px; margin:0 0 6px; }
+  .muted { color:var(--muted); }
+  .sec { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:10px 0 4px; }
+  select, label.ck { width:100%; }
+  select { background:#0d1117; color:var(--ink); border:1px solid var(--border);
+    border-radius:6px; padding:6px 8px; font-size:12px; font-family:ui-monospace,Menlo,monospace; }
+  label.ck { display:flex; align-items:center; gap:6px; margin:6px 0; cursor:pointer; font-size:12px; }
+  .row { display:flex; gap:8px; align-items:center; margin:3px 0; }
+  .row .v { margin-left:auto; font-variant-numeric:tabular-nums; }
+  .sw { width:13px; height:13px; border-radius:50%; flex:none; }
+  .step { display:flex; gap:8px; padding:3px 0; border-bottom:1px solid #1c232b; }
+  .step .ar { color:var(--muted); }
+  .badge { font-size:10px; padding:0 5px; border-radius:5px; border:1px solid var(--border); }
+  .b-fraud { color:var(--fraud); border-color:var(--fraud); }
+  .b-root { color:#4caf72; border-color:#4caf72; }
+  .b-tgt { color:var(--tx); border-color:var(--tx); }
+</style>
+<script src="https://unpkg.com/three-spritetext"></script>
+<script src="https://unpkg.com/3d-force-graph@1.73.4/dist/3d-force-graph.min.js"></script>
+</head>
+<body>
+<div id="graph"></div>
+
+<div id="ctrl" class="panel">
+  <h1>犯罪鏈 3D</h1>
+  <div class="muted" id="meta">載入中…</div>
+  <div class="sec">選一條鏈(num_traced)</div>
+  <select id="chainSel"></select>
+  <label class="ck"><input type="checkbox" id="ckAll" /> 顯示全部鏈(選中高亮)</label>
+  <label class="ck"><input type="checkbox" id="ckParticles" checked /> 金流方向粒子</label>
+  <div class="muted" style="font-size:11px;margin-top:6px">
+    X 軸＝時間(左＝源頭/早,右＝被標記/晚)。拖曳旋轉、滾輪縮放。
+  </div>
+</div>
+
+<div id="legend" class="panel">
+  <div class="row"><span class="sw" style="background:var(--tx)"></span>transaction（txId）</div>
+  <div class="row"><span class="sw" style="background:var(--wallet)"></span>wallet（地址）</div>
+  <div class="row"><span class="sw" style="background:var(--fraud)"></span>已標記 illicit</div>
+</div>
+
+<div id="detail" class="panel"></div>
+
+<script>
+const TX = "#4c9be8", WALLET = "#d9a441", FRAUD = "#f0506e", DIM = "#3a4350";
+const short = s => (s && s.length > 14) ? s.slice(0, 8) + "…" + s.slice(-3) : s;
+const nodeBase = n => n.fraud ? FRAUD : (n.type === "transaction" ? TX : WALLET);
+const ceColor = v => v < 0 ? "#f0506e" : "#4caf72";
+
+const DEMO = {
+  meta:{ dataset:"DEMO（非真實數據）", checkpoint:"—", n_chains:3, demo:true },
+  chains:[
+    { target_txid:"3321", depth:3, root_type:"wallet", root_real_id:"3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy", root_is_fraud:true, is_true_positive:true,
+      nodes:[ {pos:0,global:1,type:"transaction",real_id:"3321",time:12,fraud:true,is_target:true},
+              {pos:1,global:1001,type:"wallet",real_id:"1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",time:11,fraud:true,ce:-0.42},
+              {pos:2,global:2,type:"transaction",real_id:"88017",time:9,fraud:false,ce:0.31},
+              {pos:3,global:1002,type:"wallet",real_id:"3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",time:7,fraud:true,ce:-0.55} ]},
+    { target_txid:"45102", depth:2, root_type:"wallet", root_real_id:"1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", root_is_fraud:true, is_true_positive:true,
+      nodes:[ {pos:0,global:3,type:"transaction",real_id:"45102",time:20,fraud:true,is_target:true},
+              {pos:1,global:4,type:"transaction",real_id:"45090",time:18,fraud:false,ce:-0.28},
+              {pos:2,global:1003,type:"wallet",real_id:"1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",time:15,fraud:true,ce:-0.61} ]},
+    { target_txid:"77820", depth:2, root_type:"transaction", root_real_id:"77001", root_is_fraud:false, is_true_positive:false,
+      nodes:[ {pos:0,global:5,type:"transaction",real_id:"77820",time:31,fraud:true,is_target:true},
+              {pos:1,global:1001,type:"wallet",real_id:"1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",time:11,fraud:true,ce:-0.18},
+              {pos:2,global:6,type:"transaction",real_id:"77001",time:28,fraud:false,ce:0.12} ]},
+  ],
+};
+
+let DATA, Graph, NODES, LINKS, TMIN, showAll = false, particles = true;
+const SPACING = 60;
+
+// 把所有鏈合併成全域 node/link(node 以 global 去重 → 共享實體會合併)
+function buildGlobal(data) {
+  const nodeById = new Map();
+  const linkBy = new Map();
+  const timed = [];
+  data.chains.forEach((c, ci) => {
+    c.nodes.forEach(n => {
+      if (n.time != null) timed.push(n.time);
+      if (!nodeById.has(n.global)) nodeById.set(n.global, { ...n, id: n.global, chains: new Set() });
+      nodeById.get(n.global).chains.add(ci);
+    });
+    for (let i = 1; i < c.nodes.length; i++) {
+      const parent = c.nodes[i], child = c.nodes[i - 1];
+      const key = parent.global + "->" + child.global;
+      if (!linkBy.has(key))
+        linkBy.set(key, { source: parent.global, target: child.global,
+                          ce: parent.ce ?? 0, chains: new Set() });
+      linkBy.get(key).chains.add(ci);
+    }
+  });
+  NODES = [...nodeById.values()];
+  LINKS = [...linkBy.values()];
+  TMIN = timed.length ? Math.min(...timed) : 0;
+  NODES.forEach(n => { n.fx = ((n.time == null ? TMIN - 1 : n.time) - TMIN) * SPACING; });
+}
+
+function selectedSets(ci) {
+  const ns = new Set(), ls = new Set();
+  const c = DATA.chains[ci];
+  c.nodes.forEach(n => ns.add(n.global));
+  for (let i = 1; i < c.nodes.length; i++) ls.add(c.nodes[i].global + "->" + c.nodes[i - 1].global);
+  return { ns, ls };
+}
+
+function render(ci) {
+  const { ns, ls } = selectedSets(ci);
+  let nodes, links;
+  if (showAll) {
+    nodes = NODES; links = LINKS;
+  } else {
+    nodes = NODES.filter(n => ns.has(n.global));
+    links = LINKS.filter(l =>
+      ls.has((l.source.id ?? l.source) + "->" + (l.target.id ?? l.target)));
+  }
+  Graph.graphData({ nodes, links });
+  Graph._selNs = ns; Graph._selLs = ls;
+  Graph.nodeThreeObject(makeLabel).linkColor(linkCol).linkWidth(linkWid);
+  Graph.linkDirectionalParticles(particles ? 2 : 0);
+  fillDetail(ci);
+  setTimeout(() => Graph.zoomToFit(500, 60), 120);
+}
+
+function makeLabel(n) {
+  const sel = Graph._selNs ? Graph._selNs.has(n.global) : true;
+  const icon = n.type === "transaction" ? "◆" : "●";
+  const s = new SpriteText(`${icon} ${short(n.real_id)}`);
+  s.color = (showAll && !sel) ? DIM : nodeBase(n);
+  s.textHeight = (showAll && !sel) ? 3 : 5;
+  return s;
+}
+function linkCol(l) {
+  const k = (l.source.id ?? l.source) + "->" + (l.target.id ?? l.target);
+  const sel = Graph._selLs ? Graph._selLs.has(k) : true;
+  return (showAll && !sel) ? DIM : "#7a8794";
+}
+function linkWid(l) {
+  const k = (l.source.id ?? l.source) + "->" + (l.target.id ?? l.target);
+  const sel = Graph._selLs ? Graph._selLs.has(k) : true;
+  return (showAll && !sel) ? 0.3 : 1.4;
+}
+
+function fillDetail(ci) {
+  const c = DATA.chains[ci];
+  const seq = [...c.nodes].reverse();   // root → target
+  let rows = "";
+  seq.forEach((n, j) => {
+    const ty = n.type === "transaction" ? "tx" : "wallet";
+    const tags = [];
+    if (n.is_target) tags.push('<span class="badge b-tgt">target</span>');
+    if (j === 0 && !n.is_target) tags.push('<span class="badge b-root">root</span>');
+    if (n.fraud) tags.push('<span class="badge b-fraud">illicit</span>');
+    const ce = (j < seq.length - 1) ? `<span class="ar">▶ CE ${seq[j].ce >= 0 ? "+" : ""}${(seq[j].ce ?? 0).toFixed(3)}</span>` : "";
+    rows += `<div class="step"><span style="color:${nodeBase(n)}">${ty}</span>
+      <span title="${n.real_id}">${short(n.real_id)}</span>
+      <span class="muted">t=${n.time ?? "?"}</span> ${tags.join("")} ${ce}</div>`;
+  });
+  document.getElementById("detail").innerHTML =
+    `<b>tx ${c.target_txid}</b> · 深度 ${c.depth} · ${c.is_true_positive ? "✓ true-positive" : "false-positive"}<br>`
+    + `root = ${c.root_type} ${short(c.root_real_id)} ${c.root_is_fraud ? "✓illicit" : ""}<br><br>` + rows;
+}
+
+function boot(data) {
+  DATA = data;
+  const m = data.meta || {};
+  document.getElementById("meta").innerHTML =
+    `${m.dataset || "graph"} · ${data.chains.length} 條鏈` +
+    (m.n_true_positive != null ? ` · TP ${m.n_true_positive}` : "") +
+    (m.demo ? ' · <span style="color:#e0a000">⚠ 示範</span>' : "");
+  buildGlobal(data);
+
+  const sel = document.getElementById("chainSel");
+  sel.innerHTML = data.chains.map((c, i) =>
+    `<option value="${i}">#${i + 1} · tx ${c.target_txid} · d${c.depth} · root ${c.root_type}`
+    + `${c.root_is_fraud ? " ✓" : ""}${c.is_true_positive ? " [TP]" : ""}</option>`).join("");
+  sel.onchange = () => render(+sel.value);
+
+  const el = document.getElementById("graph");
+  Graph = ForceGraph3D()(el)
+    .backgroundColor("#0e1117")
+    .nodeThreeObject(makeLabel)
+    .nodeLabel(n => `<div style="font-family:ui-monospace;font-size:12px">
+        <b>${n.real_id}</b><br>${n.type} · t=${n.time ?? "?"}${n.fraud ? '<br><span style="color:#f0506e">illicit</span>' : ""}</div>`)
+    .linkColor(linkCol).linkWidth(linkWid)
+    .linkOpacity(0.6)
+    .linkDirectionalArrowLength(3.5).linkDirectionalArrowRelPos(1)
+    .linkDirectionalParticleWidth(2);
+  Graph.d3Force("charge").strength(-90);
+
+  document.getElementById("ckAll").onchange = e => { showAll = e.target.checked; render(+sel.value); };
+  document.getElementById("ckParticles").onchange = e => { particles = e.target.checked; Graph.linkDirectionalParticles(particles ? 2 : 0); };
+
+  render(0);
+}
+
+fetch("crime_chains.json", { cache: "no-store" })
+  .then(r => { if (!r.ok) throw 0; return r.json(); })
+  .then(d => boot(d))
+  .catch(() => { DEMO.meta.dataset += " · 找不到 crime_chains.json"; boot(DEMO); });
+</script>
+</body>
+</html>

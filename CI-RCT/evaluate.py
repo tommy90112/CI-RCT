@@ -133,6 +133,15 @@ def parse_args() -> argparse.Namespace:
     # reproduce the CXGNN metric.
     parser.add_argument("--gt_match_mode", type=str, default="subset",
                         choices=["exact", "subset"])
+    # Dump the exact set of traced root-cause chains (the same ones counted in
+    # the depth histogram / num_traced) decoded to real Elliptic++ identities,
+    # for the crime-chain viewer (viz/crime_chain*.html).
+    parser.add_argument("--dump_chains", type=str, default=None,
+                        help="JSON path to write the traced chains (with real "
+                             "txId / wallet address) for the crime-chain viewer.")
+    parser.add_argument("--dump_chains_topn", type=int, default=0,
+                        help="Keep only the top-N chains (0 = all), sorted "
+                             "true-positive & fraud-root & deepest first.")
     parser.add_argument("--debug", action="store_true",
                         help="Print tracer diagnostics: CE distribution by edge "
                              "type, chain length histogram, stuck-trace analysis.")
@@ -492,6 +501,49 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
             np.mean([root_cause_precision(r, fraud_label_set) for r in tp_roots])
         )
         rct_metrics["num_true_pos_traced"] = len(tp_roots)
+
+    # ── Optional: dump the traced chains with real Elliptic++ identities ────
+    # These are the SAME chains summarised by the depth histogram — here we
+    # decode every node's global id back to its real txId / wallet address and
+    # write them out for the crime-chain viewer.
+    if getattr(args, "dump_chains", None) and args.dataset == "elliptic++":
+        import json as _json
+        from utils.elliptic_identity import build_reverse_maps, chain_to_record
+        print(f"\n[dump_chains] decoding {len(causal_chains)} chains to real "
+              f"txId / address …")
+        idx_to_txid, idx_to_addr = build_reverse_maps(
+            args.data_root,
+            include_addr_addr=args.include_addr_addr,
+            fraud_subgraph=args.fraud_subgraph,
+            fraud_subgraph_hops=args.fraud_subgraph_hops,
+        )
+        records = [
+            chain_to_record(
+                chain, causal_effects, labels[gid - offset].item() == 1,
+                type_offsets, causal_graph, data, idx_to_txid, idx_to_addr,
+            )
+            for chain, gid in zip(causal_chains, fraud_predicted_global)
+        ]
+        # true-positive & fraud-root & deepest first (most informative on top)
+        records.sort(
+            key=lambda c: (c["is_true_positive"], c["root_is_fraud"], c["depth"]),
+            reverse=True,
+        )
+        if args.dump_chains_topn > 0:
+            records = records[: args.dump_chains_topn]
+        meta = {
+            "dataset": "elliptic++",
+            "checkpoint": os.path.basename(args.checkpoint or ""),
+            "n_chains": len(records),
+            "n_true_positive": sum(1 for c in records if c["is_true_positive"]),
+            "n_fraud_root": sum(1 for c in records if c["root_is_fraud"]),
+            "mean_depth": (round(float(np.mean([c["depth"] for c in records])), 2)
+                           if records else 0.0),
+        }
+        os.makedirs(os.path.dirname(os.path.abspath(args.dump_chains)), exist_ok=True)
+        with open(args.dump_chains, "w") as f:
+            _json.dump({"meta": meta, "chains": records}, f)
+        print(f"[dump_chains] wrote {len(records)} chains → {args.dump_chains}")
 
     # ── DIAGNOSTIC 4: root type breakdown ──────────────────────────────────
     if args.debug:
