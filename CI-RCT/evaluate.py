@@ -53,6 +53,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", type=str, default="dblp",
                         choices=["dblp", "acm", "imdb", "elliptic", "elliptic++",
                                  "unsw_nb15", "unsw_mg24"])
+    # Elliptic++ detection target: 'transaction' (default, unchanged), 'wallet',
+    # or 'joint' (one model classifying both → single pooled F1 + dual-seed
+    # tracing). wallet/joint require --dataset elliptic++.
+    parser.add_argument("--variant", type=str, default="transaction",
+                        choices=["transaction", "wallet", "joint"])
     parser.add_argument("--data_root", type=str, default="data")
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--max_hops", type=int, default=5)
@@ -360,11 +365,79 @@ def eval_classification(model, data, labels, test_mask, threshold=None):
     if threshold is not None:
         metrics["threshold"] = float(threshold)
     return metrics
- 
- 
+
+
+def _load_variant_dataset(args):
+    """Dispatch the loader by --variant (elliptic++ only for wallet/joint)."""
+    if args.variant == "transaction":
+        return load_dataset(
+            args.dataset, args.data_root,
+            include_addr_addr=args.include_addr_addr,
+            fraud_subgraph=args.fraud_subgraph,
+            fraud_subgraph_hops=args.fraud_subgraph_hops,
+            max_flows=args.max_flows,
+            mg24_subsample_ddos=args.mg24_subsample_ddos,
+            mg24_min_host_flows=args.mg24_min_host_flows,
+            mg24_prune_external=args.mg24_prune_external,
+            mg24_split_mode=args.mg24_split_mode,
+            mg24_host_role=args.mg24_host_role,
+            mg24_drop_features=args.mg24_drop_features,
+            seed=args.seed,
+        )
+    if args.dataset != "elliptic++":
+        raise ValueError(
+            f"--variant {args.variant} requires --dataset elliptic++ "
+            f"(got {args.dataset!r})."
+        )
+    root = os.path.join(args.data_root, "Elliptic++")
+    if args.variant == "wallet":
+        from utils.elliptic_plus_wallet_loader import load_elliptic_plus_wallet_dataset
+        return load_elliptic_plus_wallet_dataset(
+            root, include_addr_addr=args.include_addr_addr,
+            fraud_subgraph=args.fraud_subgraph,
+            fraud_subgraph_hops=args.fraud_subgraph_hops,
+        )
+    from utils.elliptic_plus_joint_loader import load_elliptic_plus_joint_dataset
+    return load_elliptic_plus_joint_dataset(
+        root, include_addr_addr=args.include_addr_addr,
+        fraud_subgraph=args.fraud_subgraph,
+        fraud_subgraph_hops=args.fraud_subgraph_hops,
+    )
+
+
+@torch.no_grad()
+def eval_classification_pooled(model, data):
+    """Joint variant: ONE pooled F1 over every classified type's test nodes.
+
+    Each type is scored by its OWN head (primary for transaction, aux head for
+    wallet); the (y_true, y_pred, score) triples are concatenated and a single
+    set of metrics is computed. Returns (metrics, per_type_test_n).
+    """
+    model.eval()
+    logits_by_type, _ = model.all_logits(data)
+    y_true, y_pred, scores, per_type_n = [], [], [], {}
+    for ntype, logits in logits_by_type.items():
+        mask = getattr(data[ntype], "test_mask", None)
+        if mask is None or not bool(mask.any()):
+            continue
+        probs = torch.softmax(logits[mask], dim=-1)
+        y_pred.append(probs.argmax(dim=-1).cpu())
+        scores.append(probs[:, 1].cpu())
+        y_true.append(data[ntype].y[mask].cpu())
+        per_type_n[ntype] = int(mask.sum())
+    y_true = torch.cat(y_true)
+    y_pred = torch.cat(y_pred)
+    scores = torch.cat(scores)
+    metrics = compute_classification_metrics(y_pred, y_true, scores)
+    metrics["fraud_f1"] = compute_fraud_f1(y_true, y_pred)
+    metrics["pred_fraud_rate"] = float(y_pred.float().mean())
+    return metrics, per_type_n
+
+
 def eval_root_cause_and_stability(model, data, labels, test_mask,
                                   causal_graph, args, device,
-                                  type_offsets, target_type):
+                                  type_offsets, target_type,
+                                  extra_fraud_seeds=None):
     model.eval()
     with torch.no_grad():
         logits, h_dict = model.forward(data)
@@ -403,7 +476,15 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         offset + idx for idx in test_indices
         if logits[idx].argmax().item() == 1
            and (offset + idx) in causal_graph.set_v
-    ][: args.max_explain]
+    ]
+    # Joint dual-seed: also trace from predicted-fraud nodes of other types
+    # (e.g. wallet head), computed by the caller and passed in here.
+    if extra_fraud_seeds:
+        fraud_predicted_global.extend(
+            g for g in extra_fraud_seeds if g in causal_graph.set_v
+        )
+        fraud_predicted_global = list(dict.fromkeys(fraud_predicted_global))
+    fraud_predicted_global = fraud_predicted_global[: args.max_explain]
  
     if not fraud_predicted_global:
         print("  No fraud-predicted test nodes in causal graph — skipping RCT metrics.")
@@ -447,6 +528,17 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
             fraud_subgraph_hops=args.fraud_subgraph_hops,
         )
         fraud_label_set |= illicit_wallet_globals
+        # wallet/joint (dual-seed) traces can legitimately end at an upstream
+        # illicit transaction; credit those too. Gated so the transaction
+        # variant's fraud_label_set stays unchanged.
+        if (target_type != "transaction" or extra_fraud_seeds) \
+                and "transaction" in type_offsets and hasattr(data["transaction"], "y"):
+            tx_off = type_offsets["transaction"]
+            tx_y = data["transaction"].y
+            fraud_label_set |= {
+                tx_off + i
+                for i in (tx_y == 1).nonzero(as_tuple=True)[0].tolist()
+            }
         if args.debug:
             print(f"\n[fraud_label_set] tx fraud nodes: "
                   f"{sum(1 for i in test_indices if labels[i].item() == 1)}, "
@@ -491,10 +583,26 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
     # from classifier precision. predicted_roots is aligned 1-to-1 with
     # fraud_predicted_global, so we can recover each target's true label.
     from utils.metrics import root_cause_precision
+
+    def _label_of_global(gid):
+        """True label of a global id via its own node type (handles mixed-type
+        joint seeds). For single-type variants this equals labels[gid-offset]."""
+        chosen_t, chosen_off = None, -1
+        for t, off in type_offsets.items():
+            if off <= gid and off > chosen_off:
+                chosen_t, chosen_off = t, off
+        if chosen_t is None:
+            return None
+        y = getattr(data[chosen_t], "y", None)
+        local = gid - chosen_off
+        if y is None or local < 0 or local >= y.size(0):
+            return None
+        return int(y[local].item())
+
     tp_roots = [
         root
         for root, gid in zip(predicted_roots, fraud_predicted_global)
-        if labels[gid - offset].item() == 1
+        if _label_of_global(gid) == 1
     ]
     if tp_roots:
         rct_metrics["root_cause_precision_true_pos"] = float(
@@ -519,7 +627,7 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         )
         records = [
             chain_to_record(
-                chain, causal_effects, labels[gid - offset].item() == 1,
+                chain, causal_effects, _label_of_global(gid) == 1,
                 type_offsets, causal_graph, data, idx_to_txid, idx_to_addr,
             )
             for chain, gid in zip(causal_chains, fraud_predicted_global)
@@ -734,21 +842,8 @@ def main():
             return stored
         return cli_value
 
-    print(f"Loading dataset: {args.dataset}")
-    data, target_type = load_dataset(
-        args.dataset, args.data_root,
-        include_addr_addr=args.include_addr_addr,
-        fraud_subgraph=args.fraud_subgraph,
-        fraud_subgraph_hops=args.fraud_subgraph_hops,
-        max_flows=args.max_flows,
-        mg24_subsample_ddos=args.mg24_subsample_ddos,
-        mg24_min_host_flows=args.mg24_min_host_flows,
-        mg24_prune_external=args.mg24_prune_external,
-        mg24_split_mode=args.mg24_split_mode,
-        mg24_host_role=args.mg24_host_role,
-        mg24_drop_features=args.mg24_drop_features,
-        seed=args.seed,
-    )
+    print(f"Loading dataset: {args.dataset} (variant={args.variant})")
+    data, target_type = _load_variant_dataset(args)
     data = data.to(device)
     labels    = data[target_type].y
     test_mask = data[target_type].test_mask
@@ -759,15 +854,26 @@ def main():
     fraud_global_ids = [
         offset + i for i in test_indices if labels[i].item() == 1
     ]
- 
+    # Joint: also seed the BFS from fraud wallets (connectivity for dual-seed).
+    fraud_wallet_ids = []
+    if (args.variant == "joint" and "wallet" in data.node_types
+            and hasattr(data["wallet"], "y")):
+        w_off = type_offsets["wallet"]
+        fraud_wallet_ids = [
+            w_off + i
+            for i in (data["wallet"].y == 1).nonzero(as_tuple=True)[0].tolist()
+        ]
+
     gt_list = build_gt_list(args, data, type_offsets)
- 
+
     print("\nBuilding TypedCausalGraph...")
     gt_tx_ids = []
     for _, gt in gt_list:
         gt_tx_ids.extend(gt.keys())
     seed_ids = list(dict.fromkeys(
-        fraud_global_ids[:args.num_seeds] + gt_tx_ids
+        fraud_global_ids[:args.num_seeds]
+        + fraud_wallet_ids[:args.num_seeds]
+        + gt_tx_ids
     ))
 
     # B1: resolve rare-edge-type set. Explicit --rare_edge_types wins;
@@ -840,13 +946,29 @@ def main():
     # Restore the training-time backbone exclusion (e.g. MG24 DD-8 Fix 4 drops
     # host_node from message passing). Defaults to [] for legacy checkpoints.
     backbone_exclude_node_types = arch_get("backbone_exclude_node_types", [])
-    model = CI_RCT(
-        config=config,
-        metadata=data.metadata(),
-        in_channels_dict=in_channels_dict,
-        use_gan=False,
-        backbone_exclude_node_types=backbone_exclude_node_types,
-    ).to(device)
+    if args.variant == "joint":
+        from model.ci_rct_joint import CI_RCT_Joint
+        aux_node_types = arch_get("aux_node_types", ["wallet"])
+        aux_num_classes = arch_get("aux_num_classes", {}) or {
+            t: int(data[t].y.max().item()) + 1 for t in aux_node_types
+        }
+        model = CI_RCT_Joint(
+            config=config,
+            metadata=data.metadata(),
+            in_channels_dict=in_channels_dict,
+            use_gan=False,
+            backbone_exclude_node_types=backbone_exclude_node_types,
+            aux_node_types=list(aux_node_types),
+            aux_num_classes=aux_num_classes,
+        ).to(device)
+    else:
+        model = CI_RCT(
+            config=config,
+            metadata=data.metadata(),
+            in_channels_dict=in_channels_dict,
+            use_gan=False,
+            backbone_exclude_node_types=backbone_exclude_node_types,
+        ).to(device)
     if args.checkpoint:
         # PyG's HGTConv has per-relation lazy weights that only materialise
         # on the first forward(). If load_state_dict(strict=False) is called
@@ -865,8 +987,11 @@ def main():
         print("No checkpoint — evaluating randomly initialised model (baseline).")
  
     # Resolve the decision threshold (argmax by default; manual or val-tuned).
+    # Joint uses argmax (two heads → no single shared threshold to sweep).
     chosen_threshold = None
-    if args.threshold >= 0.0:
+    if args.variant == "joint":
+        pass
+    elif args.threshold >= 0.0:
         chosen_threshold = args.threshold
         print(f"\n[threshold] using manual cut = {chosen_threshold:.3f}")
     elif args.threshold_tuning == "val":
@@ -886,14 +1011,33 @@ def main():
             print(f"\n[threshold] val-tuned cut = {chosen_threshold:.3f} "
                   f"({args.threshold_objective}={val_obj:.4f} on val)")
 
-    cls_metrics = eval_classification(
-        model, data, labels, test_mask, threshold=chosen_threshold
-    )
-    print_section("A. Classification Metrics", cls_metrics)
- 
+    # ── A. Classification ───────────────────────────────────────────────────
+    extra_fraud_seeds = None
+    if args.variant == "joint":
+        cls_metrics, per_type_n = eval_classification_pooled(model, data)
+        n_str = " + ".join(f"{t} {n:,}" for t, n in per_type_n.items())
+        print_section(f"A. Classification (POOLED test N = {n_str})", cls_metrics)
+        # Predicted-fraud wallet global ids → dual-seed tracing in Metric B.
+        logits_by_type, _ = model.all_logits(data)
+        if "wallet" in logits_by_type:
+            w_off = type_offsets["wallet"]
+            w_mask = data["wallet"].test_mask
+            w_preds = logits_by_type["wallet"].argmax(dim=-1)
+            w_idx = w_mask.nonzero(as_tuple=True)[0].tolist()
+            extra_fraud_seeds = [
+                w_off + i for i in w_idx if w_preds[i].item() == 1
+            ]
+    else:
+        cls_metrics = eval_classification(
+            model, data, labels, test_mask, threshold=chosen_threshold
+        )
+        print_section("A. Classification Metrics", cls_metrics)
+    print(f"  ▶ Headline F1-score (fraud class) = {cls_metrics['fraud_f1']:.4f}")
+
     rct_metrics, stab_metrics = eval_root_cause_and_stability(
         model, data, labels, test_mask, causal_graph, args, device,
         type_offsets=type_offsets, target_type=target_type,
+        extra_fraud_seeds=extra_fraud_seeds,
     )
     if rct_metrics:
         print_section("B. Root Cause Tracing Metrics", rct_metrics)
