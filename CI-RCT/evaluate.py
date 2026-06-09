@@ -405,33 +405,74 @@ def _load_variant_dataset(args):
     )
 
 
+def _tune_head_threshold(probs, store, objective):
+    """Per-head decision threshold, swept on THIS type's own val split.
+
+    Returns the swept threshold, or None to fall back to argmax (when no
+    objective is requested or the type has no val nodes).
+    """
+    if objective is None:
+        return None
+    vmask = getattr(store, "val_mask", None)
+    if vmask is None or not bool(vmask.any()):
+        return None
+    v_scores = probs[vmask][:, 1].cpu().numpy()
+    v_true = store.y[vmask].cpu().numpy()
+    thr, _ = sweep_best_threshold(v_scores, v_true, objective=objective)
+    return thr
+
+
 @torch.no_grad()
-def eval_classification_pooled(model, data):
+def eval_classification_pooled(model, data, threshold_objective=None):
     """Joint variant: ONE pooled F1 over every classified type's test nodes.
 
     Each type is scored by its OWN head (primary for transaction, aux head for
     wallet); the (y_true, y_pred, score) triples are concatenated and a single
-    set of metrics is computed. Returns (metrics, per_type_test_n).
+    set of metrics is computed.
+
+    When ``threshold_objective`` is given (e.g. 'fraud_f1'), each head's
+    decision threshold is tuned INDEPENDENTLY on that type's own val split
+    before pooling. This is essential because the heads have very different
+    fraud base rates: a single shared argmax (== 0.5) cut lets the high-volume
+    wallet head over-predict (pred_fraud_rate ≫ true rate), which collapses the
+    pooled fraud F1. ``None`` keeps the legacy argmax cut.
+
+    Returns (metrics, per_type_test_n, per_type_info) where per_type_info maps
+    each type → {fraud_f1, pred_fraud_rate, threshold}.
     """
     model.eval()
     logits_by_type, _ = model.all_logits(data)
-    y_true, y_pred, scores, per_type_n = [], [], [], {}
+    y_true, y_pred, scores = [], [], []
+    per_type_n, per_type_info = {}, {}
     for ntype, logits in logits_by_type.items():
         mask = getattr(data[ntype], "test_mask", None)
         if mask is None or not bool(mask.any()):
             continue
-        probs = torch.softmax(logits[mask], dim=-1)
-        y_pred.append(probs.argmax(dim=-1).cpu())
-        scores.append(probs[:, 1].cpu())
-        y_true.append(data[ntype].y[mask].cpu())
+        probs = torch.softmax(logits, dim=-1)
+        t_scores = probs[mask][:, 1].cpu()
+        t_true = data[ntype].y[mask].cpu()
+
+        thr = _tune_head_threshold(probs, data[ntype], threshold_objective)
+        t_pred = (
+            (t_scores > thr).long() if thr is not None
+            else probs[mask].argmax(dim=-1).cpu()
+        )
+
         per_type_n[ntype] = int(mask.sum())
-    y_true = torch.cat(y_true)
-    y_pred = torch.cat(y_pred)
-    scores = torch.cat(scores)
+        per_type_info[ntype] = {
+            "fraud_f1": compute_fraud_f1(t_true, t_pred),
+            "pred_fraud_rate": float(t_pred.float().mean()),
+            "threshold": 0.5 if thr is None else float(thr),
+        }
+        y_true.append(t_true)
+        y_pred.append(t_pred)
+        scores.append(t_scores)
+
+    y_true, y_pred, scores = map(torch.cat, (y_true, y_pred, scores))
     metrics = compute_classification_metrics(y_pred, y_true, scores)
     metrics["fraud_f1"] = compute_fraud_f1(y_true, y_pred)
     metrics["pred_fraud_rate"] = float(y_pred.float().mean())
-    return metrics, per_type_n
+    return metrics, per_type_n, per_type_info
 
 
 def eval_root_cause_and_stability(model, data, labels, test_mask,
@@ -987,7 +1028,8 @@ def main():
         print("No checkpoint — evaluating randomly initialised model (baseline).")
  
     # Resolve the decision threshold (argmax by default; manual or val-tuned).
-    # Joint uses argmax (two heads → no single shared threshold to sweep).
+    # Joint tunes a SEPARATE threshold per head inside eval_classification_pooled
+    # (the two heads have different base rates → no single shared cut works).
     chosen_threshold = None
     if args.variant == "joint":
         pass
@@ -1014,18 +1056,32 @@ def main():
     # ── A. Classification ───────────────────────────────────────────────────
     extra_fraud_seeds = None
     if args.variant == "joint":
-        cls_metrics, per_type_n = eval_classification_pooled(model, data)
+        # Per-head val-tuned thresholds when --threshold_tuning val is set
+        # (a shared 0.5 cut lets the wallet head over-predict and collapse the
+        # pooled fraud F1); otherwise legacy argmax.
+        pooled_obj = (
+            args.threshold_objective if args.threshold_tuning == "val" else None
+        )
+        cls_metrics, per_type_n, per_type_info = eval_classification_pooled(
+            model, data, threshold_objective=pooled_obj
+        )
         n_str = " + ".join(f"{t} {n:,}" for t, n in per_type_n.items())
         print_section(f"A. Classification (POOLED test N = {n_str})", cls_metrics)
+        for t, info in per_type_info.items():
+            print(f"    · {t:11s} fraud_f1={info['fraud_f1']:.4f}  "
+                  f"pred_rate={info['pred_fraud_rate']:.4f}  "
+                  f"thr={info['threshold']:.3f}")
         # Predicted-fraud wallet global ids → dual-seed tracing in Metric B.
+        # Use the SAME (tuned) wallet threshold as Metric A for consistency.
         logits_by_type, _ = model.all_logits(data)
         if "wallet" in logits_by_type:
             w_off = type_offsets["wallet"]
             w_mask = data["wallet"].test_mask
-            w_preds = logits_by_type["wallet"].argmax(dim=-1)
+            w_probs = torch.softmax(logits_by_type["wallet"], dim=-1)[:, 1]
+            w_thr = per_type_info.get("wallet", {}).get("threshold", 0.5)
             w_idx = w_mask.nonzero(as_tuple=True)[0].tolist()
             extra_fraud_seeds = [
-                w_off + i for i in w_idx if w_preds[i].item() == 1
+                w_off + i for i in w_idx if w_probs[i].item() > w_thr
             ]
     else:
         cls_metrics = eval_classification(
