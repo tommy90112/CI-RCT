@@ -47,11 +47,13 @@ Loaded checkpoint: checkpoints/ci_rct_elliptic++_joint_best.pt
 ───────────────────────────────────────────────────────
   A. Classification (POOLED test N = transaction 6,987 + wallet 55,123)
 ───────────────────────────────────────────────────────
-  F1                                      : 0.5393
+  F1                                      : 0.7508
   Auc                                     : 0.9176
-  Fraud F1                                : 0.3046
-  Pred Fraud Rate                         : 0.4106
-  ▶ Headline F1-score (fraud class) = 0.3046
+  Fraud F1                                : 0.5541
+  Pred Fraud Rate                         : 0.1304
+    · transaction fraud_f1=0.7363  pred_rate=0.0694  thr=0.850
+    · wallet      fraud_f1=0.5362  pred_rate=0.1381  thr=0.600
+  ▶ Headline F1-score (fraud class) = 0.5541
 
 [diagnostic 1/3] CE distribution by edge type
   (ce_threshold = 0.0001)
@@ -63,49 +65,49 @@ Loaded checkpoint: checkpoints/ci_rct_elliptic++_joint_best.pt
 [fraud_label_set] tx fraud nodes: 683, illicit wallets added: 14,266, total fraud_label_set size: 18,811
 
 [diagnostic 4/4] Predicted root cause type breakdown
-  root type = transaction         :  327  (68 in fraud_label_set, 20.8%)
-  root type = wallet              :  673  (288 in fraud_label_set, 42.8%)
+  root type = transaction         :  349  (72 in fraud_label_set, 20.6%)
+  root type = wallet              :  651  (252 in fraud_label_set, 38.7%)
 
 [diagnostic 2/3] Chain depth histogram (num_traced=1000, max_hops=20)
-  depth= 0:  159  ██████
-  depth= 1:  218  ████████
-  depth= 2:  174  ██████
-  depth= 3:  210  ████████
-  depth= 4:  117  ████
-  depth= 5:   46  █
-  depth= 6:   23  
-  depth= 7:   16  
-  depth= 8:   12  
+  depth= 0:   74  ██
+  depth= 1:  224  ████████
+  depth= 2:  220  ████████
+  depth= 3:  219  ████████
+  depth= 4:  126  █████
+  depth= 5:   50  ██
+  depth= 6:   27  █
+  depth= 7:   19  
+  depth= 8:   13  
   depth= 9:    8  
   depth=10:    4  
-  depth=11:    6  
-  depth=12:    1  
+  depth=11:    8  
+  depth=12:    2  
   depth=13:    2  
   depth=14:    3  
   depth=17:    1  
 
-[diagnostic 3/3] Stuck-at-target trace analysis (159/1000 chains have depth 0)
-  reason: target has no parents in causal graph : 146
+[diagnostic 3/3] Stuck-at-target trace analysis (74/1000 chains have depth 0)
+  reason: target has no parents in causal graph : 61
   reason: parents exist but max CE < threshold  : 13
-    -> max-CE among stuck-but-has-parents:  mean=-0.0000  median=-0.0000  min=-0.0001  max=+0.0001
+    -> max-CE among stuck-but-has-parents:  mean=+0.0000  median=+0.0000  min=-0.0001  max=+0.0001
     -> if these are mostly near 0, the relevant edge model is undertrained (NCM hypothesis confirmed).
 
 ───────────────────────────────────────────────────────
   B. Root Cause Tracing Metrics
 ───────────────────────────────────────────────────────
-  Root Cause Precision                    : 0.3560
-  Root Cause Hit Rate                     : 0.6670
-  Chain Validity                          : 0.5509
-  Mean Tracing Depth                      : 2.5150
+  Root Cause Precision                    : 0.3240
+  Root Cause Hit Rate                     : 0.6970
+  Chain Validity                          : 0.5410
+  Mean Tracing Depth                      : 2.7830
   Num Traced                              : 1000
-  Root Cause Precision True Pos           : 0.4172
-  Num True Pos Traced                     : 851
+  Root Cause Precision True Pos           : 0.3662
+  Num True Pos Traced                     : 882
 
 ───────────────────────────────────────────────────────
   D. φ-Stability Metrics
 ───────────────────────────────────────────────────────
-  Phi Stability Std                       : 0.0017
-  Phi Stability Mean Abs                  : 0.0005
+  Phi Stability Std                       : 0.0016
+  Phi Stability Mean Abs                  : 0.0006
   Num Nodes Explained                     : 1000
 
 [Metric C — GT = LFPN-Strict]
