@@ -45,16 +45,19 @@ def load_elliptic_plus_joint_dataset(
     if not os.path.isdir(data_root):
         raise FileNotFoundError(f"Elliptic++ data_root does not exist: {data_root}")
 
-    # 1. Transaction primary (y + masks) from the unchanged base loader.
+    # 1. Transaction primary (y + masks) from the base loader. Wallet nodes are
+    #    collapsed to one-per-address (canonical universe, leak-free wallet split);
+    #    the transaction primary head is unaffected by the wallet dedup.
     data, target_type = load_elliptic_plus_dataset(
         data_root,
         include_addr_addr=include_addr_addr,
         fraud_subgraph=fraud_subgraph,
         fraud_subgraph_hops=fraud_subgraph_hops,
+        wallet_per_address=True,
     )
 
-    # 2. Clean wallet labels + stratified masks (row-order aligned with the base
-    #    loader's data["wallet"]).
+    # 2. Clean wallet labels + stratified masks (same per-address dedup →
+    #    row-order aligned with the base loader's data["wallet"]).
     from pathlib import Path
 
     all_wallet_ids, y_cls, labeled_idx = _build_clean_wallet_labels(
@@ -62,6 +65,7 @@ def load_elliptic_plus_joint_dataset(
         include_addr_addr=include_addr_addr,
         fraud_subgraph=fraud_subgraph,
         fraud_subgraph_hops=fraud_subgraph_hops,
+        wallet_per_address=True,
     )
     n_wallets = int(data["wallet"].num_nodes)
     if len(all_wallet_ids) != n_wallets:
