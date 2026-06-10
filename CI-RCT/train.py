@@ -101,6 +101,17 @@ def parse_args() -> argparse.Namespace:
                         help="λ2: weight of Causal Shapley stability loss")
     parser.add_argument("--lambda_ncm", type=float, default=0.1,
                         help="λ3: weight of NCM supervision (BCE) loss")
+    parser.add_argument("--use_reconstruction", type=lambda x: x.lower() == "true",
+                        default=False,
+                        help="Enable GraphBEAN-style feature+edge reconstruction "
+                             "self-supervision over ALL nodes (Step 1). Trains the "
+                             "unlabeled majority; recommended for wallet/joint to "
+                             "close the gap to SAGE-FIN. OFF keeps transaction "
+                             "byte-identical.")
+    parser.add_argument("--lambda_recon", type=float, default=1.0,
+                        help="λ4: weight of reconstruction loss (only used when "
+                             "--use_reconstruction true; SAGE-FIN treats recon as "
+                             "a primary signal, so ~1.0 is a sensible start).")
     parser.add_argument("--ncm_edge_balance", type=str, default="none",
                         choices=("none", "uniform", "sqrt", "inverse"),
                         help="Per-edge-type NCM loss balancing (DD-17). "
@@ -342,10 +353,15 @@ def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
         edge_balance=ncm_edge_balance,
     )
 
+    recon_loss = torch.zeros(1, device=device)
+    if getattr(model, "use_reconstruction", False):
+        recon_loss = model.reconstruction_loss(data, h_dict)
+
     total_loss = (
         detection_loss
         + model.config.lambda_stability * stability_loss
         + model.config.lambda_ncm * ncm_loss
+        + model.config.lambda_recon * recon_loss
     )
     total_loss.backward()
     optimizer.step()
@@ -369,7 +385,7 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
     optimizer_backbone.zero_grad()
 
     target_type_offset = type_offsets[target_type]
-    total_loss, detection_loss, adv_loss, stability_loss, ncm_loss = model.compute_total_loss(
+    total_loss, detection_loss, adv_loss, stability_loss, ncm_loss, _recon_loss = model.compute_total_loss(
         data=data,
         labels=labels,
         train_mask=train_mask,
@@ -391,7 +407,7 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
     g_loss_val = 0.0
     if step_count % n_critic == 0:
         optimizer_generator.zero_grad()
-        _, _, g_adv_loss, _, _ = model.compute_total_loss(
+        _, _, g_adv_loss, _, _, _ = model.compute_total_loss(
             data=data,
             labels=labels,
             train_mask=train_mask,
@@ -616,6 +632,7 @@ def main() -> None:
         lambda_adversarial=args.lambda_adversarial,
         lambda_stability=args.lambda_stability,
         lambda_ncm=args.lambda_ncm,
+        lambda_recon=args.lambda_recon,
         n_critic=args.n_critic,
         gp_weight=args.gp_weight,
         noise_std=args.noise_std,
@@ -725,6 +742,7 @@ def main() -> None:
             backbone_exclude_node_types=backbone_exclude_node_types,
             aux_node_types=["wallet"],
             aux_num_classes=aux_num_classes,
+            use_reconstruction=args.use_reconstruction,
         ).to(device)
         print(f"  Joint heads: primary={target_type}  aux=['wallet']  "
               f"(λ_aux={args.lambda_aux_detection})")
@@ -737,6 +755,7 @@ def main() -> None:
             use_gan=args.use_gan,
             num_classes=num_classes,
             backbone_exclude_node_types=backbone_exclude_node_types,
+            use_reconstruction=args.use_reconstruction,
         ).to(device)
 
     # --- Optimisers ---
@@ -745,6 +764,15 @@ def main() -> None:
     )
     if args.variant == "joint":
         _backbone_params += list(model.aux_classifiers.parameters())
+    # Reconstruction decoders (Step 1) train on the same backbone optimiser so
+    # L_recon actually updates them (and back-propagates into the backbone).
+    if getattr(model, "use_reconstruction", False):
+        if model.feature_decoders is not None:
+            _backbone_params += list(model.feature_decoders.parameters())
+        if model.edge_decoder is not None:
+            _backbone_params += list(model.edge_decoder.parameters())
+        print(f"  Reconstruction self-supervision ON "
+              f"(λ_recon={config.lambda_recon}, edge={model._recon_edge_type})")
     optimizer_backbone = optim.Adam(
         _backbone_params,
         lr=config.learning_rate,

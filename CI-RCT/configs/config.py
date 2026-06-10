@@ -44,6 +44,10 @@ class CI_RCT_Config:
     lambda_adversarial: float = 0.1   # λ1: weight of WGAN-GP adversarial loss
     lambda_stability: float = 0.5     # λ2: weight of Causal Shapley stability loss
     lambda_ncm: float = 0.1           # λ3: weight of NCM supervision (BCE) loss
+    lambda_recon: float = 0.0         # λ4: GraphBEAN-style feature+edge reconstruction
+                                      #     self-supervision (0 = OFF → byte-identical;
+                                      #     enabled via --use_reconstruction for
+                                      #     wallet/joint to train the unlabeled majority)
 
     # ── Training ──────────────────────────────────────────────────────────
     num_epochs: int = 200

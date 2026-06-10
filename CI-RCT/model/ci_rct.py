@@ -67,11 +67,13 @@ class CI_RCT(nn.Module):
         use_gan: bool = True,
         num_classes: int = 2,
         backbone_exclude_node_types: Optional[List[str]] = None,
+        use_reconstruction: bool = False,
     ) -> None:
         super().__init__()
 
         self.config = config
         self.use_gan = use_gan
+        self.use_reconstruction = use_reconstruction
         self.backbone_exclude_node_types: List[str] = list(
             backbone_exclude_node_types or []
         )
@@ -127,6 +129,41 @@ class CI_RCT(nn.Module):
         else:
             self.causal_gan = None
 
+        # ── GraphBEAN-style reconstruction decoders (Step 1, training only) ──
+        # Self-supervision over ALL nodes (incl. the unlabeled majority the
+        # supervised heads ignore): a per-type feature decoder reconstructs the
+        # raw node features, and a bilinear edge decoder reconstructs the
+        # bipartite cross-type adjacency (wallet↔transaction for Elliptic++).
+        # Built only when use_reconstruction → no params / no effect otherwise.
+        self.feature_decoders: Optional[nn.ModuleDict] = None
+        self.edge_decoder: Optional[nn.Module] = None
+        self._recon_edge_type: Optional[Tuple[str, str, str]] = None
+        if use_reconstruction:
+            if in_channels_dict is None:
+                raise ValueError(
+                    "in_channels_dict (per-type raw feature dims) is required "
+                    "when use_reconstruction=True."
+                )
+            self.feature_decoders = nn.ModuleDict(
+                {
+                    ntype: nn.Sequential(
+                        nn.Linear(config.hidden_dim, config.hidden_dim),
+                        nn.ELU(),
+                        nn.Linear(config.hidden_dim, int(raw_dim)),
+                    )
+                    for ntype, raw_dim in in_channels_dict.items()
+                }
+            )
+            # Bipartite edge = the (deterministically chosen) cross-type edge
+            # type (src != dst). For Elliptic++ this is wallet↔transaction; for
+            # same-type-only graphs edge reconstruction is skipped.
+            cross = sorted(et for et in edge_types if et[0] != et[2])
+            self._recon_edge_type = cross[0] if cross else None
+            if self._recon_edge_type is not None:
+                self.edge_decoder = nn.Bilinear(
+                    config.hidden_dim, config.hidden_dim, 1
+                )
+
         # Buffer: previous-step φ values for stability loss (φ_{t-1})
         # Stored as plain dict — not a model parameter
         self._prev_phi: Optional[Dict[int, float]] = None
@@ -162,6 +199,67 @@ class CI_RCT(nn.Module):
         """
         return self.hetero_ncm.detached_causal_effects(flat_h, causal_graph)
 
+    # ── Reconstruction self-supervision (Step 1) ───────────────────────────────
+
+    def reconstruction_loss(
+        self, data: HeteroData, h_dict: Dict[str, Tensor]
+    ) -> Tensor:
+        """
+        GraphBEAN-style self-supervised reconstruction loss over ALL nodes.
+
+            L_recon = mean_type MSE(decode(h) , x)        # feature reconstruction
+                      + BCE(bilinear(h_src, h_dst) , 1/0) # bipartite edge recon
+
+        Feature reconstruction trains EVERY node (incl. the unlabeled majority
+        the supervised heads never touch); edge reconstruction trains the
+        bipartite cross-type adjacency (wallet↔transaction) with equal-size
+        negative sampling. Returns 0 if reconstruction is disabled.
+        """
+        device = data[self.config.target_node_type].x.device
+        if not self.use_reconstruction or self.feature_decoders is None:
+            return torch.zeros(1, device=device)
+
+        # (a) feature reconstruction — averaged over node types present.
+        feat_terms: List[Tensor] = []
+        for ntype, dec in self.feature_decoders.items():
+            if ntype not in h_dict or ntype not in data.node_types:
+                continue
+            x = getattr(data[ntype], "x", None)
+            if x is None:
+                continue
+            feat_terms.append(F.mse_loss(dec(h_dict[ntype]), x))
+        feat_loss = (
+            torch.stack(feat_terms).mean()
+            if feat_terms
+            else torch.zeros(1, device=device)
+        )
+
+        # (b) bipartite edge reconstruction — positives + equal negatives.
+        edge_loss = torch.zeros(1, device=device)
+        et = self._recon_edge_type
+        if (
+            self.edge_decoder is not None
+            and et is not None
+            and et in data.edge_types
+            and et[0] in h_dict
+            and et[2] in h_dict
+        ):
+            ei = data[et].edge_index
+            if ei is not None and ei.size(1) > 0:
+                h_src, h_dst = h_dict[et[0]], h_dict[et[2]]
+                n_pos = ei.size(1)
+                pos = self.edge_decoder(h_src[ei[0]], h_dst[ei[1]]).squeeze(-1)
+                neg_src = torch.randint(0, h_src.size(0), (n_pos,), device=device)
+                neg_dst = torch.randint(0, h_dst.size(0), (n_pos,), device=device)
+                neg = self.edge_decoder(h_src[neg_src], h_dst[neg_dst]).squeeze(-1)
+                logits_e = torch.cat([pos, neg])
+                targets = torch.cat(
+                    [torch.ones_like(pos), torch.zeros_like(neg)]
+                )
+                edge_loss = F.binary_cross_entropy_with_logits(logits_e, targets)
+
+        return feat_loss + edge_loss
+
     # ── Loss ──────────────────────────────────────────────────────────────────
 
     def compute_total_loss(
@@ -196,7 +294,8 @@ class CI_RCT(nn.Module):
                              (e.g. [1.0, 44.0] for 1:44 licit/illicit ratio)
 
         Returns:
-            (total_loss, detection_loss, adversarial_loss, stability_loss, ncm_loss)
+            (total_loss, detection_loss, adversarial_loss, stability_loss,
+             ncm_loss, recon_loss)
         """
         logits, h_dict = self.forward(data)
         if train_mask is not None:
@@ -287,14 +386,20 @@ class CI_RCT(nn.Module):
                 wallet_type_offset=wallet_type_offset,
             )
 
+        # ── L_recon (GraphBEAN-style self-supervision, Step 1) ────────────
+        recon_loss = torch.zeros(1, device=detection_loss.device)
+        if self.use_reconstruction:
+            recon_loss = self.reconstruction_loss(data, h_dict)
+
         total_loss = (
             detection_loss
             + self.config.lambda_adversarial * adv_loss
             + self.config.lambda_stability * stability_loss
             + self.config.lambda_ncm * ncm_loss
+            + self.config.lambda_recon * recon_loss
         )
 
-        return total_loss, detection_loss, adv_loss, stability_loss, ncm_loss
+        return total_loss, detection_loss, adv_loss, stability_loss, ncm_loss, recon_loss
 
     # ── Explanation ───────────────────────────────────────────────────────────
 
@@ -421,6 +526,7 @@ class CI_RCT(nn.Module):
             "ncm_h_layers": self.config.ncm_h_layers,
             "target_node_type": self.config.target_node_type,
             "use_gan": self.use_gan,
+            "use_reconstruction": self.use_reconstruction,
             "backbone_exclude_node_types": list(self.backbone_exclude_node_types),
         }
 
