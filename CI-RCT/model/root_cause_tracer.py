@@ -38,9 +38,13 @@ Stopping conditions (priority order):
 Reference: CI-RCT_Thesis_Plan.md § 5.4
 """
 import heapq
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from model.typed_causal_graph import TypedCausalGraph
+
+# (current_node, upstream_nodes) -> {upstream_node: ranking_score}. Lets a
+# caller override the default |CE| ranking with e.g. asymmetric Shapley φ.
+UpstreamScoreFn = Callable[[object, List], Dict[object, float]]
 
 
 class RootCauseTracer:
@@ -60,6 +64,9 @@ class RootCauseTracer:
         threshold: float = 0.1,
         prefer_root_types: Optional[Set[str]] = None,
         prefer_reachable_depth: int = 0,
+        tracer_algorithm: str = "greedy",
+        tracer_objective: str = "product",
+        ce_eps: float = 1e-12,
     ) -> None:
         if max_hops < 1:
             raise ValueError(f"max_hops must be >= 1, got {max_hops}")
@@ -69,6 +76,25 @@ class RootCauseTracer:
             raise ValueError(
                 f"prefer_reachable_depth must be >= 0, got {prefer_reachable_depth}"
             )
+        # Ablation knob: which backward-search algorithm trace_root_cause runs.
+        # "greedy" (default) and "beam" use the legacy code paths below, kept
+        # byte-for-byte identical; every other value dispatches to a pluggable
+        # strategy in model/tracer_strategies (see trace_root_cause). The
+        # objective / ce_eps only matter for the weighted-path strategies
+        # (dag_dp, dijkstra): product = max-product (-log|CE|), sum = max-sum|CE|.
+        from model.tracer_strategies import ALL_ALGORITHMS
+        if tracer_algorithm not in ALL_ALGORITHMS:
+            raise ValueError(
+                f"tracer_algorithm must be one of {ALL_ALGORITHMS}, got "
+                f"'{tracer_algorithm}'"
+            )
+        if tracer_objective not in ("product", "sum"):
+            raise ValueError(
+                f"tracer_objective must be 'product' or 'sum', got '{tracer_objective}'"
+            )
+        self.tracer_algorithm = tracer_algorithm
+        self.tracer_objective = tracer_objective
+        self.ce_eps = ce_eps
 
         self.graph = causal_graph
         self.max_hops = max_hops
@@ -104,13 +130,52 @@ class RootCauseTracer:
         self,
         target_node,
         causal_effects: Dict[Tuple, float],
+        upstream_score_fn: Optional["UpstreamScoreFn"] = None,
     ) -> Tuple[object, List]:
         """
-        Greedy single-path root cause tracing using |CE|.
+        Greedy single-path root cause tracing.
+
+        By default ranks upstream parents by |CE| (the legacy behaviour). When
+        ``upstream_score_fn`` is given, that callable supplies the ranking score
+        per upstream node instead — e.g. asymmetric Causal Shapley φ recomputed
+        for the current node's parents (see evaluate.py's φ-weighted explainer).
+        The threshold / prefer_root_types / lookahead tie-breaks all operate on
+        whichever score is in effect.
+
+        Args:
+            target_node:        Node to trace back from.
+            causal_effects:     {(src, dst): CE_float}; used for the |CE| score
+                                and by the additive top-k path scorer.
+            upstream_score_fn:  Optional (current, upstream_nodes) -> {u: score}.
+                                None ⇒ legacy |CE| ranking (byte-identical).
 
         Returns:
             (root_cause_node, causal_chain) — chain in [target, ..., root] order.
         """
+        # ── Pluggable strategy dispatch (ablation) ──────────────────────────
+        # "greedy" runs the legacy code below (byte-identical). "beam" returns
+        # the top-1 of the legacy beam search. Every other algorithm delegates
+        # to a model.tracer_strategies function; those rank purely by |CE|, so
+        # upstream_score_fn (phi-weighted ranking) stays a greedy-only feature.
+        if self.tracer_algorithm == "beam":
+            paths = self.trace_top_k_paths(target_node, causal_effects, k=3)
+            if not paths:
+                return target_node, [target_node]
+            root, beam_chain, _score = paths[0]
+            return root, beam_chain
+        if self.tracer_algorithm != "greedy":
+            from model.tracer_strategies import resolve
+            return resolve(self.tracer_algorithm)(
+                target_node,
+                causal_effects,
+                graph=self.graph,
+                max_hops=self.max_hops,
+                threshold=self.threshold,
+                prefer_root_types=self.prefer_root_types,
+                ce_eps=self.ce_eps,
+                objective=self.tracer_objective,
+            )
+
         chain = [target_node]
         current = target_node
         visited = {target_node}
@@ -120,11 +185,11 @@ class RootCauseTracer:
             if not upstream:
                 break  # condition 1
 
-            best_upstream, best_abs_ce = self._select_best_upstream(
-                current, upstream, causal_effects
+            best_upstream, best_score = self._select_best_upstream(
+                current, upstream, causal_effects, upstream_score_fn
             )
 
-            if best_abs_ce < self.threshold:
+            if best_score < self.threshold:
                 break  # condition 2
 
             if best_upstream in visited:
@@ -196,28 +261,37 @@ class RootCauseTracer:
         current,
         upstream_nodes: List,
         causal_effects: Dict[Tuple, float],
+        upstream_score_fn: Optional["UpstreamScoreFn"] = None,
     ) -> Tuple[object, float]:
         """
-        Return (upstream_node, |CE|) with the strongest absolute causal
-        influence on `current`.  Magnitude is what determines tracing
-        priority — see the module docstring for rationale.
+        Return (upstream_node, score) with the strongest ranking score on
+        `current`.  The default score is |CE| magnitude — see the module
+        docstring for rationale; an ``upstream_score_fn`` overrides it (e.g.
+        asymmetric Shapley φ over `current`'s parents).
 
         Preference order among threshold-passing candidates (each tier ranked
-        by |CE| internally; fall through to the next tier only when a tier is
+        by score internally; fall through to the next tier only when a tier is
         empty):
             1. prefer_root_types  — candidate IS a root-capable type
             2. prefer_reachable_depth > 0 — candidate can still REACH a
                root-capable type within d backward hops (lookahead): skips the
-               dead-end bridge hosts that the greedy |CE|-max would otherwise
-               pick, when a true root lies just past a marginally-smaller-|CE|
-               branch (see __init__ DD-18 note).
-            3. global |CE|-max over all parents — legacy fallback.
+               dead-end bridge hosts that the greedy score-max would otherwise
+               pick, when a true root lies just past a marginally-smaller branch
+               (see __init__ DD-18 note).
+            3. global score-max over all parents — legacy fallback.
 
-        With prefer_root_types=None and prefer_reachable_depth=0 this is byte-
-        for-byte the legacy |CE|-only ranking.
+        With prefer_root_types=None, prefer_reachable_depth=0 and
+        upstream_score_fn=None this is byte-for-byte the legacy |CE|-only
+        ranking.
         """
-        def abs_ce(u):
-            return abs(causal_effects.get((u, current), 0.0))
+        if upstream_score_fn is not None:
+            scores = upstream_score_fn(current, list(upstream_nodes))
+
+            def abs_ce(u):
+                return scores.get(u, 0.0)
+        else:
+            def abs_ce(u):
+                return abs(causal_effects.get((u, current), 0.0))
 
         if self.prefer_root_types:
             preferred = [
