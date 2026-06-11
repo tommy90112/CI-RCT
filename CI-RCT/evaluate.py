@@ -138,6 +138,20 @@ def parse_args() -> argparse.Namespace:
     # reproduce the CXGNN metric.
     parser.add_argument("--gt_match_mode", type=str, default="subset",
                         choices=["exact", "subset"])
+    # ── Metric C explainer (ablation route A) ────────────────────────────────
+    # Which explainer produces the per-fraud-node explanatory set scored by
+    # Metric C. 'ce_only' (default) is the legacy raw-|CE| greedy trace — the
+    # φ machinery is bypassed, byte-identical to the prior Metric C. The φ
+    # variants rank each hop's parents by Causal Shapley computed from the
+    # backbone do-intervention coalition value (non-additive), so 'asym' vs
+    # 'sym' isolates the empirical value of temporal asymmetry. 'cxgnn_ncm' is
+    # the external CXGNN (ECCV 2024) per-target local-NCM baseline.
+    parser.add_argument("--explainer", type=str, default="ce_only",
+                        choices=["ce_only", "phi_asym", "phi_sym", "cxgnn_ncm"])
+    parser.add_argument("--shapley_permutations", type=int, default=64,
+                        help="Monte-Carlo permutations for symmetric Shapley "
+                             "(--explainer phi_sym). Exact enumeration is used "
+                             "when n_parents! <= this value.")
     # Dump the exact set of traced root-cause chains (the same ones counted in
     # the depth histogram / num_traced) decoded to real Elliptic++ identities,
     # for the crime-chain viewer (viz/crime_chain*.html).
@@ -266,6 +280,7 @@ def _load_illicit_wallet_globals(
     include_addr_addr: bool = False,
     fraud_subgraph: bool = False,
     fraud_subgraph_hops: int = 2,
+    wallet_per_address: bool = False,
 ) -> set:
     """
     Return the set of *global node IDs* of labeled illicit wallets
@@ -320,6 +335,7 @@ def _load_illicit_wallet_globals(
             fraud_subgraph=fraud_subgraph,
             fraud_subgraph_hops=fraud_subgraph_hops,
             verbose=False,
+            wallet_per_address=wallet_per_address,
         )
  
         illicit_addrs = wallets_cls.loc[
@@ -567,6 +583,7 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
             include_addr_addr=args.include_addr_addr,
             fraud_subgraph=args.fraud_subgraph,
             fraud_subgraph_hops=args.fraud_subgraph_hops,
+            wallet_per_address=args.variant in ("wallet", "joint"),
         )
         fraud_label_set |= illicit_wallet_globals
         # wallet/joint (dual-seed) traces can legitimately end at an upstream
@@ -665,6 +682,7 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
             include_addr_addr=args.include_addr_addr,
             fraud_subgraph=args.fraud_subgraph,
             fraud_subgraph_hops=args.fraud_subgraph_hops,
+            wallet_per_address=args.variant in ("wallet", "joint"),
         )
         records = [
             chain_to_record(
@@ -765,6 +783,26 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
     return rct_metrics, stability_metrics
  
  
+def _subset_match_meaningful(preds_list, gts_list, min_feasible_frac=0.5):
+    """Whether a 'subset' gt-match is structurally meaningful for this GT.
+
+    Subset gt-match scores 1 only when the chain contains EVERY gt node
+    (gt ⊆ chain). That is achievable only if the GT can physically fit inside
+    the predicted chain (|gt| ≤ |chain|). Broad GT — e.g. LFPN k-hop
+    neighbourhoods with |GT| up to 1000+ — can never fit a depth-bounded chain,
+    so the score collapses to ~0 and MISLEADS (it reads as "0% accurate" when
+    the chain is in fact recovering the precise source; see Explanation Recall).
+
+    Returns (meaningful, feasible_frac) where feasible_frac is the fraction of
+    non-empty instances for which |gt| ≤ |chain| (subset is at least size-possible).
+    """
+    feasible = [len(g) <= len(p) for p, g in zip(preds_list, gts_list) if p and g]
+    if not feasible:
+        return False, 0.0
+    frac = sum(feasible) / len(feasible)
+    return frac >= min_feasible_frac, frac
+
+
 def eval_explanation_quality(model, data, labels, test_mask,
                               causal_graph, args, gt_causal_nodes=None):
     if not gt_causal_nodes:
@@ -789,15 +827,43 @@ def eval_explanation_quality(model, data, labels, test_mask,
         threshold=0.0,
         prefer_root_types=_parse_prefer_root_types(args.prefer_root_types),
     )
+    from model.explainers import build_explainer
+    explainer_name = getattr(args, "explainer", "ce_only")
+    explainer = build_explainer(
+        explainer_name,
+        model=model,
+        data=data,
+        causal_graph=causal_graph,
+        tracer=tracer,
+        type_offsets=compute_type_offsets(data),
+        target_node_type=model.backbone.target_node_type,
+        n_permutations=getattr(args, "shapley_permutations", 64),
+    )
+    print(f"  Explainer: {explainer_name}")
     preds_list, gts_list = [], []
     for node_id, gt_set in eligible.items():
-        root, chain = tracer.trace_root_cause(node_id, causal_effects)
-        preds_list.append(set(chain))
+        preds_list.append(explainer(node_id, causal_effects))
         gts_list.append(gt_set)
     from utils.metrics import compute_explanation_metrics
-    return compute_explanation_metrics(
+    metrics = compute_explanation_metrics(
         preds_list, gts_list, gt_match_mode=args.gt_match_mode
     )
+    # Suppress a structurally-degenerate subset gt-match (broad GT can never fit
+    # a bounded chain → ~0, which misreads as "totally inaccurate"). Report
+    # Explanation Recall as the coverage metric in that regime instead.
+    if args.gt_match_mode == "subset":
+        meaningful, frac = _subset_match_meaningful(preds_list, gts_list)
+        if not meaningful:
+            metrics.pop("gt_match_accuracy", None)
+            metrics.pop("gt_match_mode", None)
+            metrics["gt_match"] = (
+                f"n/a — GT broader than chain "
+                f"({frac:.0%} of cases size-feasible); see Recall"
+            )
+            print("  [note] subset gt-match suppressed: GT is broader than the "
+                  "bounded causal chain, so 'recover ALL gt nodes' is "
+                  "structurally ~0; Explanation Recall is the coverage metric.")
+    return metrics
  
  
 def build_gt_list(args, data, type_offsets):
@@ -847,6 +913,7 @@ def build_gt_list(args, data, type_offsets):
                 fraud_subgraph=args.fraud_subgraph,
                 fraud_subgraph_hops=args.fraud_subgraph_hops,
                 verbose=True,
+                wallet_per_address=args.variant in ("wallet", "joint"),
             )
             if gt:
                 label = "LFPN-Strict" if m == "strict" \

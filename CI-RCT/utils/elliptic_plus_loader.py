@@ -342,9 +342,19 @@ def _dedup_wallets_per_address(wallets_filt: pd.DataFrame) -> pd.DataFrame:
     by (address, Time step) then keep the last row per address), so the base
     loader and the wallet/joint label replay select the identical row per
     address and therefore the identical node ordering.
+
+    The resulting node ordering is alphabetical by address in BOTH branches, so
+    consumers that lack the 'Time step' column (lfpn_utils / elliptic_identity,
+    which read only the address column) reproduce the identical address→index
+    mapping — that consistency is what keeps Metric C / chain decoding aligned.
     """
     if "Time step" not in wallets_filt.columns:
-        return wallets_filt.drop_duplicates("address", keep="last").reset_index(drop=True)
+        return (
+            wallets_filt
+            .sort_values("address", kind="stable")
+            .drop_duplicates("address", keep="last")
+            .reset_index(drop=True)
+        )
     return (
         wallets_filt
         .sort_values(["address", "Time step"], kind="stable")

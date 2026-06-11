@@ -85,6 +85,7 @@ def compute_lfpn_ground_truth(
     fraud_subgraph: bool = False,
     fraud_subgraph_hops: int = 2,
     verbose: bool = True,
+    wallet_per_address: bool = False,
 ) -> Dict[int, Set[int]]:
     """
     Build Metric C ground-truth for Elliptic++.
@@ -170,6 +171,7 @@ def compute_lfpn_ground_truth(
     # ── 3. Rebuild wallet_to_idx exactly as the loader does, honouring the
     #      same three CLI flags.
     wallet_to_idx = _rebuild_wallet_to_idx(
+        wallet_per_address=wallet_per_address,
         wallets=wallets,
         wallets_cls=wallets_cls,
         txs_cls=txs_cls,
@@ -301,6 +303,7 @@ def _rebuild_wallet_to_idx(
     fraud_subgraph:     bool,
     fraud_subgraph_hops:int,
     verbose:            bool,
+    wallet_per_address: bool = False,
 ) -> Dict[str, int]:
     """
     Replicates utils.elliptic_plus_loader's wallet-filtering logic
@@ -310,6 +313,14 @@ def _rebuild_wallet_to_idx(
     elliptic_plus_loader.load_elliptic_plus_dataset — if the loader's
     filtering rules change, the global IDs returned by this GT builder
     will silently drift.
+
+    ``wallet_per_address`` MUST match the loader's flag of the same name
+    (True for the wallet/joint variants, False for transaction). When True the
+    identical ``_dedup_wallets_per_address`` is applied, so each address maps to
+    its alphabetical rank — exactly the loader's per-address node index. Without
+    this the loader (deduped, sorted) and this builder (per-row, last-wins)
+    assign different indices to the same address and Metric C / chain decoding
+    silently zero out.
     """
     if fraud_subgraph:
         connected = _fraud_subgraph_wallets(
@@ -334,6 +345,9 @@ def _rebuild_wallet_to_idx(
 
     wallets_filt = wallets[wallets["address"].astype(str).isin(connected)] \
                       .reset_index(drop=True)
+    if wallet_per_address:
+        from utils.elliptic_plus_loader import _dedup_wallets_per_address
+        wallets_filt = _dedup_wallets_per_address(wallets_filt)
     return {str(addr): i for i, addr in enumerate(wallets_filt["address"])}
 
 

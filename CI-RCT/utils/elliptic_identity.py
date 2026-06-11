@@ -20,6 +20,7 @@ def build_reverse_maps(
     include_addr_addr: bool = True,
     fraud_subgraph: bool = False,
     fraud_subgraph_hops: int = 2,
+    wallet_per_address: bool = False,
 ) -> Tuple[Dict[int, str], Dict[int, str]]:
     """
     Return ({tx_local_idx -> txId}, {wallet_local_idx -> address}) matching the
@@ -55,6 +56,7 @@ def build_reverse_maps(
         tx_to_idx=tx_to_idx, addr_tx=addr_tx, tx_addr=tx_addr, addr_addr=addr_addr,
         include_addr_addr=include_addr_addr, fraud_subgraph=fraud_subgraph,
         fraud_subgraph_hops=fraud_subgraph_hops, verbose=False,
+        wallet_per_address=wallet_per_address,
     )
     idx_to_addr = {idx: addr for addr, idx in wallet_to_idx.items()}
     return idx_to_txid, idx_to_addr
