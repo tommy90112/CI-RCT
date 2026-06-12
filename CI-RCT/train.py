@@ -57,7 +57,17 @@ def parse_args() -> argparse.Namespace:
                         choices=["transaction", "wallet", "joint"])
     parser.add_argument("--lambda_aux_detection", type=float, default=0.3,
                         help="Weight of the auxiliary (wallet) detection loss "
-                             "in --variant joint.")
+                             "in --variant joint. Use ~1.0 with --symmetric_joint "
+                             "to make wallet a co-equal head.")
+    parser.add_argument("--symmetric_joint", type=lambda x: x.lower() == "true",
+                        default=False,
+                        help="Joint head-weighting symmetrisation. False (default) "
+                             "keeps the legacy ASYMMETRIC behaviour: a SEPARATE "
+                             "0.3-weighted wallet backward AFTER the primary step "
+                             "(wallet is a second-class head). True FUSES the wallet "
+                             "loss into the SAME backward as the primary loss (one "
+                             "optimiser step, gradients combined) so both heads "
+                             "co-shape the backbone — pair with --lambda_aux_detection 1.0.")
     parser.add_argument("--data_root", type=str, default="data")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -290,7 +300,9 @@ def load_dataset(name: str, root: str, **kwargs):
 def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
                       target_node, device, type_offsets, target_type,
                       class_weight=None, multi_task_labels=None,
-                      ncm_edge_balance="none"):
+                      ncm_edge_balance="none",
+                      aux_labels=None, aux_masks=None, aux_class_weights=None,
+                      lambda_aux=0.0):
     """
     Single training step without GAN (Phase 1).
     L_total = L_detection + λ2 · L_stability + λ3 · L_ncm
@@ -363,20 +375,38 @@ def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
         + model.config.lambda_ncm * ncm_loss
         + model.config.lambda_recon * recon_loss
     )
+
+    # Symmetric joint: fuse the wallet (aux) detection loss into the same backward.
+    aux_loss_val = 0.0
+    if aux_labels is not None:
+        aux_loss = model.aux_detection_loss(
+            data, aux_labels, aux_masks, aux_class_weights
+        )
+        total_loss = total_loss + lambda_aux * aux_loss
+        aux_loss_val = float(aux_loss.detach().item())
+
     total_loss.backward()
     optimizer.step()
 
-    return total_loss.item(), detection_loss.item(), stability_loss.item(), ncm_loss.item()
+    return (total_loss.item(), detection_loss.item(), stability_loss.item(),
+            ncm_loss.item(), aux_loss_val)
 
 
 def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
                         optimizer_generator, causal_graph, fraud_features,
                         topo_order, target_node, step_count, device,
-                        type_offsets, target_type, class_weight=None):
+                        type_offsets, target_type, class_weight=None,
+                        aux_labels=None, aux_masks=None, aux_class_weights=None,
+                        lambda_aux=0.0):
     """
     WGAN-GP training step (Phase 2):
       - Every step: update Discriminator (= backbone)
       - Every n_critic steps: also update Generator
+
+    When ``aux_labels`` is provided (symmetric joint), the auxiliary wallet
+    detection loss is FUSED into the discriminator step's total loss before the
+    single backward, so the primary and auxiliary heads co-shape the shared
+    backbone in one optimiser step (vs the legacy separate 0.3-weighted step).
     """
     n_critic = model.config.n_critic
 
@@ -399,7 +429,18 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
         wallet_labels=data["wallet"].y if hasattr(data["wallet"], "y") else None,
         wallet_type_offset=type_offsets.get("wallet", 0),
     )
-    # Use full loss (detection + adversarial + NCM + stability) for discriminator update
+    # Symmetric joint: fuse the wallet (aux) detection loss into the SAME
+    # backward so primary + auxiliary co-shape the backbone in one step.
+    aux_loss_val = 0.0
+    if aux_labels is not None:
+        aux_loss = model.aux_detection_loss(
+            data, aux_labels, aux_masks, aux_class_weights
+        )
+        total_loss = total_loss + lambda_aux * aux_loss
+        aux_loss_val = float(aux_loss.detach().item())
+
+    # Use full loss (detection + adversarial + NCM + stability [+ aux]) for the
+    # discriminator/backbone update.
     total_loss.backward()
     optimizer_backbone.step()
 
@@ -426,7 +467,8 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
         optimizer_generator.step()
         g_loss_val = g_loss.item()
 
-    return total_loss.item(), detection_loss.item(), adv_loss.item(), g_loss_val, ncm_loss.item()
+    return (total_loss.item(), detection_loss.item(), adv_loss.item(),
+            g_loss_val, ncm_loss.item(), aux_loss_val)
 
 
 @torch.no_grad()
@@ -744,8 +786,11 @@ def main() -> None:
             aux_num_classes=aux_num_classes,
             use_reconstruction=args.use_reconstruction,
         ).to(device)
+        _joint_mode = ("SYMMETRIC (aux fused into primary backward, co-equal head)"
+                       if args.symmetric_joint
+                       else "asymmetric (separate down-weighted aux step, legacy)")
         print(f"  Joint heads: primary={target_type}  aux=['wallet']  "
-              f"(λ_aux={args.lambda_aux_detection})")
+              f"(λ_aux={args.lambda_aux_detection})  mode={_joint_mode}")
     else:
         model = CI_RCT(
             config=config,
@@ -855,37 +900,53 @@ def main() -> None:
     model.reset_phi_buffer()  # initialise once before training starts
     for epoch in range(1, args.epochs + 1):
 
+        # Symmetric joint FUSES the wallet aux loss into the primary backward
+        # (co-equal head); asymmetric (legacy) keeps it as a separate
+        # down-weighted step below.
+        _fuse_aux = args.variant == "joint" and args.symmetric_joint
+        _aux_kw = (
+            dict(aux_labels=aux_labels, aux_masks=aux_masks,
+                 aux_class_weights=aux_class_weights,
+                 lambda_aux=args.lambda_aux_detection)
+            if _fuse_aux else {}
+        )
+
         if not args.use_gan:
-            total_loss, det_loss, stab_loss, ncm_loss = train_step_no_gan(
+            total_loss, det_loss, stab_loss, ncm_loss, aux_val = train_step_no_gan(
                 model, data, labels, train_mask, optimizer_backbone,
                 causal_graph, target_node, device,
                 type_offsets, target_type, class_weight=class_weight,
                 multi_task_labels=multi_task_labels,
                 ncm_edge_balance=args.ncm_edge_balance,
+                **_aux_kw,
             )
             loss_str = (f"Loss {total_loss:.4f} "
                         f"(det={det_loss:.4f}, stab={stab_loss:.2e}, ncm={ncm_loss:.4f})")
         else:
-            total_loss, det_loss, adv_loss, g_loss, ncm_loss = train_step_with_gan(
+            total_loss, det_loss, adv_loss, g_loss, ncm_loss, aux_val = train_step_with_gan(
                 model, data, labels, train_mask,
                 optimizer_backbone, optimizer_generator,
                 causal_graph, fraud_features, topo_order, target_node,
                 step_count=epoch, device=device,
                 type_offsets=type_offsets, target_type=target_type,
-                class_weight=class_weight
+                class_weight=class_weight,
+                **_aux_kw,
             )
             loss_str = (f"Loss {total_loss:.4f} "
                         f"(det={det_loss:.4f}, adv={adv_loss:.4f}, G={g_loss:.4f}, ncm={ncm_loss:.4f})")
 
-        # Joint: extra wallet (auxiliary) step on the shared backbone.
-        if args.variant == "joint":
+        if _fuse_aux:
+            loss_str += f" aux={aux_val:.4f}(fused)"
+        elif args.variant == "joint":
+            # Legacy ASYMMETRIC: separate wallet (auxiliary) backward/step on the
+            # shared backbone, AFTER the primary update.
             optimizer_backbone.zero_grad()
             aux_loss = model.aux_detection_loss(
                 data, aux_labels, aux_masks, aux_class_weights
             )
             (args.lambda_aux_detection * aux_loss).backward()
             optimizer_backbone.step()
-            loss_str += f" aux={float(aux_loss.detach().item()):.4f}"
+            loss_str += f" aux={float(aux_loss.detach().item()):.4f}(separate)"
 
         if epoch % args.eval_every == 0:
             val_metrics = (
