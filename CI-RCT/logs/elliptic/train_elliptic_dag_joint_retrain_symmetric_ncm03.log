@@ -1,0 +1,91 @@
+Loading dataset: elliptic++ (variant=joint)
+  Loading CSVs …
+  Building transaction features …
+  Building labels …
+  Filtering connected wallets …
+  Building wallet features …
+  Building edges …
+  Transactions: 203,769  (illicit=4,545, licit=199,224, unknown=0)
+  Wallets (connected): 822,942 [per-address, deduped]  (feat_dim=56)
+  Edges:  wallet→tx=477,117  tx→wallet=837,124  tx→tx=234,355  wallet→wallet=2,868,964
+  Joint wallet aux: illicit=14,266 / labeled=265,354 / 822,942 wallets; split train=185,747 val=39,802 test=39,805
+Building TypedCausalGraph...
+  [BFS] blocked edge types (2, src=dataset-default): ['address__to__address', 'wallet__to__wallet']
+  [data_utils] Skipped 347 blocked edges from causal graph (types=['address__to__address', 'wallet__to__wallet']).
+  [data_utils] Rejected 4 edges violating temporal precedence (time-respecting DAG; 844,812/500 nodes timed).
+  Causal graph: 500 nodes, 737 directed edges
+  [debug] target_node=917, in_graph=True, parents={217032}
+  Joint heads: primary=transaction  aux=['wallet']  (λ_aux=1.0)  mode=SYMMETRIC (aux fused into primary backward, co-equal head)
+  Class weight: licit=1.00  illicit=9.25  (pos=3181, neg=29413)
+
+Training [Phase 2 (GAN)] for 400 epochs on cuda (variant=joint)...
+  Model selection metric: fraud_f1 (val['fraud_f1'])
+Epoch 010 | Loss 1.4282 (det=0.5927, adv=0.4617, G=-0.0221, ncm=0.5840) aux=0.6142(fused) | Val macroF1=0.3950  fraudF1=0.1751  AUC=0.8065
+  ↑ Best checkpoint saved (val fraud_f1=0.1751) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 020 | Loss 1.2844 (det=0.5063, adv=0.7808, G=-0.0781, ncm=0.4771) aux=0.5569(fused) | Val macroF1=0.4004  fraudF1=0.1829  AUC=0.8545
+  ↑ Best checkpoint saved (val fraud_f1=0.1829) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 030 | Loss 1.1199 (det=0.4504, adv=0.5236, G=-0.1191, ncm=0.3934) aux=0.4991(fused) | Val macroF1=0.4222  fraudF1=0.1902  AUC=0.8533
+  ↑ Best checkpoint saved (val fraud_f1=0.1902) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 040 | Loss 1.0613 (det=0.4216, adv=0.7489, G=-0.1787, ncm=0.3401) aux=0.4627(fused) | Val macroF1=0.4353  fraudF1=0.2001  AUC=0.8681
+  ↑ Best checkpoint saved (val fraud_f1=0.2001) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 050 | Loss 1.0631 (det=0.3992, adv=1.3071, G=-0.2724, ncm=0.3216) aux=0.4367(fused) | Val macroF1=0.4918  fraudF1=0.2310  AUC=0.8802
+  ↑ Best checkpoint saved (val fraud_f1=0.2310) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 060 | Loss 1.0598 (det=0.3756, adv=1.7720, G=-0.3484, ncm=0.2996) aux=0.4171(fused) | Val macroF1=0.6256  fraudF1=0.3525  AUC=0.8912
+  ↑ Best checkpoint saved (val fraud_f1=0.3525) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 070 | Loss 1.0368 (det=0.3521, adv=2.0409, G=-0.4085, ncm=0.2675) aux=0.4004(fused) | Val macroF1=0.6366  fraudF1=0.3679  AUC=0.9015
+  ↑ Best checkpoint saved (val fraud_f1=0.3679) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 080 | Loss 1.0284 (det=0.3366, adv=2.3398, G=-0.4660, ncm=0.2327) aux=0.3880(fused) | Val macroF1=0.6573  fraudF1=0.3965  AUC=0.9100
+  ↑ Best checkpoint saved (val fraud_f1=0.3965) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 090 | Loss 0.9894 (det=0.3101, adv=2.4594, G=-0.5033, ncm=0.2111) aux=0.3700(fused) | Val macroF1=0.6782  fraudF1=0.4270  AUC=0.9164
+  ↑ Best checkpoint saved (val fraud_f1=0.4270) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 100 | Loss 0.9598 (det=0.2907, adv=2.5426, G=-0.5377, ncm=0.1870) aux=0.3588(fused) | Val macroF1=0.6856  fraudF1=0.4385  AUC=0.9211
+  ↑ Best checkpoint saved (val fraud_f1=0.4385) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 110 | Loss 0.9452 (det=0.2715, adv=2.7622, G=-0.5840, ncm=0.1675) aux=0.3472(fused) | Val macroF1=0.7019  fraudF1=0.4638  AUC=0.9267
+  ↑ Best checkpoint saved (val fraud_f1=0.4638) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 120 | Loss 0.9373 (det=0.2541, adv=3.0614, G=-0.6403, ncm=0.1450) aux=0.3335(fused) | Val macroF1=0.7218  fraudF1=0.4960  AUC=0.9331
+  ↑ Best checkpoint saved (val fraud_f1=0.4960) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 130 | Loss 0.9511 (det=0.2396, adv=3.5229, G=-0.7127, ncm=0.1238) aux=0.3220(fused) | Val macroF1=0.7293  fraudF1=0.5088  AUC=0.9368
+  ↑ Best checkpoint saved (val fraud_f1=0.5088) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 140 | Loss 0.9619 (det=0.2253, adv=3.9201, G=-0.7859, ncm=0.1045) aux=0.3133(fused) | Val macroF1=0.7445  fraudF1=0.5340  AUC=0.9404
+  ↑ Best checkpoint saved (val fraud_f1=0.5340) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 150 | Loss 0.9852 (det=0.2149, adv=4.3775, G=-0.8622, ncm=0.0913) aux=0.3051(fused) | Val macroF1=0.7553  fraudF1=0.5520  AUC=0.9426
+  ↑ Best checkpoint saved (val fraud_f1=0.5520) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 160 | Loss 1.0044 (det=0.2090, adv=4.6623, G=-0.9324, ncm=0.0893) aux=0.3024(fused) | Val macroF1=0.7529  fraudF1=0.5484  AUC=0.9446
+Epoch 170 | Loss 1.0054 (det=0.2038, adv=4.7960, G=-0.9920, ncm=0.0834) aux=0.2970(fused) | Val macroF1=0.7650  fraudF1=0.5686  AUC=0.9448
+  ↑ Best checkpoint saved (val fraud_f1=0.5686) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 180 | Loss 1.0009 (det=0.1993, adv=4.8506, G=-1.0465, ncm=0.0771) aux=0.2935(fused) | Val macroF1=0.7566  fraudF1=0.5549  AUC=0.9466
+Epoch 190 | Loss 1.0003 (det=0.1905, adv=4.9532, G=-1.1123, ncm=0.0748) aux=0.2921(fused) | Val macroF1=0.7678  fraudF1=0.5739  AUC=0.9477
+  ↑ Best checkpoint saved (val fraud_f1=0.5739) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 200 | Loss 0.9791 (det=0.1815, adv=4.8759, G=-1.1672, ncm=0.0690) aux=0.2893(fused) | Val macroF1=0.7750  fraudF1=0.5862  AUC=0.9476
+  ↑ Best checkpoint saved (val fraud_f1=0.5862) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 210 | Loss 0.9682 (det=0.1778, adv=4.8468, G=-1.2351, ncm=0.0687) aux=0.2851(fused) | Val macroF1=0.7742  fraudF1=0.5850  AUC=0.9477
+Epoch 220 | Loss 1.0021 (det=0.2022, adv=4.7116, G=-1.2887, ncm=0.1249) aux=0.2912(fused) | Val macroF1=0.7709  fraudF1=0.5802  AUC=0.9461
+Epoch 230 | Loss 0.9750 (det=0.1841, adv=4.8372, G=-1.3804, ncm=0.0670) aux=0.2871(fused) | Val macroF1=0.7704  fraudF1=0.5794  AUC=0.9481
+Epoch 240 | Loss 0.9271 (det=0.1730, adv=4.5167, G=-1.4305, ncm=0.0667) aux=0.2824(fused) | Val macroF1=0.7867  fraudF1=0.6074  AUC=0.9500
+  ↑ Best checkpoint saved (val fraud_f1=0.6074) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 250 | Loss 0.9283 (det=0.1661, adv=4.6261, G=-1.5225, ncm=0.0629) aux=0.2807(fused) | Val macroF1=0.7890  fraudF1=0.6114  AUC=0.9506
+  ↑ Best checkpoint saved (val fraud_f1=0.6114) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 260 | Loss 0.8964 (det=0.1613, adv=4.3830, G=-1.6147, ncm=0.0630) aux=0.2779(fused) | Val macroF1=0.7936  fraudF1=0.6195  AUC=0.9512
+  ↑ Best checkpoint saved (val fraud_f1=0.6195) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 270 | Loss 0.8795 (det=0.1578, adv=4.2760, G=-1.7070, ncm=0.0633) aux=0.2751(fused) | Val macroF1=0.7924  fraudF1=0.6174  AUC=0.9512
+Epoch 280 | Loss 0.8854 (det=0.1529, adv=4.4121, G=-1.8179, ncm=0.0558) aux=0.2745(fused) | Val macroF1=0.7948  fraudF1=0.6217  AUC=0.9522
+  ↑ Best checkpoint saved (val fraud_f1=0.6217) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 290 | Loss 0.9024 (det=0.1505, adv=4.6331, G=-1.9688, ncm=0.0540) aux=0.2724(fused) | Val macroF1=0.7985  fraudF1=0.6280  AUC=0.9520
+  ↑ Best checkpoint saved (val fraud_f1=0.6280) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 300 | Loss 0.9163 (det=0.1467, adv=4.8158, G=-2.0696, ncm=0.0565) aux=0.2712(fused) | Val macroF1=0.8051  fraudF1=0.6396  AUC=0.9513
+  ↑ Best checkpoint saved (val fraud_f1=0.6396) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 310 | Loss 0.8789 (det=0.1453, adv=4.4686, G=-2.2102, ncm=0.0532) aux=0.2708(fused) | Val macroF1=0.7969  fraudF1=0.6254  AUC=0.9530
+Epoch 320 | Loss 0.9468 (det=0.1454, adv=5.1274, G=-2.3864, ncm=0.0543) aux=0.2724(fused) | Val macroF1=0.8025  fraudF1=0.6353  AUC=0.9526
+Epoch 330 | Loss 0.9501 (det=0.1396, adv=5.2607, G=-2.5319, ncm=0.0490) aux=0.2697(fused) | Val macroF1=0.8043  fraudF1=0.6384  AUC=0.9530
+Epoch 340 | Loss 1.0232 (det=0.1377, adv=5.9943, G=-2.6802, ncm=0.0455) aux=0.2724(fused) | Val macroF1=0.8118  fraudF1=0.6513  AUC=0.9508
+  ↑ Best checkpoint saved (val fraud_f1=0.6513) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 350 | Loss 0.9937 (det=0.1680, adv=5.3525, G=-2.8525, ncm=0.0469) aux=0.2763(fused) | Val macroF1=0.8227  fraudF1=0.6702  AUC=0.9485
+  ↑ Best checkpoint saved (val fraud_f1=0.6702) → checkpoints/ci_rct_elliptic++_joint_best.pt
+Epoch 360 | Loss 1.0110 (det=0.1414, adv=5.8306, G=-3.0645, ncm=0.0446) aux=0.2732(fused) | Val macroF1=0.7955  fraudF1=0.6232  AUC=0.9532
+Epoch 370 | Loss 1.0328 (det=0.1354, adv=6.1684, G=-3.2088, ncm=0.0435) aux=0.2675(fused) | Val macroF1=0.8093  fraudF1=0.6473  AUC=0.9548
+Epoch 380 | Loss 0.9848 (det=0.1290, adv=5.7786, G=-3.3974, ncm=0.0396) aux=0.2660(fused) | Val macroF1=0.8055  fraudF1=0.6405  AUC=0.9543
+Epoch 390 | Loss 1.1388 (det=0.1274, adv=7.3342, G=-3.5423, ncm=0.0412) aux=0.2656(fused) | Val macroF1=0.8097  fraudF1=0.6478  AUC=0.9545
+Epoch 400 | Loss 1.1155 (det=0.1242, adv=7.1554, G=-3.7711, ncm=0.0402) aux=0.2637(fused) | Val macroF1=0.8085  fraudF1=0.6460  AUC=0.9558
+
+Loading best checkpoint for test evaluation...
+Test  fraudF1=0.6670  (macroF1=0.8209  AUC=0.9474)
