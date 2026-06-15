@@ -23,6 +23,10 @@ set -euo pipefail
 CKPT="${CKPT:-checkpoints/ci_rct_elliptic++_joint_best.pt}"
 MAX_EXPLAIN="${MAX_EXPLAIN:-2000}"
 OUTDIR="${OUTDIR:-logs/elliptic/ablation}"
+# evaluate.py defaults --device to cpu; the model forward over the full
+# 822k-node / 2.87M-edge graph runs 7x here (once per arm), so default to GPU.
+# Override with DEVICE=cpu for a no-GPU box.
+DEVICE="${DEVICE:-cuda}"
 mkdir -p "$OUTDIR"
 
 if [[ ! -f "$CKPT" ]]; then
@@ -38,6 +42,7 @@ COMMON=(
   --max_explain "$MAX_EXPLAIN" --max_hops 20 --node_limit 1000000 --ce_threshold 0.0001
   --threshold_tuning val --threshold_objective fraud_f1
   --prefer_root_types wallet
+  --device "$DEVICE"
   --lfpn_mode both --debug
 )
 
