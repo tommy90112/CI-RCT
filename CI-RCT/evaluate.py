@@ -78,6 +78,22 @@ def parse_args() -> argparse.Namespace:
     # node within d backward hops. 0 = disabled (legacy). Needs prefer_root_types.
     # Example: --prefer_root_types process_node --prefer_reachable_depth 3
     parser.add_argument("--prefer_reachable_depth", type=int, default=0)
+    # Tracer algorithm ablation. greedy = legacy byte-identical; the rest are
+    # comparison arms (model/tracer_strategies, tracer_ablation_plan.md). All
+    # arms share the SAME causal_effects + graph + threshold + max_hops, so only
+    # the search rule differs — that is the controlled variable of the ablation.
+    parser.add_argument(
+        "--tracer_algorithm", type=str, default="greedy",
+        choices=["greedy", "beam", "dag_dp", "dijkstra", "bfs", "dfs"],
+        help="Root-cause backward-search algorithm. greedy=legacy byte-identical; "
+             "dag_dp=recommended global-optimal DAG Viterbi.",
+    )
+    parser.add_argument(
+        "--tracer_objective", type=str, default="product",
+        choices=["product", "sum"],
+        help="Weighted-path objective for dag_dp/dijkstra: product (max-product, "
+             "cost=-log|CE|) or sum (max-sum |CE|).",
+    )
     parser.add_argument("--top_k", type=int, default=3)
     parser.add_argument("--node_limit", type=int, default=5000)
     parser.add_argument("--hop_limit", type=int, default=2)
@@ -525,6 +541,8 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         threshold=args.ce_threshold,
         prefer_root_types=_parse_prefer_root_types(args.prefer_root_types),
         prefer_reachable_depth=args.prefer_reachable_depth,
+        tracer_algorithm=args.tracer_algorithm,
+        tracer_objective=args.tracer_objective,
     )
  
     offset = type_offsets[target_type]
@@ -826,6 +844,8 @@ def eval_explanation_quality(model, data, labels, test_mask,
         max_hops=args.max_hops,
         threshold=0.0,
         prefer_root_types=_parse_prefer_root_types(args.prefer_root_types),
+        tracer_algorithm=args.tracer_algorithm,
+        tracer_objective=args.tracer_objective,
     )
     from model.explainers import build_explainer
     explainer_name = getattr(args, "explainer", "ce_only")

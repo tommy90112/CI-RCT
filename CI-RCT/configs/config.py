@@ -32,6 +32,12 @@ class CI_RCT_Config:
     max_hops: int = 5
     ce_threshold: float = 0.1
     top_k_paths: int = 3
+    # Backward-search algorithm ablation. "greedy" (default) is byte-identical
+    # to the legacy tracer; {dag_dp, dijkstra, bfs, dfs, beam} are comparison
+    # arms (see model/tracer_strategies and tracer_ablation_plan.md).
+    tracer_algorithm: str = "greedy"
+    tracer_objective: str = "product"  # weighted-path objective: product|sum
+    ce_eps: float = 1e-12              # clamp for -log|CE| in the product objective
 
     # ── CausalAdversarialGAN ──────────────────────────────────────────────
     gan_hidden_dim: int = 128     # Generator hidden dimension
