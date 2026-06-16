@@ -34,25 +34,39 @@ def trace(
     ce_eps: float = 1e-12,
     objective: str = "product",
 ) -> Tuple[object, List]:
+    INF = float("inf")
     best: Dict[object, float] = {target: 0.0}
     pred: Dict[object, object] = {target: None}
-
+    # Frontier-based (SPFA-style) relaxation: each round relaxes ONLY from nodes
+    # whose cost improved last round, updating `best` in place. After round k,
+    # best[n] is the optimal cost reaching n from target with ≤ k backward edges,
+    # so ≤ max_hops rounds respects the hop budget. This is O(Σ frontier-edges)
+    # — versus the previous version's O(max_hops × |cone|) full re-scan plus a
+    # full dict copy per round, which on the ~zero-threshold include_addr_addr
+    # cone made a single sink effectively non-terminating.
+    frontier = [target]
     for _ in range(max_hops):
-        new_best = dict(best)
-        new_pred = dict(pred)
-        updated = False
-        for u, cost_u in best.items():
+        proposals: Dict[object, tuple] = {}  # p -> (new_cost, u)
+        for u in frontier:
+            cost_u = best[u]
             for p in graph.get_upstream_neighbors(u):
                 ce = abs_ce(causal_effects, p, u)
                 if ce < threshold:
                     continue
                 new_cost = cost_u + edge_cost(ce, objective, ce_eps)
-                if p not in new_best or new_cost < new_best[p] - 1e-12:
-                    new_best[p] = new_cost
-                    new_pred[p] = u
-                    updated = True
-        best, pred = new_best, new_pred
-        if not updated:
+                if new_cost < best.get(p, INF) - 1e-12:
+                    prev = proposals.get(p)
+                    if prev is None or new_cost < prev[0] - 1e-12:
+                        proposals[p] = (new_cost, u)
+        if not proposals:
+            break
+        frontier = []
+        for p, (new_cost, u) in proposals.items():
+            if new_cost < best.get(p, INF) - 1e-12:
+                best[p] = new_cost
+                pred[p] = u
+                frontier.append(p)
+        if not frontier:
             break
 
     root = select_terminal(best, target, graph, causal_effects, threshold, prefer_root_types)

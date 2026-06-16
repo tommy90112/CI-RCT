@@ -54,8 +54,12 @@ def reconstruct_chain(pred: Dict, target, terminal) -> List:
     """
     rev = [terminal]
     node = terminal
+    seen = {terminal}
     while node != target:
         node = pred[node]
+        if node in seen:  # defensive: pred cycle (a true DAG can't produce one)
+            break
+        seen.add(node)
         rev.append(node)
     rev.reverse()  # [target, ..., terminal]
     return rev
