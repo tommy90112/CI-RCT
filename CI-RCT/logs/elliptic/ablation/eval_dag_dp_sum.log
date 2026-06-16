@@ -65,43 +65,54 @@ Loaded checkpoint: checkpoints/ci_rct_elliptic++_joint_best.pt
 [fraud_label_set] tx fraud nodes: 683, illicit wallets added: 14,266, total fraud_label_set size: 18,811
 
 [diagnostic 4/4] Predicted root cause type breakdown
-  root type = transaction         :   76  (0 in fraud_label_set, 0.0%)
-  root type = wallet              :  224  (98 in fraud_label_set, 43.8%)
+  root type = transaction         :  381  (0 in fraud_label_set, 0.0%)
+  root type = wallet              : 1619  (485 in fraud_label_set, 30.0%)
 
-[diagnostic 2/3] Chain depth histogram (num_traced=300, max_hops=20)
-  depth= 0:   12  █
-  depth= 1:   99  █████████████
-  depth= 2:   77  ██████████
-  depth= 3:   56  ███████
-  depth= 4:   12  █
-  depth= 5:   13  █
-  depth= 6:   15  ██
-  depth= 7:    4  
-  depth= 8:    6  
-  depth= 9:    4  
-  depth=10:    2  
+[diagnostic 2/3] Chain depth histogram (num_traced=2000, max_hops=20)
+  depth= 0:  136  ██
+  depth= 1:  252  █████
+  depth= 2:  940  ██████████████████
+  depth= 3:  256  █████
+  depth= 4:  136  ██
+  depth= 5:   76  █
+  depth= 6:   51  █
+  depth= 7:   27  
+  depth= 8:   21  
+  depth= 9:   13  
+  depth=10:   11  
+  depth=11:    7  
+  depth=12:    4  
+  depth=13:    1  
+  depth=15:    1  
+  depth=16:    1  
+  depth=17:    1  
+  depth=18:    3  
+  depth=19:    1  
+  depth=20:   62  █
 
-[diagnostic 3/3] Stuck-at-target trace analysis (12/300 chains have depth 0)
-  reason: target has no parents in causal graph : 12
-  reason: parents exist but max CE < threshold  : 0
+[diagnostic 3/3] Stuck-at-target trace analysis (136/2000 chains have depth 0)
+  reason: target has no parents in causal graph : 37
+  reason: parents exist but max CE < threshold  : 99
+    -> max-CE among stuck-but-has-parents:  mean=+0.0000  median=+0.0000  min=-0.0001  max=+0.0001
+    -> if these are mostly near 0, the relevant edge model is undertrained (NCM hypothesis confirmed).
 
 ───────────────────────────────────────────────────────
   B. Root Cause Tracing Metrics
 ───────────────────────────────────────────────────────
-  Root Cause Precision                    : 0.3267
-  Root Cause Hit Rate                     : 0.5400
-  Chain Validity                          : 0.5094
-  Mean Tracing Depth                      : 2.5200
-  Num Traced                              : 300
-  Root Cause Precision True Pos           : 0.3577
-  Num True Pos Traced                     : 274
+  Root Cause Precision                    : 0.2425
+  Root Cause Hit Rate                     : 0.3415
+  Chain Validity                          : 0.4630
+  Mean Tracing Depth                      : 3.1065
+  Num Traced                              : 2000
+  Root Cause Precision True Pos           : 0.2560
+  Num True Pos Traced                     : 1879
 
 ───────────────────────────────────────────────────────
   D. φ-Stability Metrics
 ───────────────────────────────────────────────────────
-  Phi Stability Std                       : 0.0014
-  Phi Stability Mean Abs                  : 0.0005
-  Num Nodes Explained                     : 300
+  Phi Stability Std                       : 0.0008
+  Phi Stability Mean Abs                  : 0.0002
+  Num Nodes Explained                     : 2000
 
 [Metric C — GT = LFPN-Strict]
   Explanation Quality: 4545/4545 GT transactions found in causal graph.
@@ -131,4 +142,4 @@ Loaded checkpoint: checkpoints/ci_rct_elliptic++_joint_best.pt
   Evaluation complete.
 ───────────────────────────────────────────────────────
 
-WALLCLOCK_SECONDS=214
+WALLCLOCK_SECONDS=223
