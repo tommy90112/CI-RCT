@@ -99,8 +99,8 @@ Loaded checkpoint: checkpoints/ci_rct_elliptic++_joint_best.pt
 ───────────────────────────────────────────────────────
   D. φ-Stability Metrics
 ───────────────────────────────────────────────────────
-  Phi Stability Std                       : 0.0013
-  Phi Stability Mean Abs                  : 0.0005
+  Phi Stability Std                       : 0.0010
+  Phi Stability Mean Abs                  : 0.0004
   Num Nodes Explained                     : 300
 
 [Metric C — GT = LFPN-Strict]
@@ -131,4 +131,4 @@ Loaded checkpoint: checkpoints/ci_rct_elliptic++_joint_best.pt
   Evaluation complete.
 ───────────────────────────────────────────────────────
 
-WALLCLOCK_SECONDS=210
+WALLCLOCK_SECONDS=213

@@ -65,35 +65,38 @@ Loaded checkpoint: checkpoints/ci_rct_elliptic++_joint_best.pt
 [fraud_label_set] tx fraud nodes: 683, illicit wallets added: 14,266, total fraud_label_set size: 18,811
 
 [diagnostic 4/4] Predicted root cause type breakdown
-  root type = transaction         :   14  (0 in fraud_label_set, 0.0%)
-  root type = wallet              :  286  (274 in fraud_label_set, 95.8%)
+  root type = transaction         :   52  (0 in fraud_label_set, 0.0%)
+  root type = wallet              :  248  (101 in fraud_label_set, 40.7%)
 
 [diagnostic 2/3] Chain depth histogram (num_traced=300, max_hops=20)
-  depth= 0:   14  █
-  depth= 1:  286  ██████████████████████████████████████
+  depth= 0:   12  █
+  depth= 1:  104  █████████████
+  depth= 2:  124  ████████████████
+  depth= 3:   30  ████
+  depth= 4:   13  █
+  depth= 5:   10  █
+  depth= 6:    7  
 
-[diagnostic 3/3] Stuck-at-target trace analysis (14/300 chains have depth 0)
+[diagnostic 3/3] Stuck-at-target trace analysis (12/300 chains have depth 0)
   reason: target has no parents in causal graph : 12
-  reason: parents exist but max CE < threshold  : 2
-    -> max-CE among stuck-but-has-parents:  mean=-0.0311  median=-0.0311  min=-0.0396  max=-0.0226
-    -> if these are mostly near 0, the relevant edge model is undertrained (NCM hypothesis confirmed).
+  reason: parents exist but max CE < threshold  : 0
 
 ───────────────────────────────────────────────────────
   B. Root Cause Tracing Metrics
 ───────────────────────────────────────────────────────
-  Root Cause Precision                    : 0.9133
-  Root Cause Hit Rate                     : 0.9133
-  Chain Validity                          : 0.9133
-  Mean Tracing Depth                      : 0.9533
+  Root Cause Precision                    : 0.3367
+  Root Cause Hit Rate                     : 0.4100
+  Chain Validity                          : 0.5209
+  Mean Tracing Depth                      : 1.9533
   Num Traced                              : 300
-  Root Cause Precision True Pos           : 1.0000
+  Root Cause Precision True Pos           : 0.3686
   Num True Pos Traced                     : 274
 
 ───────────────────────────────────────────────────────
   D. φ-Stability Metrics
 ───────────────────────────────────────────────────────
-  Phi Stability Std                       : 0.0014
-  Phi Stability Mean Abs                  : 0.0005
+  Phi Stability Std                       : 0.0019
+  Phi Stability Mean Abs                  : 0.0006
   Num Nodes Explained                     : 300
 
 [Metric C — GT = LFPN-Strict]
@@ -103,9 +106,9 @@ Loaded checkpoint: checkpoints/ci_rct_elliptic++_joint_best.pt
 ───────────────────────────────────────────────────────
   C. Explanation Quality — LFPN-Strict
 ───────────────────────────────────────────────────────
-  Explanation Accuracy                    : 0.4998
-  Explanation Recall                      : 0.9235
-  Gt Match Accuracy                       : 0.8915
+  Explanation Accuracy                    : 0.1587
+  Explanation Recall                      : 0.2863
+  Gt Match Accuracy                       : 0.2605
   Gt Match Mode                           : subset
 
 [Metric C — GT = LFPN-Extended (k=2)]
@@ -116,12 +119,12 @@ Loaded checkpoint: checkpoints/ci_rct_elliptic++_joint_best.pt
 ───────────────────────────────────────────────────────
   C. Explanation Quality — LFPN-Extended (k=2)
 ───────────────────────────────────────────────────────
-  Explanation Accuracy                    : 0.4998
-  Explanation Recall                      : 0.1194
-  Gt Match                                : n/a — GT broader than chain (3% of cases size-feasible); see Recall
+  Explanation Accuracy                    : 0.1721
+  Explanation Recall                      : 0.0436
+  Gt Match                                : n/a — GT broader than chain (10% of cases size-feasible); see Recall
 
 ───────────────────────────────────────────────────────
   Evaluation complete.
 ───────────────────────────────────────────────────────
 
-WALLCLOCK_SECONDS=210
+WALLCLOCK_SECONDS=215
