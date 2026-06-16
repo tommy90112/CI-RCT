@@ -11,7 +11,7 @@ CCV are a lower bound, but it never dead-ends on a reachable root the way greedy
 from collections import deque
 from typing import Dict, List, Optional, Set, Tuple
 
-from model.tracer_strategies.base import reconstruct_chain
+from model.tracer_strategies.base import abs_ce, reconstruct_chain
 
 
 def trace(
@@ -27,21 +27,29 @@ def trace(
 ) -> Tuple[object, List]:
     prefer = prefer_root_types or set()
 
+    def is_dead_leaf(n) -> bool:
+        # causal trail goes cold here — same stop condition as greedy / dag_dp
+        return all(
+            abs_ce(causal_effects, p, n) < threshold
+            for p in graph.get_upstream_neighbors(n)
+        )
+
     def is_terminal(n) -> bool:
-        if n == target:
+        if n == target or not is_dead_leaf(n):
             return False
-        if prefer:
-            return graph.node_type.get(n) in prefer
-        return len(graph.get_upstream_neighbors(n)) == 0  # true source
+        return (not prefer) or graph.node_type.get(n) in prefer
 
     pred: Dict[object, object] = {target: None}
     visited = {target}
     queue = deque([(target, 0)])
+    deepest = target  # BFS pops in non-decreasing depth, so the last is deepest
 
     while queue:
         u, depth = queue.popleft()
         if is_terminal(u):
             return u, reconstruct_chain(pred, target, u)
+        if u != target:
+            deepest = u
         if depth >= max_hops:
             continue
         for p in graph.get_upstream_neighbors(u):
@@ -50,4 +58,7 @@ def trace(
                 pred[p] = u
                 queue.append((p, depth + 1))
 
-    return target, [target]
+    # no preferred-type dead-leaf within the hop budget → deepest reached node
+    if deepest == target:
+        return target, [target]
+    return deepest, reconstruct_chain(pred, target, deepest)

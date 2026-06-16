@@ -74,38 +74,29 @@ def select_terminal(
     prefer_root_types: Optional[Set[str]],
 ) -> Optional[object]:
     """
-    Pick the best-scoring valid terminal among the nodes reached by the search.
+    Pick the chain's endpoint = a |CE| DEAD-LEAF (a node where the causal signal
+    stops: no parent with |CE| >= threshold). This is the SAME stop condition the
+    greedy tracer uses, so chains run DEEP to where the causal trail goes cold.
 
-    ``best[n]`` is the minimal accumulated cost to reach ``n`` from ``target``
-    (lower cost ⇒ higher product / higher sum).  Terminal validity, in priority
-    order (this is what structurally subsumes the DD-18 reachability lookahead —
-    the terminal is constrained over the WHOLE path, not myopically per hop):
+    ``prefer_root_types`` is then a SOFT tie-break AMONG those dead-leaves (prefer
+    e.g. wallet-typed origins), mirroring how the greedy tracer uses it as a
+    ranking nudge. It is NOT a hard "stop at the first node of this type" terminal
+    — that earlier semantics let a global optimiser stop at the fraud tx's
+    immediate input wallet (a NON-dead-leaf with a strong funding parent),
+    collapsing chains to depth 1.
 
-        1. When ``prefer_root_types`` is set: a terminal MUST be a node of that
-           root-capable type.  A dead-end bridge that is a true source but NOT a
-           root type is therefore NOT a valid terminal — even if a sub-path to it
-           has higher product — so the optimiser is forced onto the branch that
-           actually reaches a root.  Among root-type terminals the lowest-cost
-           (most-probable / heaviest) one wins.
-        2. Fallback (no root-type node reachable — the dataset "unreachable root"
-           ceiling): the lowest-cost dead-leaf, else the lowest-cost reached node.
-        3. When ``prefer_root_types`` is None: any dead-leaf (a node with no
-           above-threshold parent) is a valid terminal — forcing full-depth
-           chains to their natural stop — else any reached node.
-
-    Returns None when nothing but ``target`` was reached (caller returns the
-    degenerate ``(target, [target])``, mirroring greedy stopping at depth 0).
+    ``best[n]`` is the minimal accumulated cost to reach ``n`` (lower ⇒ higher
+    product / heavier sum). Order:
+        1. dead-leaves of a preferred type, lowest cost
+        2. any dead-leaf, lowest cost
+        3. fallback (no parent's signal died within the hop budget): lowest-cost
+           reached node
+    Returns None when only ``target`` was reached (caller returns the degenerate
+    ``(target, [target])``, mirroring greedy stopping at depth 0).
     """
     reached = [n for n in best if n != target]
     if not reached:
         return None
-
-    prefer = prefer_root_types or set()
-    if prefer:
-        typed = [n for n in reached if graph.node_type.get(n) in prefer]
-        if typed:
-            return min(typed, key=lambda n: best[n])
-        # else: unreachable-root fallback handled below
 
     def is_dead_leaf(n) -> bool:
         return all(
@@ -114,5 +105,11 @@ def select_terminal(
         )
 
     leaves = [n for n in reached if is_dead_leaf(n)]
-    pool = leaves or reached
+    pool = leaves or reached  # fallback: nothing died within budget → any reached
+
+    prefer = prefer_root_types or set()
+    if prefer:
+        typed = [n for n in pool if graph.node_type.get(n) in prefer]
+        if typed:
+            return min(typed, key=lambda n: best[n])
     return min(pool, key=lambda n: best[n])
