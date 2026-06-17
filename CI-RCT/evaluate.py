@@ -168,6 +168,12 @@ def parse_args() -> argparse.Namespace:
                         help="Monte-Carlo permutations for symmetric Shapley "
                              "(--explainer phi_sym). Exact enumeration is used "
                              "when n_parents! <= this value.")
+    parser.add_argument("--shapley_topk", type=int, default=0,
+                        help="Cap each hop's parents to the top-k by |CE| before "
+                             "Causal Shapley (phi_asym/phi_sym). 0 = no cap "
+                             "(legacy). Each coalition is a full backbone forward, "
+                             "so high-in-degree nodes make phi intractable on "
+                             "Elliptic++; e.g. --shapley_topk 8 bounds the count.")
     # Dump the exact set of traced root-cause chains (the same ones counted in
     # the depth histogram / num_traced) decoded to real Elliptic++ identities,
     # for the crime-chain viewer (viz/crime_chain*.html).
@@ -858,6 +864,7 @@ def eval_explanation_quality(model, data, labels, test_mask,
         type_offsets=compute_type_offsets(data),
         target_node_type=model.backbone.target_node_type,
         n_permutations=getattr(args, "shapley_permutations", 64),
+        shapley_topk=(getattr(args, "shapley_topk", 0) or None),
     )
     print(f"  Explainer: {explainer_name}")
     preds_list, gts_list = [], []

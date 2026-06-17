@@ -46,11 +46,18 @@ EXPLAINER_CHOICES = ("ce_only", "phi_asym", "phi_sym", "cxgnn_ncm")
 def _make_phi_score_fn(
     *, model, data, causal_graph, target_node, type_offsets,
     target_node_type, fraud_class, mode, n_permutations,
+    causal_effects, shapley_topk=None,
 ):
     """Build an upstream_score_fn that ranks a hop's parents by Causal Shapley φ.
 
     The coalition value reads out ``target_node``'s fraud probability while the
     coalition controls the *current* hop's parent edges (intervene_node=current).
+
+    ``shapley_topk`` (when > 0) caps the parents fed to Shapley to the top-k by
+    |CE| BEFORE the coalition forwards. Each coalition is a full backbone
+    forward, so an uncapped high-in-degree node triggers O(n) (asym) / O(n·perm)
+    (sym) full-graph forwards and becomes intractable on Elliptic++. The dropped
+    low-|CE| parents contribute negligibly. None/0 ⇒ no cap (byte-identical).
     """
     def score_fn(current, upstream):
         vfn = make_backbone_coalition_value_fn(
@@ -63,13 +70,22 @@ def _make_phi_score_fn(
             fraud_class=fraud_class,
             intervene_node=current,
         )
+        parents = None
+        if shapley_topk and shapley_topk > 0:
+            all_parents = list(causal_graph.parents(current))
+            if len(all_parents) > shapley_topk:
+                parents = sorted(
+                    all_parents,
+                    key=lambda p: abs(causal_effects.get((p, current), 0.0)),
+                    reverse=True,
+                )[:shapley_topk]
         if mode == "asym":
             return compute_asymmetric_causal_shapley(
-                {}, causal_graph, current, coalition_value_fn=vfn
+                {}, causal_graph, current, coalition_value_fn=vfn, parents=parents
             )
         return compute_symmetric_causal_shapley(
             causal_graph, current, coalition_value_fn=vfn,
-            n_permutations=n_permutations,
+            n_permutations=n_permutations, parents=parents,
         )
 
     return score_fn
@@ -86,6 +102,7 @@ def build_explainer(
     target_node_type: str,
     fraud_class: int = 1,
     n_permutations: int = 64,
+    shapley_topk: int = None,
     cxgnn_kwargs: dict = None,
 ) -> ExplainFn:
     """Return an ``explain(target, causal_effects) -> set[int]`` for ``name``.
@@ -121,6 +138,7 @@ def build_explainer(
                 target_node=target, type_offsets=type_offsets,
                 target_node_type=target_node_type, fraud_class=fraud_class,
                 mode=mode, n_permutations=n_permutations,
+                causal_effects=causal_effects, shapley_topk=shapley_topk,
             )
             _, chain = tracer.trace_root_cause(
                 target, causal_effects, upstream_score_fn=score_fn

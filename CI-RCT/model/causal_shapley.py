@@ -56,9 +56,15 @@ from model.typed_causal_graph import TypedCausalGraph
 CoalitionValueFn = Callable[[frozenset], float]
 
 
-def _topo_sorted_parents(causal_graph: TypedCausalGraph, target_node: int) -> List[int]:
-    """Parents of target_node sorted by topological order (earliest = root)."""
-    parents = list(causal_graph.parents(target_node))
+def _topo_sorted_parents(
+    causal_graph: TypedCausalGraph, target_node: int, parents=None
+) -> List[int]:
+    """Parents of target_node sorted by topological order (earliest = root).
+
+    ``parents`` optionally restricts the set to a caller-chosen subset (e.g. a
+    |CE| top-k of Pa(target_node)); None ⇒ the full parent set (legacy).
+    """
+    parents = list(causal_graph.parents(target_node)) if parents is None else list(parents)
     if not parents:
         return []
     # Use the cached topological_index — building this dict from scratch on
@@ -74,6 +80,7 @@ def compute_asymmetric_causal_shapley(
     causal_graph: TypedCausalGraph,
     target_node: int,
     coalition_value_fn: Optional[CoalitionValueFn] = None,
+    parents=None,
 ) -> Dict[int, float]:
     """
     Compute Asymmetric Causal Shapley Values for all parents of target_node.
@@ -100,7 +107,7 @@ def compute_asymmetric_causal_shapley(
         {parent_node_id: phi_asymmetric} — Shapley values for each parent.
         Empty dict if the target node has no parents.
     """
-    parents_sorted = _topo_sorted_parents(causal_graph, target_node)
+    parents_sorted = _topo_sorted_parents(causal_graph, target_node, parents)
     n = len(parents_sorted)
     if n == 0:
         return {}
@@ -132,6 +139,7 @@ def compute_symmetric_causal_shapley(
     coalition_value_fn: CoalitionValueFn,
     n_permutations: int = 64,
     rng_seed: int = 0,
+    parents=None,
 ) -> Dict[int, float]:
     """
     Standard (symmetric) Shapley values for the parents of target_node.
@@ -157,7 +165,7 @@ def compute_symmetric_causal_shapley(
     Returns:
         {parent_node_id: phi_symmetric}. Empty dict if no parents.
     """
-    parents = list(causal_graph.parents(target_node))
+    parents = list(causal_graph.parents(target_node)) if parents is None else list(parents)
     n = len(parents)
     if n == 0:
         return {}

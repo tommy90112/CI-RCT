@@ -24,6 +24,11 @@ CKPT="${CKPT:-checkpoints/ci_rct_elliptic++_joint_best.pt}"
 MAX_EXPLAIN="${MAX_EXPLAIN:-2000}"
 OUTDIR="${OUTDIR:-logs/elliptic/explainer_ablation}"
 DEVICE="${DEVICE:-cuda}"
+# Each Shapley coalition is a FULL backbone forward, so uncapped high-in-degree
+# nodes make phi_asym/phi_sym intractable (a single 300-target phi_sym ran >16h).
+# Cap parents to top-k by |CE| and trim phi_sym's permutations. Override via env.
+SHAPLEY_TOPK="${SHAPLEY_TOPK:-8}"
+SHAPLEY_PERM="${SHAPLEY_PERM:-16}"
 mkdir -p "$OUTDIR"
 
 if [[ ! -f "$CKPT" ]]; then
@@ -39,6 +44,7 @@ COMMON=(
   --threshold_tuning val --threshold_objective fraud_f1
   --prefer_root_types wallet
   --device "$DEVICE"
+  --shapley_topk "$SHAPLEY_TOPK" --shapley_permutations "$SHAPLEY_PERM"
   --lfpn_mode both --debug
 )
 
