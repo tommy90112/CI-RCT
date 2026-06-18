@@ -1,3 +1,5 @@
+/mnt/nfs/maokao_1/.config/matplotlib is not a writable directory
+Matplotlib created a temporary cache directory at /tmp/matplotlib-jcop4vpc because there was an issue with the default path (/mnt/nfs/maokao_1/.config/matplotlib); it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
 Loading dataset: elliptic++ (variant=joint)
   Loading CSVs …
   Building transaction features …
@@ -100,23 +102,35 @@ Loaded checkpoint: checkpoints/ci_rct_elliptic++_joint_best.pt
 ───────────────────────────────────────────────────────
   D. φ-Stability Metrics
 ───────────────────────────────────────────────────────
-  Phi Stability Std                       : 0.0017
-  Phi Stability Mean Abs                  : 0.0005
+  Phi Stability Std                       : 0.0012
+  Phi Stability Mean Abs                  : 0.0004
   Num Nodes Explained                     : 300
 
 [Metric C — GT = LFPN-Strict]
   Explanation Quality: 4545/4545 GT transactions found in causal graph.
-Traceback (most recent call last):
-  File "/mnt/nfs/maokao_1/CI-RCT/CI-RCT/evaluate.py", line 1214, in <module>
-    main()
-  File "/mnt/nfs/maokao_1/CI-RCT/CI-RCT/evaluate.py", line 1202, in main
-    expl_metrics = eval_explanation_quality(
-  File "/mnt/nfs/maokao_1/CI-RCT/CI-RCT/evaluate.py", line 858, in eval_explanation_quality
-    explainer = build_explainer(
-  File "/mnt/nfs/maokao_1/CI-RCT/CI-RCT/model/explainers.py", line 151, in build_explainer
-    return build_cxgnn_ncm_explainer(
-  File "/mnt/nfs/maokao_1/CI-RCT/CI-RCT/model/cxgnn_ncm_adapter.py", line 89, in build_cxgnn_ncm_explainer
-    from causal import CausalGraph  # CXGNN (registered on import)
-  File "/mnt/nfs/maokao_1/CI-RCT/CXGNN/model/causal.py", line 3, in <module>
-    import matplotlib.pyplot as plt
-ModuleNotFoundError: No module named 'matplotlib'
+  Explainer: cxgnn_ncm
+
+───────────────────────────────────────────────────────
+  C. Explanation Quality — LFPN-Strict
+───────────────────────────────────────────────────────
+  Explanation Accuracy                    : 0.4028
+  Explanation Recall                      : 0.9855
+  Gt Match Accuracy                       : 0.9734
+  Gt Match Mode                           : subset
+
+[Metric C — GT = LFPN-Extended (k=2)]
+  Explanation Quality: 4545/4545 GT transactions found in causal graph.
+  Explainer: cxgnn_ncm
+  [note] subset gt-match suppressed: GT is broader than the bounded causal chain, so 'recover ALL gt nodes' is structurally ~0; Explanation Recall is the coverage metric.
+
+───────────────────────────────────────────────────────
+  C. Explanation Quality — LFPN-Extended (k=2)
+───────────────────────────────────────────────────────
+  Explanation Accuracy                    : 0.4028
+  Explanation Recall                      : 0.1435
+  Gt Match                                : n/a — GT broader than chain (8% of cases size-feasible); see Recall
+
+───────────────────────────────────────────────────────
+  Evaluation complete.
+───────────────────────────────────────────────────────
+
