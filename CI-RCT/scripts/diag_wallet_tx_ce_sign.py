@@ -41,7 +41,7 @@ B（依錢包真實標籤拆 CE）：把 wallet→tx 的 CE 依「來源錢包�
 """
 import os
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import torch
 
@@ -384,6 +384,67 @@ def diagnose(model, data, causal_graph, type_offsets, args):
         print("\n  假說預測：illicit 的 mean_CE 明顯高於 licit（甚至為正），"
               "licit 以負 CE 為主 → 證實『illicit 推高、licit 壓低』。")
 
+    # ── DIAG C：聚焦「dst 為 fraud tx」的邊 —— 追溯首跳真正關心的子集 ────────
+    # tx 標籤：class 1(illicit)→y=1；class 2/3 →y=0（見 elliptic_plus_loader）。
+    print("\n" + "═" * 70)
+    print("  [DIAG C] 只看 dst=fraud tx 的 wallet→tx 邊：|CE| 會把首跳帶向誰？")
+    print("═" * 70)
+    tx_off = type_offsets[TX_TYPE]
+    tx_y_cpu = data[TX_TYPE].y.detach().cpu()
+
+    def dst_is_fraud(dst):
+        local = dst - tx_off
+        return 0 <= local < tx_y_cpu.numel() and int(tx_y_cpu[local].item()) == 1
+
+    if not cls_map:
+        print("  錢包標籤對照為空，DIAG C 略過（C1/C2 需要錢包 class）。")
+    else:
+        # C1：依 (dst 是否 fraud) × (來源錢包 class) 聚合 CE / |CE|
+        agg = defaultdict(lambda: {"ce": [], "abs": []})
+        for (s, d, et, p_a, p_n, c) in rows:
+            scl = CLASS_NAME.get(cls_map.get(s), "no_label")
+            dkey = "fraud_tx" if dst_is_fraud(d) else "non_fraud_tx"
+            agg[(dkey, scl)]["ce"].append(c)
+            agg[(dkey, scl)]["abs"].append(abs(c))
+        print("  [C1] (dst 是否 fraud) × (來源錢包 class) 的 CE / |CE| 聚合")
+        print(f"  {'dst':<13s} {'src_class':<10s} {'n':>7s} "
+              f"{'mean_CE':>9s} {'mean|CE|':>9s}")
+        for dkey in ("fraud_tx", "non_fraud_tx"):
+            for scl in ("illicit", "licit", "unknown", "no_label"):
+                if (dkey, scl) not in agg:
+                    continue
+                g = agg[(dkey, scl)]
+                ce_a = np.asarray(g["ce"]); ab = np.asarray(g["abs"])
+                print(f"  {dkey:<13s} {scl:<10s} {ce_a.size:>7d} "
+                      f"{ce_a.mean():>+9.4f} {ab.mean():>9.4f}")
+
+        # C2：對每個 fraud tx，比較「|CE|-max 的錢包父」與「signed-CE-max 的錢包父」
+        # 各是什麼 class —— 直接量化『現用 |CE| 選擇』vs『帶號選擇』把首跳帶向誰。
+        parents_by_ftx = defaultdict(list)  # dst -> [(src, ce)]
+        for (s, d, et, p_a, p_n, c) in rows:
+            if dst_is_fraud(d):
+                parents_by_ftx[d].append((s, c))
+        absmax_tally, signedmax_tally = Counter(), Counter()
+        for d, plist in parents_by_ftx.items():
+            bs_abs = max(plist, key=lambda t: abs(t[1]))[0]   # |CE|-max（現用）
+            bs_sgn = max(plist, key=lambda t: t[1])[0]        # signed-CE-max
+            absmax_tally[CLASS_NAME.get(cls_map.get(bs_abs), "no_label")] += 1
+            signedmax_tally[CLASS_NAME.get(cls_map.get(bs_sgn), "no_label")] += 1
+        n_ftx = len(parents_by_ftx)
+        cols = ("illicit", "licit", "unknown", "no_label")
+        print(f"\n  [C2] {n_ftx} 個 fraud tx（≥1 錢包父）首跳『會選到的錢包父』class 分佈")
+        print(f"  {'rule':<16s} " + "".join(f"{k:>10s}" for k in cols))
+        for name, tal in (("|CE|-max(now)", absmax_tally),
+                          ("signed-CE-max", signedmax_tally)):
+            cells = "".join(
+                f"{(100 * tal.get(k, 0) / max(1, n_ftx)):>9.1f}%" for k in cols
+            )
+            print(f"  {name:<16s} {cells}")
+        print("\n  判讀：")
+        print("   · |CE|-max(now) 的 illicit% 高 → 紅旗 B 在實務上無害，可放心寫『|CE| 設計正當』。")
+        print("   · 若其 illicit% 偏低、licit% 高，且 signed-CE-max 的 illicit% 明顯較高")
+        print("     → |CE| 確實把首跳帶向 licit，論文須誠實寫成 limitation（並靠 tie-break 補救）。")
+
     # ── 輸出逐邊 CSV（供畫圖）── cls_map 在 DIAG B 已建立（可能為空 dict）──
     ckpt_tag = os.path.splitext(os.path.basename(args.checkpoint or "nockpt"))[0]
     out_dir = os.path.join("logs", "diag_wallet_ce")
@@ -393,12 +454,13 @@ def diagnose(model, data, causal_graph, type_offsets, args):
     with open(out_csv, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["src_global", "dst_global", "edge_type",
-                    "src_wallet_class", "src_wallet_class_name",
+                    "src_wallet_class", "src_wallet_class_name", "dst_is_fraud_tx",
                     "p_actual", "p_null", "ce"])
         for (s, d, et, p_a, p_n, c) in rows:
             cl = cls_map.get(s)
             w.writerow([s, d, et, cl if cl is not None else "",
-                        CLASS_NAME.get(cl, ""), f"{p_a:.6f}", f"{p_n:.6f}", f"{c:.6f}"])
+                        CLASS_NAME.get(cl, ""), int(dst_is_fraud(d)),
+                        f"{p_a:.6f}", f"{p_n:.6f}", f"{c:.6f}"])
     print(f"\n[csv] 逐邊明細已寫出 → {out_csv}（{len(rows)} 列，可用於畫分佈圖）")
 
 
