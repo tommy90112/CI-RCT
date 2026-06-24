@@ -163,7 +163,8 @@ def parse_args() -> argparse.Namespace:
     # 'sym' isolates the empirical value of temporal asymmetry. 'cxgnn_ncm' is
     # the external CXGNN (ECCV 2024) per-target local-NCM baseline.
     parser.add_argument("--explainer", type=str, default="ce_only",
-                        choices=["ce_only", "phi_asym", "phi_sym", "cxgnn_ncm"])
+                        choices=["ce_only", "phi_asym", "phi_sym",
+                                 "saliency", "cxgnn_ncm"])
     parser.add_argument("--shapley_permutations", type=int, default=64,
                         help="Monte-Carlo permutations for symmetric Shapley "
                              "(--explainer phi_sym). Exact enumeration is used "
@@ -174,6 +175,27 @@ def parse_args() -> argparse.Namespace:
                              "(legacy). Each coalition is a full backbone forward, "
                              "so high-in-degree nodes make phi intractable on "
                              "Elliptic++; e.g. --shapley_topk 8 bounds the count.")
+    parser.add_argument("--coalition_subgraph",
+                        type=lambda x: x.lower() == "true", default=True,
+                        help="Forward only the readout's L-hop receptive-field "
+                             "subgraph per Causal Shapley coalition instead of the "
+                             "full graph (numerically identical for a local "
+                             "backbone; self-checks vs full forward and reverts on "
+                             "mismatch). Massive phi_asym/phi_sym speedup. "
+                             "true (default) / false.")
+    # Ranking signal for the MAIN root-cause tracer (Metric B / RCP), as opposed
+    # to --explainer which only changes Metric C. 'ce' is byte-identical legacy.
+    parser.add_argument("--tracer_score", type=str, default="ce",
+                        choices=["ce", "phi_asym", "phi_sym"],
+                        help="Per-hop ranking signal for the MAIN root-cause "
+                             "tracer (Metric B). 'ce' (default) ranks by |CE| "
+                             "(byte-identical to legacy). 'phi_asym'/'phi_sym' "
+                             "rank by |φ| (asymmetric/symmetric Causal Shapley via "
+                             "the backbone do-intervention coalition value), making "
+                             "the title's Shapley-driven-tracing claim testable on "
+                             "RCP. Reuses --shapley_topk / --shapley_permutations / "
+                             "--coalition_subgraph. φ readout uses the primary head, "
+                             "so non-primary-type (joint) seeds fall back to |CE|.")
     # Dump the exact set of traced root-cause chains (the same ones counted in
     # the depth histogram / num_traced) decoded to real Elliptic++ identities,
     # for the crime-chain viewer (viz/crime_chain*.html).
@@ -183,6 +205,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dump_chains_topn", type=int, default=0,
                         help="Keep only the top-N chains (0 = all), sorted "
                              "true-positive & fraud-root & deepest first.")
+    parser.add_argument("--dump_csv", type=str, default=None,
+                        help="CSV path to write the traced chains as a flat "
+                             "one-row-per-chain table (path / type / CE encoded "
+                             "with '|'); shares the same chains & top-N filter "
+                             "as --dump_chains.")
     parser.add_argument("--debug", action="store_true",
                         help="Print tracer diagnostics: CE distribution by edge "
                              "type, chain length histogram, stuck-trace analysis.")
@@ -580,9 +607,56 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         }
     causal_effects_perturbed = model.compute_causal_effects(flat_h_perturbed, causal_graph)
     stability_diffs = []
- 
+
+    # ── Optional φ-driven ranking for the MAIN tracer (Metric B / RCP) ─────────
+    # --tracer_score ce (default) ⇒ |CE| ranking, byte-identical to legacy.
+    # phi_asym/phi_sym rank each hop by |φ| (asymmetric/symmetric Causal Shapley
+    # via the backbone do-intervention coalition value), making the thesis title's
+    # "asymmetric-Shapley-driven root-cause tracing" claim testable on RCP. We take
+    # |φ| (not signed φ) to keep the magnitude convention of the |CE| path, so
+    # suppressor parents (negative effect, large |φ|) are still followed and the
+    # trace does not stall at depth 0.
+    tracer_score = getattr(args, "tracer_score", "ce")
+    readout_type = model.backbone.target_node_type
+    _phi_layers = None
+    if tracer_score != "ce" and getattr(args, "coalition_subgraph", True):
+        try:
+            _phi_layers = len(model.backbone.hgt_layers)
+        except AttributeError:
+            _phi_layers = getattr(
+                getattr(model, "config", None), "num_hgt_layers", None
+            )
+
+    def _phi_tracer_score_fn(seed_global):
+        # φ readout reuses the primary classifier head, so it is only valid for
+        # seeds of that type; non-primary (joint) seeds fall back to |CE| (None).
+        if tracer_score == "ce":
+            return None
+        if causal_graph.node_type.get(seed_global) != readout_type:
+            return None
+        from model.explainers import _make_phi_score_fn
+        base = _make_phi_score_fn(
+            model=model, data=data, causal_graph=causal_graph,
+            target_node=seed_global, type_offsets=type_offsets,
+            target_node_type=readout_type, fraud_class=1,
+            mode=("asym" if tracer_score == "phi_asym" else "sym"),
+            n_permutations=getattr(args, "shapley_permutations", 64),
+            causal_effects=causal_effects,
+            shapley_topk=(getattr(args, "shapley_topk", 0) or None),
+            use_subgraph=getattr(args, "coalition_subgraph", True),
+            num_layers=_phi_layers,
+        )
+
+        def abs_score_fn(current, upstream):
+            return {u: abs(v) for u, v in base(current, upstream).items()}
+
+        return abs_score_fn
+
     for global_id in fraud_predicted_global:
-        root, chain = tracer.trace_root_cause(global_id, causal_effects)
+        root, chain = tracer.trace_root_cause(
+            global_id, causal_effects,
+            upstream_score_fn=_phi_tracer_score_fn(global_id),
+        )
         predicted_roots.append(root)
         causal_chains.append(chain)
         phi_orig = compute_asymmetric_causal_shapley(causal_effects, causal_graph, global_id)
@@ -695,11 +769,16 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
     # ── Optional: dump the traced chains with real Elliptic++ identities ────
     # These are the SAME chains summarised by the depth histogram — here we
     # decode every node's global id back to its real txId / wallet address and
-    # write them out for the crime-chain viewer.
-    if getattr(args, "dump_chains", None) and args.dataset == "elliptic++":
+    # write them out as JSON (crime-chain viewer) and/or a flat CSV table.
+    want_dump = (
+        (getattr(args, "dump_chains", None) or getattr(args, "dump_csv", None))
+        and args.dataset == "elliptic++"
+    )
+    if want_dump:
         import json as _json
         from utils.elliptic_identity import build_reverse_maps, chain_to_record
-        print(f"\n[dump_chains] decoding {len(causal_chains)} chains to real "
+        from utils.chain_export import write_chains_csv
+        print(f"\n[dump] decoding {len(causal_chains)} chains to real "
               f"txId / address …")
         idx_to_txid, idx_to_addr = build_reverse_maps(
             args.data_root,
@@ -722,19 +801,23 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         )
         if args.dump_chains_topn > 0:
             records = records[: args.dump_chains_topn]
-        meta = {
-            "dataset": "elliptic++",
-            "checkpoint": os.path.basename(args.checkpoint or ""),
-            "n_chains": len(records),
-            "n_true_positive": sum(1 for c in records if c["is_true_positive"]),
-            "n_fraud_root": sum(1 for c in records if c["root_is_fraud"]),
-            "mean_depth": (round(float(np.mean([c["depth"] for c in records])), 2)
-                           if records else 0.0),
-        }
-        os.makedirs(os.path.dirname(os.path.abspath(args.dump_chains)), exist_ok=True)
-        with open(args.dump_chains, "w") as f:
-            _json.dump({"meta": meta, "chains": records}, f)
-        print(f"[dump_chains] wrote {len(records)} chains → {args.dump_chains}")
+        if getattr(args, "dump_chains", None):
+            meta = {
+                "dataset": "elliptic++",
+                "checkpoint": os.path.basename(args.checkpoint or ""),
+                "n_chains": len(records),
+                "n_true_positive": sum(1 for c in records if c["is_true_positive"]),
+                "n_fraud_root": sum(1 for c in records if c["root_is_fraud"]),
+                "mean_depth": (round(float(np.mean([c["depth"] for c in records])), 2)
+                               if records else 0.0),
+            }
+            os.makedirs(os.path.dirname(os.path.abspath(args.dump_chains)), exist_ok=True)
+            with open(args.dump_chains, "w") as f:
+                _json.dump({"meta": meta, "chains": records}, f)
+            print(f"[dump_chains] wrote {len(records)} chains → {args.dump_chains}")
+        if getattr(args, "dump_csv", None):
+            n_csv = write_chains_csv(records, args.dump_csv)
+            print(f"[dump_csv] wrote {n_csv} chains → {args.dump_csv}")
 
     # ── DIAGNOSTIC 4: root type breakdown ──────────────────────────────────
     if args.debug:
@@ -865,6 +948,7 @@ def eval_explanation_quality(model, data, labels, test_mask,
         target_node_type=model.backbone.target_node_type,
         n_permutations=getattr(args, "shapley_permutations", 64),
         shapley_topk=(getattr(args, "shapley_topk", 0) or None),
+        coalition_subgraph=getattr(args, "coalition_subgraph", True),
     )
     print(f"  Explainer: {explainer_name}")
     preds_list, gts_list = [], []
