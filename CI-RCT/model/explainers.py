@@ -19,6 +19,12 @@ Registered explainers (selected by ``--explainer``):
   * ``phi_sym``  — ablation Abl-1: identical but with SYMMETRIC Shapley φ (all
                    orderings weighted equally). The gap phi_asym − phi_sym is
                    the empirical value of temporal asymmetry.
+  * ``saliency`` — ablation Abl-2 (correlational baseline): identical readout
+                   but ranks each hop's parents by Grad×Input saliency on the
+                   target's fraud prob instead of an intervention. The gap
+                   phi_asym − saliency is the empirical value of causal
+                   intervention over plain correlation. See
+                   model/saliency_explainer.py.
   * ``cxgnn_ncm``— external SOTA baseline (CXGNN, ECCV 2024): per-target local
                    NCM subgraph. Implemented in model/cxgnn_ncm_adapter.py and
                    wired in here when available.
@@ -40,13 +46,14 @@ from model.coalition_value import make_backbone_coalition_value_fn
 # explain(target_node, causal_effects) -> set of explanatory node ids.
 ExplainFn = Callable[[int, Dict[Tuple[int, int], float]], Set[int]]
 
-EXPLAINER_CHOICES = ("ce_only", "phi_asym", "phi_sym", "cxgnn_ncm")
+EXPLAINER_CHOICES = ("ce_only", "phi_asym", "phi_sym", "saliency", "cxgnn_ncm")
 
 
 def _make_phi_score_fn(
     *, model, data, causal_graph, target_node, type_offsets,
     target_node_type, fraud_class, mode, n_permutations,
     causal_effects, shapley_topk=None,
+    use_subgraph=False, num_layers=None,
 ):
     """Build an upstream_score_fn that ranks a hop's parents by Causal Shapley φ.
 
@@ -69,6 +76,8 @@ def _make_phi_score_fn(
             target_node_type=target_node_type,
             fraud_class=fraud_class,
             intervene_node=current,
+            use_subgraph=use_subgraph,
+            num_layers=num_layers,
         )
         parents = None
         if shapley_topk and shapley_topk > 0:
@@ -103,6 +112,7 @@ def build_explainer(
     fraud_class: int = 1,
     n_permutations: int = 64,
     shapley_topk: int = None,
+    coalition_subgraph: bool = False,
     cxgnn_kwargs: dict = None,
 ) -> ExplainFn:
     """Return an ``explain(target, causal_effects) -> set[int]`` for ``name``.
@@ -131,6 +141,13 @@ def build_explainer(
 
     if name in ("phi_asym", "phi_sym"):
         mode = "asym" if name == "phi_asym" else "sym"
+        # backbone message-passing depth = the readout's receptive-field radius
+        _num_layers = None
+        if coalition_subgraph:
+            try:
+                _num_layers = len(model.backbone.hgt_layers)
+            except AttributeError:
+                _num_layers = getattr(getattr(model, "config", None), "num_hgt_layers", None)
 
         def explain(target, causal_effects):
             score_fn = _make_phi_score_fn(
@@ -139,6 +156,33 @@ def build_explainer(
                 target_node_type=target_node_type, fraud_class=fraud_class,
                 mode=mode, n_permutations=n_permutations,
                 causal_effects=causal_effects, shapley_topk=shapley_topk,
+                use_subgraph=coalition_subgraph, num_layers=_num_layers,
+            )
+            _, chain = tracer.trace_root_cause(
+                target, causal_effects, upstream_score_fn=score_fn
+            )
+            return set(chain)
+        return explain
+
+    if name == "saliency":
+        from model.saliency_explainer import make_saliency_score_fn
+        # Same receptive-field readout as the φ arms, so the only difference is
+        # interventional φ vs correlational saliency.
+        _num_layers = None
+        if coalition_subgraph:
+            try:
+                _num_layers = len(model.backbone.hgt_layers)
+            except AttributeError:
+                _num_layers = getattr(
+                    getattr(model, "config", None), "num_hgt_layers", None
+                )
+
+        def explain(target, causal_effects):
+            score_fn = make_saliency_score_fn(
+                model=model, data=data, causal_graph=causal_graph,
+                target_node=target, type_offsets=type_offsets,
+                target_node_type=target_node_type, fraud_class=fraud_class,
+                use_subgraph=coalition_subgraph, num_layers=_num_layers,
             )
             _, chain = tracer.trace_root_cause(
                 target, causal_effects, upstream_score_fn=score_fn
