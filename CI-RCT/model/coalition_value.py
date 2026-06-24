@@ -203,6 +203,14 @@ class BackboneCoalitionValue:
         self.model = model
         self.data = data
         self.fraud_class = fraud_class
+        # All bookkeeping index/mask tensors below must live on the same device
+        # as the graph's edge_index (= the model/data device). Building them on
+        # CPU and indexing a CUDA edge_index (or vice versa) raises a
+        # device-mismatch RuntimeError, which only surfaces when running on GPU.
+        try:
+            self._dev = next(model.parameters()).device
+        except StopIteration:
+            self._dev = torch.device("cpu")
 
         # ── Readout node (where we read the fraud probability) ────────────────
         self.target_type = target_node_type
@@ -233,7 +241,7 @@ class BackboneCoalitionValue:
         # `_row2global[t]`: active-graph local row of type t → its global id.
         active = data
         self._row2global = {
-            nt: torch.arange(_num_rows(data, nt), dtype=torch.long) + type_offsets.get(nt, 0)
+            nt: torch.arange(_num_rows(data, nt), dtype=torch.long, device=self._dev) + type_offsets.get(nt, 0)
             for nt in data.node_types
         }
         if use_subgraph and num_layers:
@@ -250,7 +258,7 @@ class BackboneCoalitionValue:
                     self.target_local = new_tl
                     intervene_local = new_iv
                     self._row2global = {
-                        nt: torch.tensor(olds, dtype=torch.long) + type_offsets.get(nt, 0)
+                        nt: torch.tensor(olds, dtype=torch.long, device=self._dev) + type_offsets.get(nt, 0)
                         for nt, olds in keep_old.items()
                     }
 
@@ -275,7 +283,7 @@ class BackboneCoalitionValue:
             # non-parent edges into the node are background and stay fixed.
             is_parent = torch.tensor(
                 [int(s) in self.parent_set for s in src_global.tolist()],
-                dtype=torch.bool,
+                dtype=torch.bool, device=self._dev,
             )
             if not bool(is_parent.any()):
                 continue
@@ -305,13 +313,13 @@ class BackboneCoalitionValue:
         for etype, (cols, src_global) in self._ctrl.items():
             drop = torch.tensor(
                 [int(s) not in S for s in src_global.tolist()],
-                dtype=torch.bool,
+                dtype=torch.bool, device=self._dev,
             )
             if not bool(drop.any()):
                 continue  # nothing removed for this relation → reuse original
             ei = self.data[etype].edge_index
             remove_cols = cols[drop]
-            keep_mask = torch.ones(ei.size(1), dtype=torch.bool)
+            keep_mask = torch.ones(ei.size(1), dtype=torch.bool, device=self._dev)
             keep_mask[remove_cols] = False
             replaced[etype] = ei[:, keep_mask]
 
