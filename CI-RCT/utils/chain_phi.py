@@ -34,6 +34,7 @@ def attach_phi_to_records(
     causal_graph,
     causal_effects: Dict[Tuple[int, int], float],
     asym_score_fn_for_seed: Callable[[int], Optional[AsymScoreFn]],
+    on_progress: Optional[Callable[[int, int], None]] = None,
 ) -> List[dict]:
     """Return new records with per-node ``phi_add`` / ``phi_asym`` attached.
 
@@ -45,6 +46,9 @@ def attach_phi_to_records(
     ``asym_score_fn_for_seed(seed_global)`` returns either a callable
     ``child_global -> {parent_global: phi_asym}`` or ``None`` (true φ
     unavailable for that seed; ``phi_asym`` is then left as ``None``).
+
+    ``on_progress(done, total)``, when given, is called after each record so the
+    caller can surface progress (the asym pass is slow and otherwise silent).
     """
     # Additive φ depends only on (parent, child) + CE, so it is shared across
     # every chain.  Asymmetric φ depends on the seed (the coalition reads out the
@@ -84,5 +88,7 @@ def attach_phi_to_records(
         nr = dict(rec)
         nr["nodes"] = new_nodes
         new_records.append(nr)
+        if on_progress is not None:
+            on_progress(len(new_records), len(records))
 
     return new_records

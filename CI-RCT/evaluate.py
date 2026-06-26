@@ -839,12 +839,19 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
 
             print(f"[dump_phi] computing per-node φ (phi_add + phi_asym) for "
                   f"{len(records)} chains — asym uses coalition forwards, may be "
-                  f"slow …")
+                  f"slow …", flush=True)
+            _phi_log_every = max(1, len(records) // 40)
+
+            def _phi_progress(done, total):
+                if done % _phi_log_every == 0 or done == total:
+                    print(f"[dump_phi]   {done}/{total} chains", flush=True)
+
             with torch.no_grad():
                 records = attach_phi_to_records(
                     records, causal_graph=causal_graph,
                     causal_effects=causal_effects,
                     asym_score_fn_for_seed=_asym_score_fn_for_seed,
+                    on_progress=_phi_progress,
                 )
         if getattr(args, "dump_chains", None):
             meta = {
