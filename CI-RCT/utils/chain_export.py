@@ -19,7 +19,9 @@ import csv
 import os
 from typing import Dict, List, Tuple
 
-# One row per chain.  Order here is the column order written to disk.
+# One row per chain.  Order here is the column order written to disk.  Optional
+# φ columns (CSV_PHI_FIELDNAMES) are appended only when the records carry φ, so
+# a no-φ dump stays byte-identical to before.
 CSV_FIELDNAMES: Tuple[str, ...] = (
     "target_txid",
     "depth",
@@ -33,26 +35,47 @@ CSV_FIELDNAMES: Tuple[str, ...] = (
     "chain_ce",
 )
 
-# Separator for the path / type / CE sequences packed into a single cell.
+# Per-node φ sequences (added by utils.chain_phi). Each maps a node-record key to
+# the flat CSV column name carrying that node's '|'-joined values.
+CSV_PHI_FIELDNAMES: Tuple[Tuple[str, str], ...] = (
+    ("phi_add", "chain_phi_add"),
+    ("phi_asym", "chain_phi_asym"),
+)
+
+# Separator for the path / type / CE / φ sequences packed into a single cell.
 PATH_SEP = "|"
 
 
-def _format_ce(node: dict) -> str:
-    """CE cell for one node: empty for the target, else the edge CE value."""
-    if node.get("is_target"):
+def _format_value(node: dict, key: str) -> str:
+    """One cell for ``node[key]``: empty for the target or a missing/None value."""
+    if node.get("is_target") or node.get(key) is None:
         return ""
-    return f"{float(node.get('ce', 0.0)):.6g}"
+    return f"{float(node[key]):.6g}"
 
 
-def chain_record_to_row(record: dict) -> Dict[str, object]:
+def _present_phi_keys(records: List[dict]) -> List[Tuple[str, str]]:
+    """φ (node_key, column) pairs that have at least one real value to write."""
+    return [
+        (node_key, col)
+        for node_key, col in CSV_PHI_FIELDNAMES
+        if any(
+            (not n.get("is_target")) and n.get(node_key) is not None
+            for r in records for n in r.get("nodes", [])
+        )
+    ]
+
+
+def chain_record_to_row(
+    record: dict, phi_keys: List[Tuple[str, str]] = (),
+) -> Dict[str, object]:
     """Flatten one nested chain record into a single flat CSV row (new dict).
 
-    The ``chain_real_ids`` / ``chain_types`` / ``chain_ce`` columns are aligned
-    position-by-position (downstream target → upstream root); the target's CE
-    cell is empty because it has no incoming edge in the chain.
+    The ``chain_real_ids`` / ``chain_types`` / ``chain_ce`` (and any φ) columns
+    are aligned position-by-position (downstream target → upstream root); the
+    target's edge-valued cells are empty because it has no incoming edge.
     """
     nodes = record.get("nodes", [])
-    return {
+    row = {
         "target_txid": record.get("target_txid", ""),
         "depth": record.get("depth", 0),
         "root_type": record.get("root_type", ""),
@@ -62,13 +85,22 @@ def chain_record_to_row(record: dict) -> Dict[str, object]:
         "n_nodes": len(nodes),
         "chain_real_ids": PATH_SEP.join(str(n.get("real_id", "")) for n in nodes),
         "chain_types": PATH_SEP.join(str(n.get("type", "")) for n in nodes),
-        "chain_ce": PATH_SEP.join(_format_ce(n) for n in nodes),
+        "chain_ce": PATH_SEP.join(_format_value(n, "ce") for n in nodes),
     }
+    for node_key, col in phi_keys:
+        row[col] = PATH_SEP.join(_format_value(n, node_key) for n in nodes)
+    return row
 
 
 def chain_records_to_rows(records: List[dict]) -> List[Dict[str, object]]:
     """Return a new list of flat CSV rows, one per chain record."""
-    return [chain_record_to_row(r) for r in records]
+    phi_keys = _present_phi_keys(records)
+    return [chain_record_to_row(r, phi_keys) for r in records]
+
+
+def csv_fieldnames(records: List[dict]) -> List[str]:
+    """Column order for ``records`` (base columns + any present φ columns)."""
+    return list(CSV_FIELDNAMES) + [col for _, col in _present_phi_keys(records)]
 
 
 def write_chains_csv(records: List[dict], path: str) -> int:
@@ -79,7 +111,7 @@ def write_chains_csv(records: List[dict], path: str) -> int:
     rows = chain_records_to_rows(records)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(CSV_FIELDNAMES))
+        writer = csv.DictWriter(f, fieldnames=csv_fieldnames(records))
         writer.writeheader()
         writer.writerows(rows)
     return len(rows)

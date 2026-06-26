@@ -210,6 +210,13 @@ def parse_args() -> argparse.Namespace:
                              "one-row-per-chain table (path / type / CE encoded "
                              "with '|'); shares the same chains & top-N filter "
                              "as --dump_chains.")
+    parser.add_argument("--dump_phi", action="store_true",
+                        help="Attach per-node Causal Shapley φ (causal "
+                             "responsibility) to the dumped chains: phi_add "
+                             "(additive CE/n) and phi_asym (true asymmetric "
+                             "Shapley via the backbone coalition value). "
+                             "phi_asym needs coalition forwards — slow on many "
+                             "chains; tune with --shapley_topk / --max_explain.")
     parser.add_argument("--debug", action="store_true",
                         help="Print tracer diagnostics: CE distribution by edge "
                              "type, chain length histogram, stuck-trace analysis.")
@@ -801,6 +808,44 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         )
         if args.dump_chains_topn > 0:
             records = records[: args.dump_chains_topn]
+        if getattr(args, "dump_phi", None):
+            from utils.chain_phi import attach_phi_to_records
+            from model.explainers import _make_phi_score_fn
+            phi_readout_type = model.backbone.target_node_type
+            try:
+                phi_num_layers = len(model.backbone.hgt_layers)
+            except AttributeError:
+                phi_num_layers = getattr(
+                    getattr(model, "config", None), "num_hgt_layers", None
+                )
+
+            def _asym_score_fn_for_seed(seed_global):
+                # The φ readout reuses the primary classifier head, so the true
+                # asymmetric φ is only valid for seeds of that type; other (e.g.
+                # joint dual-seed) nodes get additive φ only (phi_asym = None).
+                if causal_graph.node_type.get(seed_global) != phi_readout_type:
+                    return None
+                base = _make_phi_score_fn(
+                    model=model, data=data, causal_graph=causal_graph,
+                    target_node=seed_global, type_offsets=type_offsets,
+                    target_node_type=phi_readout_type, fraud_class=1, mode="asym",
+                    n_permutations=getattr(args, "shapley_permutations", 64),
+                    causal_effects=causal_effects,
+                    shapley_topk=(getattr(args, "shapley_topk", 0) or None),
+                    use_subgraph=getattr(args, "coalition_subgraph", True),
+                    num_layers=phi_num_layers,
+                )
+                return lambda child: base(child, None)
+
+            print(f"[dump_phi] computing per-node φ (phi_add + phi_asym) for "
+                  f"{len(records)} chains — asym uses coalition forwards, may be "
+                  f"slow …")
+            with torch.no_grad():
+                records = attach_phi_to_records(
+                    records, causal_graph=causal_graph,
+                    causal_effects=causal_effects,
+                    asym_score_fn_for_seed=_asym_score_fn_for_seed,
+                )
         if getattr(args, "dump_chains", None):
             meta = {
                 "dataset": "elliptic++",
