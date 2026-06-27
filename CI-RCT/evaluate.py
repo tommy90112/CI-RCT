@@ -217,6 +217,14 @@ def parse_args() -> argparse.Namespace:
                              "Shapley via the backbone coalition value). "
                              "phi_asym needs coalition forwards — slow on many "
                              "chains; tune with --shapley_topk / --max_explain.")
+    parser.add_argument("--dump_feature_attribution", action="store_true",
+                        help="L3: attach causal feature attribution to each "
+                             "chain's φ_asym pivot node (per-feature "
+                             "do-intervention CFE; saliency fallback). Requires "
+                             "--dump_phi. Adds one forward/backward + a few "
+                             "do-passes per chain.")
+    parser.add_argument("--feat_attr_topk", type=int, default=12,
+                        help="L3: number of features to report per pivot node.")
     parser.add_argument("--debug", action="store_true",
                         help="Print tracer diagnostics: CE distribution by edge "
                              "type, chain length histogram, stuck-trace analysis.")
@@ -853,6 +861,48 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
                     asym_score_fn_for_seed=_asym_score_fn_for_seed,
                     on_progress=_phi_progress,
                 )
+
+            # ── L3: causal feature attribution on each chain's φ_asym pivot ──
+            if getattr(args, "dump_feature_attribution", None):
+                from utils.feature_names import get_feature_names
+                from model.feature_attribution import compute_causal_feature_attribution
+
+                feat_names = get_feature_names(
+                    os.path.join(args.data_root, "Elliptic++"),
+                    wallet_per_address=args.variant in ("wallet", "joint"),
+                )
+                print(f"[dump_phi] L3: causal feature attribution on pivots of "
+                      f"{len(records)} chains …", flush=True)
+                n_attr = 0
+                for ri, rec in enumerate(records):
+                    nodes = rec.get("nodes", [])
+                    if not nodes:
+                        continue
+                    # pivot = node with peak |φ_asym| (None when chain unscored).
+                    pivot = None
+                    best = 0.0
+                    for nd in nodes:
+                        pa = nd.get("phi_asym")
+                        if pa is not None and abs(pa) > best:
+                            best = abs(pa)
+                            pivot = nd
+                    if pivot is None:
+                        continue
+                    attr = compute_causal_feature_attribution(
+                        model=model, data=data, causal_graph=causal_graph,
+                        target_node=nodes[0]["global"], pivot_node=pivot["global"],
+                        type_offsets=type_offsets, target_node_type=phi_readout_type,
+                        feature_names=feat_names, fraud_class=1,
+                        use_subgraph=getattr(args, "coalition_subgraph", True),
+                        num_layers=phi_num_layers, top_k=args.feat_attr_topk,
+                    )
+                    if attr["features"]:
+                        pivot["feature_attribution"] = attr["features"]
+                        pivot["feature_attribution_method"] = attr["method"]
+                        n_attr += 1
+                    if (ri + 1) % _phi_log_every == 0 or ri + 1 == len(records):
+                        print(f"[dump_phi]   L3 {ri + 1}/{len(records)} "
+                              f"({n_attr} pivots attributed)", flush=True)
         if getattr(args, "dump_chains", None):
             meta = {
                 "dataset": "elliptic++",
