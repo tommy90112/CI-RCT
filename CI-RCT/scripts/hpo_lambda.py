@@ -109,6 +109,7 @@ def build_eval_cmd(args, ckpt, max_explain, eval_split):
         "--lfpn_mode", "strict",        # 搜尋只需 Metric A/B/D；strict 比 both 快
         "--eval_split", eval_split,
         "--device", args.device,
+        "--debug",
     ]
 
 
