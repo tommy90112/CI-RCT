@@ -228,6 +228,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--debug", action="store_true",
                         help="Print tracer diagnostics: CE distribution by edge "
                              "type, chain length histogram, stuck-trace analysis.")
+    parser.add_argument("--eval_split", type=str, default="test",
+                        choices=["test", "val"],
+                        help="Which split to compute Metric A/B/C/D on. "
+                             "Default 'test' (report numbers). Use 'val' for "
+                             "hyperparameter search so the held-out test set is "
+                             "never touched during tuning. Decision thresholds "
+                             "are always tuned on val regardless.")
     # ── B1: type-aware BFS sampling for rare/bridge edges ────────────────────
     parser.add_argument("--rare_edge_types", type=str, default="",
                         help="Comma-separated edge-type strings "
@@ -503,7 +510,8 @@ def _tune_head_threshold(probs, store, objective):
 
 
 @torch.no_grad()
-def eval_classification_pooled(model, data, threshold_objective=None):
+def eval_classification_pooled(model, data, threshold_objective=None,
+                              mask_attr="test_mask"):
     """Joint variant: ONE pooled F1 over every classified type's test nodes.
 
     Each type is scored by its OWN head (primary for transaction, aux head for
@@ -525,7 +533,7 @@ def eval_classification_pooled(model, data, threshold_objective=None):
     y_true, y_pred, scores = [], [], []
     per_type_n, per_type_info = {}, {}
     for ntype, logits in logits_by_type.items():
-        mask = getattr(data[ntype], "test_mask", None)
+        mask = getattr(data[ntype], mask_attr, None)
         if mask is None or not bool(mask.any()):
             continue
         probs = torch.softmax(logits, dim=-1)
@@ -1167,8 +1175,18 @@ def main():
     data, target_type = _load_variant_dataset(args)
     data = data.to(device)
     labels    = data[target_type].y
-    test_mask = data[target_type].test_mask
- 
+    # --eval_split selects which split every metric (A/B/C/D) is computed on.
+    # 'test' for reported numbers; 'val' for hyperparameter search so test stays
+    # untouched. Variable name kept as test_mask to avoid threading a rename
+    # through every downstream eval helper.
+    mask_attr = "val_mask" if args.eval_split == "val" else "test_mask"
+    test_mask = getattr(data[target_type], mask_attr)
+    if test_mask is None:
+        raise ValueError(
+            f"--eval_split={args.eval_split} requested but "
+            f"data[{target_type!r}].{mask_attr} is missing."
+        )
+
     type_offsets = compute_type_offsets(data)
     offset = type_offsets[target_type]
     test_indices = test_mask.nonzero(as_tuple=True)[0].tolist()
@@ -1343,10 +1361,13 @@ def main():
             args.threshold_objective if args.threshold_tuning == "val" else None
         )
         cls_metrics, per_type_n, per_type_info = eval_classification_pooled(
-            model, data, threshold_objective=pooled_obj
+            model, data, threshold_objective=pooled_obj, mask_attr=mask_attr
         )
         n_str = " + ".join(f"{t} {n:,}" for t, n in per_type_n.items())
-        print_section(f"A. Classification (POOLED test N = {n_str})", cls_metrics)
+        print_section(
+            f"A. Classification (POOLED {args.eval_split} N = {n_str})",
+            cls_metrics,
+        )
         for t, info in per_type_info.items():
             print(f"    · {t:11s} fraud_f1={info['fraud_f1']:.4f}  "
                   f"pred_rate={info['pred_fraud_rate']:.4f}  "
@@ -1356,7 +1377,7 @@ def main():
         logits_by_type, _ = model.all_logits(data)
         if "wallet" in logits_by_type:
             w_off = type_offsets["wallet"]
-            w_mask = data["wallet"].test_mask
+            w_mask = getattr(data["wallet"], mask_attr)
             w_probs = torch.softmax(logits_by_type["wallet"], dim=-1)[:, 1]
             w_thr = per_type_info.get("wallet", {}).get("threshold", 0.5)
             w_idx = w_mask.nonzero(as_tuple=True)[0].tolist()
