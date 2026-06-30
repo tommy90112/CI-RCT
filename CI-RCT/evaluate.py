@@ -194,7 +194,7 @@ def parse_args() -> argparse.Namespace:
     # Ranking signal for the MAIN root-cause tracer (Metric B / RCP), as opposed
     # to --explainer which only changes Metric C. 'ce' is byte-identical legacy.
     parser.add_argument("--tracer_score", type=str, default="ce",
-                        choices=["ce", "phi_asym", "phi_sym"],
+                        choices=["ce", "ce_signed", "phi_asym", "phi_sym"],
                         help="Per-hop ranking signal for the MAIN root-cause "
                              "tracer (Metric B). 'ce' (default) ranks by |CE| "
                              "(byte-identical to legacy). 'phi_asym'/'phi_sym' "
@@ -203,7 +203,9 @@ def parse_args() -> argparse.Namespace:
                              "the title's Shapley-driven-tracing claim testable on "
                              "RCP. Reuses --shapley_topk / --shapley_permutations / "
                              "--coalition_subgraph. φ readout uses the primary head, "
-                             "so non-primary-type (joint) seeds fall back to |CE|.")
+                             "so non-primary-type (joint) seeds fall back to |CE|. "
+                             "ce_signed=以原始有號 CE 排序,只追正向 promoter"
+                             "(配 type_mean baseline 使用)。")
     # Dump the exact set of traced root-cause chains (the same ones counted in
     # the depth histogram / num_traced) decoded to real Elliptic++ identities,
     # for the crime-chain viewer (viz/crime_chain*.html).
@@ -641,6 +643,9 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
 
     # ── Optional φ-driven ranking for the MAIN tracer (Metric B / RCP) ─────────
     # --tracer_score ce (default) ⇒ |CE| ranking, byte-identical to legacy.
+    # ce_signed ⇒ rank each hop by the RAW signed CE (no abs), so max() picks the
+    # strongest positive promoter and negative (suppressor) parents are never
+    # followed — pair with a type_mean baseline so the sign is meaningful.
     # phi_asym/phi_sym rank each hop by |φ| (asymmetric/symmetric Causal Shapley
     # via the backbone do-intervention coalition value), making the thesis title's
     # "asymmetric-Shapley-driven root-cause tracing" claim testable on RCP. We take
@@ -650,7 +655,7 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
     tracer_score = getattr(args, "tracer_score", "ce")
     readout_type = model.backbone.target_node_type
     _phi_layers = None
-    if tracer_score != "ce" and getattr(args, "coalition_subgraph", True):
+    if tracer_score not in ("ce", "ce_signed") and getattr(args, "coalition_subgraph", True):
         try:
             _phi_layers = len(model.backbone.hgt_layers)
         except AttributeError:
@@ -663,6 +668,13 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         # seeds of that type; non-primary (joint) seeds fall back to |CE| (None).
         if tracer_score == "ce":
             return None
+        if tracer_score == "ce_signed":
+            # Raw signed CE: max() over upstream picks the strongest positive
+            # promoter; negative (suppressor) parents are never selected. Valid
+            # for any node type, so it precedes the primary-head readout check.
+            def signed_ce_fn(current, upstream):
+                return {u: causal_effects.get((u, current), 0.0) for u in upstream}
+            return signed_ce_fn
         if causal_graph.node_type.get(seed_global) != readout_type:
             return None
         from model.explainers import _make_phi_score_fn
