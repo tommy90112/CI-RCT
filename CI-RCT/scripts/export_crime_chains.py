@@ -65,6 +65,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--include_addr_addr", type=lambda x: x.lower() == "true", default=True)
     p.add_argument("--fraud_subgraph", type=lambda x: x.lower() == "true", default=False)
     p.add_argument("--fraud_subgraph_hops", type=int, default=2)
+    p.add_argument("--wallet_per_address", type=lambda x: x.lower() == "true",
+                   default=False,
+                   help="Collapse wallet nodes to one-per-address and keep "
+                        "'Time step' as a feature (→56-dim wallet, SAGE-FIN "
+                        "style). Must match how the checkpoint was trained — "
+                        "joint/per-address checkpoints need true.")
     p.add_argument("--num_hgt_layers", type=int, default=3)
     p.add_argument("--hidden_dim", type=int, default=128)
     p.add_argument("--num_heads", type=int, default=4)
@@ -151,6 +157,7 @@ def main() -> None:
         include_addr_addr=args.include_addr_addr,
         fraud_subgraph=args.fraud_subgraph,
         fraud_subgraph_hops=args.fraud_subgraph_hops,
+        wallet_per_address=args.wallet_per_address,
     )
     data = data.to(device)
     type_offsets = compute_type_offsets(data)
@@ -162,6 +169,7 @@ def main() -> None:
     idx_to_txid, idx_to_addr = build_reverse_maps(
         args.data_root, include_addr_addr=args.include_addr_addr,
         fraud_subgraph=args.fraud_subgraph, fraud_subgraph_hops=args.fraud_subgraph_hops,
+        wallet_per_address=args.wallet_per_address,
     )
 
     seed_ids = [offset + i for i in test_indices if labels[i].item() == 1][: args.num_seeds]
