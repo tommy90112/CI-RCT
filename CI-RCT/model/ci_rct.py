@@ -110,6 +110,7 @@ class CI_RCT(nn.Module):
             node_type_emb_dim=config.node_type_emb_dim,
             ncm_h_size=config.ncm_h_size,
             ncm_h_layers=config.ncm_h_layers,
+            baseline=config.ncm_baseline,
         )
 
         # ── Module 4: CausalAdversarialGAN ───────────────────────────────

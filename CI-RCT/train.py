@@ -129,6 +129,12 @@ def parse_args() -> argparse.Namespace:
                              "hetero-graphs (e.g. MG24 host→flow has 200× "
                              "more edges than process→host, leaving sparse "
                              "edges' NCM CE≈0.001 at eval time).")
+    parser.add_argument("--ncm_baseline", type=str, default="zero",
+                        choices=("zero", "type_mean"),
+                        help="CE null-intervention baseline. 'zero' (legacy) "
+                             "do(h_u=0) is OOD and saturates p_null, making CE "
+                             "sign uninterpretable; 'type_mean' do(h_u=E[h_type]) "
+                             "recentres CE so sign = promote(+)/suppress(−).")
     # GAN settings
     parser.add_argument("--use_gan", type=lambda x: x.lower() == "true",
                         default=False,
@@ -668,6 +674,7 @@ def main() -> None:
         num_heads=args.num_heads,
         dropout=args.dropout,
         node_type_emb_dim=args.type_emb_dim,
+        ncm_baseline=args.ncm_baseline,
         max_hops=args.max_hops,
         ce_threshold=args.ce_threshold,
         node_limit=args.node_limit,

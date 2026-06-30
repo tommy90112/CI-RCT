@@ -59,6 +59,10 @@ class HeteroNCM(nn.Module):
         node_type_emb_dim: Dimension of node-type embedding vectors
         ncm_h_size:        Hidden size of each per-edge-type MLP
         ncm_h_layers:      Number of hidden layers in each MLP
+        baseline:          Null-intervention reference for CE = p_actual − p_null.
+                           "zero" = do(h_u=0) (legacy, OOD baseline);
+                           "type_mean" = do(h_u=E[h_type]) (in-distribution,
+                           recentres CE so its sign is interpretable).
     """
 
     def __init__(
@@ -69,6 +73,7 @@ class HeteroNCM(nn.Module):
         node_type_emb_dim: int = 16,
         ncm_h_size: int = 64,
         ncm_h_layers: int = 2,
+        baseline: str = "zero",
     ) -> None:
         super().__init__()
 
@@ -76,9 +81,14 @@ class HeteroNCM(nn.Module):
             raise ValueError("all_node_types must not be empty.")
         if not all_edge_types:
             raise ValueError("all_edge_types must not be empty.")
+        if baseline not in ("zero", "type_mean"):
+            raise ValueError(
+                f"baseline must be 'zero' or 'type_mean', got {baseline!r}."
+            )
 
         self.node_emb_dim = node_emb_dim
         self.node_type_emb_dim = node_type_emb_dim
+        self.baseline = baseline
         self.all_node_types: List[str] = sorted(all_node_types)
         self.all_edge_types: List[str] = sorted(all_edge_types)
 
@@ -108,17 +118,22 @@ class HeteroNCM(nn.Module):
         h_source: Tensor,
         edge_type: str,
         source_node_type: str,
+        baseline_h: Optional[Tensor] = None,
     ) -> Tensor:
         """
         Compute CE_τ(source → target) via do-calculus approximation.
 
-        CE = P(ŷ | do(h_u = h_actual)) − P(ŷ | do(h_u = 0))
-           = sigmoid(MLP(h_source ‖ type_emb)) − sigmoid(MLP(0 ‖ type_emb))
+        CE = P(ŷ | do(h_u = h_actual)) − P(ŷ | do(h_u = h_base))
+           = sigmoid(MLP(h_source ‖ type_emb)) − sigmoid(MLP(h_base ‖ type_emb))
 
         Args:
             h_source:         Source node embedding  [node_emb_dim]
             edge_type:        Edge type label (must be in all_edge_types)
             source_node_type: Node type of source
+            baseline_h:       Null-intervention embedding h_base [node_emb_dim].
+                              None → zero vector (do(h_u=0), legacy). Callers in
+                              "type_mean" mode pass the source type's mean
+                              embedding so CE is recentred at 0.
 
         Returns:
             Tensor: Scalar CE value ∈ (−1, 1)
@@ -143,8 +158,10 @@ class HeteroNCM(nn.Module):
         u_actual = torch.cat([h_source, type_emb], dim=-1)
         p_actual = self.edge_type_models[edge_type](u_actual).squeeze(-1)
 
-        # do(h_source = 0): null intervention (cut incoming edge)
-        u_null = torch.cat([torch.zeros_like(h_source), type_emb], dim=-1)
+        # do(h_source = h_base): null intervention.
+        # h_base = 0 (legacy, OOD) or E[h_type] (type_mean, in-distribution).
+        h_base = torch.zeros_like(h_source) if baseline_h is None else baseline_h
+        u_null = torch.cat([h_base, type_emb], dim=-1)
         p_null = self.edge_type_models[edge_type](u_null).squeeze(-1)
 
         return p_actual - p_null
@@ -168,6 +185,14 @@ class HeteroNCM(nn.Module):
         """
         causal_effects: Dict[Tuple[int, int], Tensor] = {}
 
+        # In "type_mean" mode, h_base for an edge is the mean embedding of the
+        # source's node type — an in-distribution interventional baseline.
+        type_baselines = (
+            self._compute_type_baselines(flat_h, causal_graph)
+            if self.baseline == "type_mean"
+            else None
+        )
+
         for (src, dst), edge_type in causal_graph.edge_type_map.items():
             if src not in flat_h or dst not in flat_h:
                 continue
@@ -175,11 +200,31 @@ class HeteroNCM(nn.Module):
                 continue
 
             src_type = causal_graph.node_type.get(src, self.all_node_types[0])
+            baseline_h = (
+                type_baselines.get(src_type) if type_baselines is not None else None
+            )
             causal_effects[(src, dst)] = self.compute_causal_effect(
-                flat_h[src], edge_type, src_type
+                flat_h[src], edge_type, src_type, baseline_h
             )
 
         return causal_effects
+
+    def _compute_type_baselines(
+        self,
+        flat_h: Dict[int, Tensor],
+        causal_graph: TypedCausalGraph,
+    ) -> Dict[str, Tensor]:
+        """
+        Per-node-type mean embedding E[h_type] over all nodes present in flat_h.
+
+        Used as the in-distribution null-intervention baseline for "type_mean"
+        mode: do(h_u = E[h_{type(u)}]) instead of do(h_u = 0).
+        """
+        buckets: Dict[str, List[Tensor]] = {}
+        for node_id, h in flat_h.items():
+            t = causal_graph.node_type.get(node_id, self.all_node_types[0])
+            buckets.setdefault(t, []).append(h)
+        return {t: torch.stack(hs).mean(dim=0) for t, hs in buckets.items()}
 
     def supervised_ncm_loss(
         self,

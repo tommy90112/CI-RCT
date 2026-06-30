@@ -94,6 +94,14 @@ def parse_args() -> argparse.Namespace:
         help="Weighted-path objective for dag_dp/dijkstra: product (max-product, "
              "cost=-log|CE|) or sum (max-sum |CE|).",
     )
+    parser.add_argument(
+        "--ncm_baseline", type=str, default="zero",
+        choices=["zero", "type_mean"],
+        help="CE null-intervention baseline. 'zero'=legacy do(h_u=0) (OOD, "
+             "saturates p_null → CE sign uninterpretable); 'type_mean'="
+             "do(h_u=E[h_type]) recentres CE so sign=promote(+)/suppress(−). "
+             "No retraining needed — same weights, different CE reference.",
+    )
     parser.add_argument("--top_k", type=int, default=3)
     parser.add_argument("--node_limit", type=int, default=5000)
     parser.add_argument("--hop_limit", type=int, default=2)
@@ -1276,6 +1284,7 @@ def main():
         num_heads=arch_get("num_heads", args.num_heads),
         dropout=arch_get("dropout", args.dropout),
         node_type_emb_dim=arch_get("node_type_emb_dim", args.type_emb_dim),
+        ncm_baseline=args.ncm_baseline,
     )
     in_channels_dict = {
         nt: data[nt].x.size(-1)

@@ -27,6 +27,16 @@ class CI_RCT_Config:
     node_type_emb_dim: int = 16   # dimension of type embedding vectors
     ncm_h_size: int = 64
     ncm_h_layers: int = 2
+    # Null-intervention baseline for CE = p_actual − p_null.
+    #   "zero"      : do(h_u = 0) zero vector. Legacy default; byte-identical to
+    #                 the original NCM. The zero vector is out-of-distribution,
+    #                 so p_null saturates (Elliptic++ wallet→tx: p_null≈0.97),
+    #                 which pushes CE systematically negative and makes the SIGN
+    #                 uninterpretable (see memory ce-null-baseline-artifact).
+    #   "type_mean" : do(h_u = E[h_type]) — replace the source node with the mean
+    #                 embedding of its node type (in-distribution interventional
+    #                 baseline). Recentres CE at 0 so sign = promote(+)/suppress(−).
+    ncm_baseline: str = "zero"
 
     # ── Root Cause Tracer ─────────────────────────────────────────────────
     max_hops: int = 5
