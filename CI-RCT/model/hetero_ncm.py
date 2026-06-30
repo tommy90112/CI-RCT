@@ -250,7 +250,7 @@ class HeteroNCM(nn.Module):
         This gives NCM a directional signal: edges pointing to malicious
         nodes should yield high CE; edges to benign nodes should yield low CE.
 
-        Three label-resolution paths (in priority order):
+        Four label-resolution paths (in priority order):
 
           1. **Multi-task** (`multi_task_labels` + `type_offsets` given):
              Look up each edge's destination type and use the corresponding
@@ -263,7 +263,15 @@ class HeteroNCM(nn.Module):
           2. **Elliptic++ wallet→tx** (`wallet_labels` given):
              Special case where wallets carry their own (wallet_labels) and
              transactions carry node_labels. Falls back to this if (1) is
-             not provided and the edge is wallet→transaction.
+             not provided and the edge is wallet→transaction; supervised by
+             the SOURCE wallet's label.
+
+          2b. **Elliptic++ *→wallet** (`wallet_labels` given): any edge whose
+             dst is a wallet (e.g. tx→wallet) is supervised by the DESTINATION
+             wallet's label. Without this the tx→wallet MLP is never trained
+             (dst=wallet is out of the target-tx label range in Path 3), so its
+             CE collapses to ~0 and the tracer loses all directional signal on
+             wallet-bound hops.
 
           3. **Single-task default**: assume dst is the target node type
              and look up node_labels[dst − target_type_offset]. Edges whose
@@ -351,6 +359,21 @@ class HeteroNCM(nn.Module):
                 if wallet_labels[src_local].item() not in (0, 1):
                     continue
                 y = wallet_labels[src_local].float().to(device)
+
+            # Path 2b: Elliptic++ *→wallet (e.g. tx→wallet) supervised by the
+            # destination wallet's label. Without this the tx→wallet edge-type
+            # MLP is never trained (dst=wallet falls out of the target-tx label
+            # range in Path 3), leaving CE≈0 and the tracer with no directional
+            # signal on every wallet-bound hop.
+            elif dst_type == "wallet":
+                if wallet_labels is None:
+                    continue
+                dst_local = dst - wallet_type_offset
+                if dst_local < 0 or dst_local >= wallet_labels.size(0):
+                    continue
+                if wallet_labels[dst_local].item() not in (0, 1):
+                    continue
+                y = wallet_labels[dst_local].float().to(device)
 
             # Path 3: single-task default — dst is target type.
             else:
