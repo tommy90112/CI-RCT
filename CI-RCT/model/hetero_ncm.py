@@ -62,7 +62,10 @@ class HeteroNCM(nn.Module):
         baseline:          Null-intervention reference for CE = p_actual − p_null.
                            "zero" = do(h_u=0) (legacy, OOD baseline);
                            "type_mean" = do(h_u=E[h_type]) (in-distribution,
-                           recentres CE so its sign is interpretable).
+                           recentres CE so its sign is interpretable);
+                           "marginal" = p_null=E[MLP(h)] over same-type sources
+                           (true marginal do(h_u ~ P(h_type)); removes the
+                           Jensen gap of type_mean, E[CE] over a type is 0).
     """
 
     def __init__(
@@ -81,14 +84,19 @@ class HeteroNCM(nn.Module):
             raise ValueError("all_node_types must not be empty.")
         if not all_edge_types:
             raise ValueError("all_edge_types must not be empty.")
-        if baseline not in ("zero", "type_mean"):
+        if baseline not in ("zero", "type_mean", "marginal"):
             raise ValueError(
-                f"baseline must be 'zero' or 'type_mean', got {baseline!r}."
+                f"baseline must be 'zero', 'type_mean' or 'marginal', "
+                f"got {baseline!r}."
             )
 
         self.node_emb_dim = node_emb_dim
         self.node_type_emb_dim = node_type_emb_dim
         self.baseline = baseline
+        # Diagnostic: labelled-edge count per edge type from the most recent
+        # supervised_ncm_loss call. Zero-count types are exactly the MLPs that
+        # never train and whose CE collapses to ~0 at eval time.
+        self.last_supervision_counts: Dict[str, int] = {}
         self.all_node_types: List[str] = sorted(all_node_types)
         self.all_edge_types: List[str] = sorted(all_edge_types)
 
@@ -119,6 +127,7 @@ class HeteroNCM(nn.Module):
         edge_type: str,
         source_node_type: str,
         baseline_h: Optional[Tensor] = None,
+        baseline_p: Optional[Tensor] = None,
     ) -> Tensor:
         """
         Compute CE_τ(source → target) via do-calculus approximation.
@@ -134,6 +143,10 @@ class HeteroNCM(nn.Module):
                               None → zero vector (do(h_u=0), legacy). Callers in
                               "type_mean" mode pass the source type's mean
                               embedding so CE is recentred at 0.
+            baseline_p:       Precomputed p_null scalar. Takes precedence over
+                              baseline_h. Callers in "marginal" mode pass the
+                              mean MLP prediction over same-type sources
+                              (E[MLP(h)], the marginal null intervention).
 
         Returns:
             Tensor: Scalar CE value ∈ (−1, 1)
@@ -159,7 +172,11 @@ class HeteroNCM(nn.Module):
         p_actual = self.edge_type_models[edge_type](u_actual).squeeze(-1)
 
         # do(h_source = h_base): null intervention.
-        # h_base = 0 (legacy, OOD) or E[h_type] (type_mean, in-distribution).
+        # p_null precomputed (marginal, E[MLP(h)]) or evaluated at h_base =
+        # 0 (legacy, OOD) / E[h_type] (type_mean, in-distribution).
+        if baseline_p is not None:
+            return p_actual - baseline_p
+
         h_base = torch.zeros_like(h_source) if baseline_h is None else baseline_h
         u_null = torch.cat([h_base, type_emb], dim=-1)
         p_null = self.edge_type_models[edge_type](u_null).squeeze(-1)
@@ -192,6 +209,15 @@ class HeteroNCM(nn.Module):
             if self.baseline == "type_mean"
             else None
         )
+        # In "marginal" mode, p_null for an edge type is the mean MLP
+        # prediction over all same-type sources — E[MLP(h)], not MLP(E[h]).
+        # Computed lazily, once per (edge_type, src_type).
+        type_buckets = (
+            self._bucket_embeddings_by_type(flat_h, causal_graph)
+            if self.baseline == "marginal"
+            else None
+        )
+        marginal_p_null: Dict[Tuple[str, str], Tensor] = {}
 
         for (src, dst), edge_type in causal_graph.edge_type_map.items():
             if src not in flat_h or dst not in flat_h:
@@ -203,8 +229,16 @@ class HeteroNCM(nn.Module):
             baseline_h = (
                 type_baselines.get(src_type) if type_baselines is not None else None
             )
+            baseline_p = None
+            if type_buckets is not None:
+                key = (edge_type, src_type)
+                if key not in marginal_p_null:
+                    marginal_p_null[key] = self._marginal_null_prediction(
+                        type_buckets[src_type], edge_type, src_type
+                    )
+                baseline_p = marginal_p_null[key]
             causal_effects[(src, dst)] = self.compute_causal_effect(
-                flat_h[src], edge_type, src_type, baseline_h
+                flat_h[src], edge_type, src_type, baseline_h, baseline_p
             )
 
         return causal_effects
@@ -225,6 +259,46 @@ class HeteroNCM(nn.Module):
             t = causal_graph.node_type.get(node_id, self.all_node_types[0])
             buckets.setdefault(t, []).append(h)
         return {t: torch.stack(hs).mean(dim=0) for t, hs in buckets.items()}
+
+    def _bucket_embeddings_by_type(
+        self,
+        flat_h: Dict[int, Tensor],
+        causal_graph: TypedCausalGraph,
+    ) -> Dict[str, Tensor]:
+        """Stack all embeddings per node type: {type: [N_type, D]}."""
+        buckets: Dict[str, List[Tensor]] = {}
+        for node_id, h in flat_h.items():
+            t = causal_graph.node_type.get(node_id, self.all_node_types[0])
+            buckets.setdefault(t, []).append(h)
+        return {t: torch.stack(hs) for t, hs in buckets.items()}
+
+    def _marginal_null_prediction(
+        self,
+        type_embs: Tensor,
+        edge_type: str,
+        source_node_type: str,
+    ) -> Tensor:
+        """
+        p_null for "marginal" mode: E[MLP(h ‖ type_emb)] over all nodes of the
+        source type — the marginal null intervention do(h_u ~ P(h_type)).
+
+        Unlike MLP(E[h]) ("type_mean"), this commutes with the expectation, so
+        CE averaged over all same-type sources of an edge type is exactly 0.
+
+        Args:
+            type_embs: Stacked source-type embeddings [N_type, node_emb_dim]
+
+        Returns:
+            Tensor: scalar mean prediction
+        """
+        type_idx = torch.tensor(
+            self.node_type_to_idx.get(source_node_type, 0),
+            dtype=torch.long,
+            device=type_embs.device,
+        )
+        type_emb = self.type_embeddings(type_idx).expand(type_embs.size(0), -1)
+        u = torch.cat([type_embs, type_emb], dim=-1)
+        return self.edge_type_models[edge_type](u).mean()
 
     def supervised_ncm_loss(
         self,
@@ -390,6 +464,12 @@ class HeteroNCM(nn.Module):
             u_actual = torch.cat([flat_h[src].to(device), type_emb], dim=-1)
             p_actual = self.edge_type_models[edge_type](u_actual).squeeze(-1)
             losses_by_type[edge_type].append(F.binary_cross_entropy(p_actual, y))
+
+        # Zero-count edge types are the MLPs that receive no gradient this
+        # call — surfaced so undertrained CE (≈0 at eval) is visible upfront.
+        self.last_supervision_counts = {
+            et: len(ls) for et, ls in losses_by_type.items()
+        }
 
         return self._aggregate_ncm_losses(losses_by_type, edge_balance, device)
 

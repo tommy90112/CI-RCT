@@ -96,10 +96,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--ncm_baseline", type=str, default="zero",
-        choices=["zero", "type_mean"],
+        choices=["zero", "type_mean", "marginal"],
         help="CE null-intervention baseline. 'zero'=legacy do(h_u=0) (OOD, "
              "saturates p_null → CE sign uninterpretable); 'type_mean'="
-             "do(h_u=E[h_type]) recentres CE so sign=promote(+)/suppress(−). "
+             "do(h_u=E[h_type]) recentres CE so sign=promote(+)/suppress(−); "
+             "'marginal'=p_null=E[MLP(h)] over same-type sources (no Jensen "
+             "gap, E[CE] per type is exactly 0). "
              "No retraining needed — same weights, different CE reference.",
     )
     parser.add_argument("--top_k", type=int, default=3)
@@ -632,7 +634,9 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         return {}, {}
  
     predicted_roots, causal_chains = [], []
-    _noise_sigma = 0.01
+    _noise_sigma = getattr(
+        getattr(model, "config", None), "phi_stability_noise_std", 0.01
+    )
     with torch.no_grad():
         flat_h_perturbed = {
             gid: emb + torch.randn_like(emb) * _noise_sigma
@@ -808,6 +812,41 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
             np.mean([root_cause_precision(r, fraud_label_set) for r in tp_roots])
         )
         rct_metrics["num_true_pos_traced"] = len(tp_roots)
+
+    # ── RCP diagnostics: label-coverage ceiling & split-artifact check ─────
+    # (a) A root landing on an UNKNOWN-label node scores 0 no matter what the
+    #     tracer did — on Elliptic++ (mostly class-3 nodes) this caps RCP well
+    #     below 1. root_labeled_ratio IS that ceiling; rcp_labeled_only is RCP
+    #     restricted to chains whose root can actually be judged.
+    root_labels = [_label_of_global(r) for r in predicted_roots]
+    labeled_pairs = [
+        (r, y) for r, y in zip(predicted_roots, root_labels) if y in (0, 1)
+    ]
+    rct_metrics["root_labeled_ratio"] = len(labeled_pairs) / len(predicted_roots)
+    if labeled_pairs:
+        rct_metrics["root_cause_precision_labeled_only"] = float(
+            np.mean([
+                root_cause_precision(r, fraud_label_set)
+                for r, _ in labeled_pairs
+            ])
+        )
+    # (b) The headline fraud_label_set only credits TEST-split fraud txs on
+    #     the transaction variant (the 735 gate keeps it byte-identical), so a
+    #     chain that correctly traces back to a train/val-split fraud tx still
+    #     scores 0 — a split artifact: root-ness is a graph property, not a
+    #     split property. Report the all-labeled-fraud-tx RCP alongside
+    #     (idempotent on wallet/joint, where all fraud txs are already added).
+    if args.dataset == "elliptic++" and "transaction" in type_offsets \
+            and hasattr(data["transaction"], "y"):
+        _tx_off = type_offsets["transaction"]
+        _tx_y = data["transaction"].y
+        all_fraud_set = fraud_label_set | {
+            _tx_off + i for i in (_tx_y == 1).nonzero(as_tuple=True)[0].tolist()
+        }
+        rct_metrics["root_cause_precision_all_fraud_tx"] = float(
+            np.mean([root_cause_precision(r, all_fraud_set)
+                     for r in predicted_roots])
+        )
 
     # ── Optional: dump the traced chains with real Elliptic++ identities ────
     # These are the SAME chains summarised by the depth histogram — here we

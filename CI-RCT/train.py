@@ -130,11 +130,13 @@ def parse_args() -> argparse.Namespace:
                              "more edges than process→host, leaving sparse "
                              "edges' NCM CE≈0.001 at eval time).")
     parser.add_argument("--ncm_baseline", type=str, default="zero",
-                        choices=("zero", "type_mean"),
+                        choices=("zero", "type_mean", "marginal"),
                         help="CE null-intervention baseline. 'zero' (legacy) "
                              "do(h_u=0) is OOD and saturates p_null, making CE "
                              "sign uninterpretable; 'type_mean' do(h_u=E[h_type]) "
-                             "recentres CE so sign = promote(+)/suppress(−).")
+                             "recentres CE so sign = promote(+)/suppress(−); "
+                             "'marginal' p_null=E[MLP(h)] removes type_mean's "
+                             "Jensen gap so E[CE] over a type is exactly 0.")
     # GAN settings
     parser.add_argument("--use_gan", type=lambda x: x.lower() == "true",
                         default=False,
@@ -941,6 +943,19 @@ def main() -> None:
             )
             loss_str = (f"Loss {total_loss:.4f} "
                         f"(det={det_loss:.4f}, adv={adv_loss:.4f}, G={g_loss:.4f}, ncm={ncm_loss:.4f})")
+
+        if epoch == 1 and model.hetero_ncm.last_supervision_counts:
+            # One-shot NCM supervision audit: an edge type with 0 labelled
+            # edges never trains its MLP, so its CE collapses to ~0 at eval
+            # and the tracer cannot follow those hops (tx→wallet RCP bug).
+            counts = model.hetero_ncm.last_supervision_counts
+            print("  [NCM supervision] labelled edges per edge type: "
+                  + ", ".join(f"{et}={n:,}" for et, n in sorted(counts.items())))
+            starved = [et for et, n in counts.items() if n == 0]
+            if starved:
+                print(f"  [NCM supervision] WARNING: no supervision for "
+                      f"{starved} — their CE will be ~0 at eval; check label "
+                      f"paths or --ncm_edge_balance.")
 
         if _fuse_aux:
             loss_str += f" aux={aux_val:.4f}(fused)"
