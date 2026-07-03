@@ -65,6 +65,61 @@ Loaded checkpoint: checkpoints_txwallet_fix/ci_rct_elliptic++_joint_best.pt
 [fraud_label_set] tx fraud nodes: 683, illicit wallets added: 14,266, total fraud_label_set size: 18,811
 
 [dump] decoding 2000 chains to real txId / address …
+[dump_phi] computing per-node φ (phi_add + phi_asym) for 2000 chains — asym uses coalition forwards, may be slow …
+[dump_phi]   50/2000 chains
+[dump_phi]   100/2000 chains
+[dump_phi]   150/2000 chains
+[dump_phi]   200/2000 chains
+[dump_phi]   250/2000 chains
+[dump_phi]   300/2000 chains
+[dump_phi]   350/2000 chains
+[dump_phi]   400/2000 chains
+[dump_phi]   450/2000 chains
+[dump_phi]   500/2000 chains
+[dump_phi]   550/2000 chains
+[dump_phi]   600/2000 chains
+[dump_phi]   650/2000 chains
+[dump_phi]   700/2000 chains
+[dump_phi]   750/2000 chains
+[dump_phi]   800/2000 chains
+[dump_phi]   850/2000 chains
+[dump_phi]   900/2000 chains
+[dump_phi]   950/2000 chains
+[dump_phi]   1000/2000 chains
+[dump_phi]   1050/2000 chains
+[dump_phi]   1100/2000 chains
+[dump_phi]   1150/2000 chains
+[dump_phi]   1200/2000 chains
+[dump_phi]   1250/2000 chains
+[dump_phi]   1300/2000 chains
+[dump_phi]   1350/2000 chains
+[dump_phi]   1400/2000 chains
+[dump_phi]   1450/2000 chains
+[dump_phi]   1500/2000 chains
+[dump_phi]   1550/2000 chains
+[dump_phi]   1600/2000 chains
+[dump_phi]   1650/2000 chains
+[dump_phi]   1700/2000 chains
+[dump_phi]   1750/2000 chains
+[dump_phi]   1800/2000 chains
+[dump_phi]   1850/2000 chains
+[dump_phi]   1900/2000 chains
+[dump_phi]   1950/2000 chains
+[dump_phi]   2000/2000 chains
+[dump_phi] L3: causal feature attribution on pivots of 2000 chains …
+[dump_phi]   L3 50/2000 (24 pivots attributed)
+[dump_phi]   L3 100/2000 (33 pivots attributed)
+[dump_phi]   L3 150/2000 (83 pivots attributed)
+[dump_phi]   L3 300/2000 (142 pivots attributed)
+[dump_phi]   L3 350/2000 (192 pivots attributed)
+[dump_phi]   L3 400/2000 (242 pivots attributed)
+[dump_phi]   L3 450/2000 (291 pivots attributed)
+[dump_phi]   L3 1000/2000 (342 pivots attributed)
+[dump_phi]   L3 1150/2000 (417 pivots attributed)
+[dump_phi]   L3 1200/2000 (467 pivots attributed)
+[dump_phi]   L3 1300/2000 (513 pivots attributed)
+[dump_phi]   L3 1850/2000 (518 pivots attributed)
+[dump_chains] wrote 2000 chains → viz/crime_chains.json
 [dump_csv] wrote 2000 chains → results/cc_fix_marginal.csv
 
 [diagnostic 4/4] Predicted root cause type breakdown
@@ -108,7 +163,7 @@ Loaded checkpoint: checkpoints_txwallet_fix/ci_rct_elliptic++_joint_best.pt
 ───────────────────────────────────────────────────────
   D. φ-Stability Metrics
 ───────────────────────────────────────────────────────
-  Phi Stability Std                       : 0.0039
+  Phi Stability Std                       : 0.0035
   Phi Stability Mean Abs                  : 0.0010
   Num Nodes Explained                     : 2000
 
