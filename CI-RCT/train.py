@@ -418,6 +418,12 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
     """
     n_critic = model.config.n_critic
 
+    import time as _time
+    _t_dbg = step_count <= 1
+    _t_last = _time.perf_counter()
+    if _t_dbg:
+        print(f"  [timing] step {step_count} begin", flush=True)
+
     # ── Discriminator step ──────────────────────────────────────────────────
     model.train()
     optimizer_backbone.zero_grad()
@@ -437,6 +443,8 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
         wallet_labels=data["wallet"].y if hasattr(data["wallet"], "y") else None,
         wallet_type_offset=type_offsets.get("wallet", 0),
     )
+    if _t_dbg:
+        print(f"  [timing] critic forward+loss: {_time.perf_counter()-_t_last:.1f}s", flush=True); _t_last = _time.perf_counter()
     # Symmetric joint: fuse the wallet (aux) detection loss into the SAME
     # backward so primary + auxiliary co-shape the backbone in one step.
     aux_loss_val = 0.0
@@ -449,8 +457,14 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
 
     # Use full loss (detection + adversarial + NCM + stability [+ aux]) for the
     # discriminator/backbone update.
+    if _t_dbg:
+        print(f"  [timing] about to backward (critic) …", flush=True)
     total_loss.backward()
+    if _t_dbg:
+        print(f"  [timing] critic backward: {_time.perf_counter()-_t_last:.1f}s", flush=True); _t_last = _time.perf_counter()
     optimizer_backbone.step()
+    if _t_dbg:
+        print(f"  [timing] optimizer step: {_time.perf_counter()-_t_last:.1f}s", flush=True); _t_last = _time.perf_counter()
 
     # ── Generator step (every n_critic steps) ──────────────────────────────
     g_loss_val = 0.0
@@ -474,6 +488,8 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
         g_loss.backward()
         optimizer_generator.step()
         g_loss_val = g_loss.item()
+        if _t_dbg:
+            print(f"  [timing] generator step: {_time.perf_counter()-_t_last:.1f}s", flush=True); _t_last = _time.perf_counter()
 
     return (total_loss.item(), detection_loss.item(), adv_loss.item(),
             g_loss_val, ncm_loss.item(), aux_loss_val)
