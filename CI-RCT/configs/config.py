@@ -36,6 +36,10 @@ class CI_RCT_Config:
     #   "type_mean" : do(h_u = E[h_type]) — replace the source node with the mean
     #                 embedding of its node type (in-distribution interventional
     #                 baseline). Recentres CE at 0 so sign = promote(+)/suppress(−).
+    #   "marginal"  : p_null = E[MLP(h)] over same-type sources — the marginal
+    #                 null intervention do(h_u ~ P(h_type)). Removes type_mean's
+    #                 Jensen gap (MLP(E[h]) ≠ E[MLP(h)]), so E[CE] over a type
+    #                 is exactly 0. Inference-only, like type_mean: no retrain.
     ncm_baseline: str = "zero"
 
     # ── Root Cause Tracer ─────────────────────────────────────────────────
@@ -48,6 +52,9 @@ class CI_RCT_Config:
     tracer_algorithm: str = "greedy"
     tracer_objective: str = "product"  # weighted-path objective: product|sum
     ce_eps: float = 1e-12              # clamp for -log|CE| in the product objective
+    # Std of the Gaussian noise injected into node embeddings when measuring
+    # φ-stability (input-perturbation robustness of the attribution) at eval time.
+    phi_stability_noise_std: float = 0.01
 
     # ── CausalAdversarialGAN ──────────────────────────────────────────────
     gan_hidden_dim: int = 128     # Generator hidden dimension
@@ -59,7 +66,7 @@ class CI_RCT_Config:
     # L_total = L_detection + λ1 · L_adversarial + λ2 · L_causal
     lambda_adversarial: float = 0.1   # λ1: weight of WGAN-GP adversarial loss
     lambda_stability: float = 0.5     # λ2: weight of Causal Shapley stability loss
-    lambda_ncm: float = 0.1           # λ3: weight of NCM supervision (BCE) loss
+    lambda_ncm: float = 0.3           # λ3: weight of NCM supervision (BCE) loss
     lambda_recon: float = 0.0         # λ4: GraphBEAN-style feature+edge reconstruction
                                       #     self-supervision (0 = OFF → byte-identical;
                                       #     enabled via --use_reconstruction for
@@ -71,7 +78,7 @@ class CI_RCT_Config:
     weight_decay: float = 1e-4
 
     # ── Misc ──────────────────────────────────────────────────────────────
-    device: str = "cpu"
+    device: str = "cuda"  # "cuda" or "cpu"
     eval_every: int = 10
     checkpoint_dir: str = "checkpoints"
     seed: int = 42
