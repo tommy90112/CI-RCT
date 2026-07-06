@@ -52,7 +52,7 @@ run() {  # $1 = arm name; rest = extra args
   local log="$OUTDIR/eval_${name}.log"
   echo ">>> [$name] -> $log"
   local t0=$SECONDS
-  CUDA_VISIBLE_DEVICES=0 python evaluate.py "${COMMON[@]}" "$@" 2>&1 | tee "$log"
+  CUDA_VISIBLE_DEVICES="${GPU:-0}" python evaluate.py "${COMMON[@]}" "$@" 2>&1 | tee "$log"
   echo "WALLCLOCK_SECONDS=$((SECONDS - t0))" | tee -a "$log"
 }
 

@@ -65,7 +65,7 @@ run() {  # $1 = explainer name; rest = extra overrides (e.g. --max_explain N)
   local log="$OUTDIR/eval_${name}.log"
   echo ">>> [explainer=$name] -> $log"
   local t0=$SECONDS
-  CUDA_VISIBLE_DEVICES=0 python evaluate.py "${COMMON[@]}" --explainer "$name" "$@" 2>&1 | tee "$log"
+  CUDA_VISIBLE_DEVICES="${GPU:-0}" python evaluate.py "${COMMON[@]}" --explainer "$name" "$@" 2>&1 | tee "$log"
   echo "WALLCLOCK_SECONDS=$((SECONDS - t0))" | tee -a "$log"
 }
 
