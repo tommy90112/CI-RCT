@@ -107,18 +107,18 @@ Loaded checkpoint: checkpoints_txwallet_fix/ci_rct_elliptic++_joint_best.pt
 [dump_phi]   1950/2000 chains
 [dump_phi]   2000/2000 chains
 [dump_phi] L3: causal feature attribution on pivots of 2000 chains …
-[dump_phi]   L3 50/2000 (24 pivots attributed)
-[dump_phi]   L3 100/2000 (33 pivots attributed)
-[dump_phi]   L3 150/2000 (83 pivots attributed)
-[dump_phi]   L3 300/2000 (142 pivots attributed)
-[dump_phi]   L3 350/2000 (192 pivots attributed)
-[dump_phi]   L3 400/2000 (242 pivots attributed)
-[dump_phi]   L3 450/2000 (291 pivots attributed)
-[dump_phi]   L3 1000/2000 (342 pivots attributed)
-[dump_phi]   L3 1150/2000 (417 pivots attributed)
-[dump_phi]   L3 1200/2000 (467 pivots attributed)
-[dump_phi]   L3 1300/2000 (513 pivots attributed)
-[dump_phi]   L3 1850/2000 (518 pivots attributed)
+[dump_phi]   L3 50/2000 (22 pivots attributed)
+[dump_phi]   L3 100/2000 (31 pivots attributed)
+[dump_phi]   L3 150/2000 (81 pivots attributed)
+[dump_phi]   L3 300/2000 (140 pivots attributed)
+[dump_phi]   L3 350/2000 (190 pivots attributed)
+[dump_phi]   L3 400/2000 (240 pivots attributed)
+[dump_phi]   L3 450/2000 (289 pivots attributed)
+[dump_phi]   L3 1000/2000 (340 pivots attributed)
+[dump_phi]   L3 1150/2000 (415 pivots attributed)
+[dump_phi]   L3 1200/2000 (465 pivots attributed)
+[dump_phi]   L3 1300/2000 (511 pivots attributed)
+[dump_phi]   L3 1850/2000 (516 pivots attributed)
 [dump_chains] wrote 2000 chains → viz/crime_chains.json
 [dump_csv] wrote 2000 chains → results/cc_fix_marginal.csv
 
@@ -163,8 +163,8 @@ Loaded checkpoint: checkpoints_txwallet_fix/ci_rct_elliptic++_joint_best.pt
 ───────────────────────────────────────────────────────
   D. φ-Stability Metrics
 ───────────────────────────────────────────────────────
-  Phi Stability Std                       : 0.0035
-  Phi Stability Mean Abs                  : 0.0010
+  Phi Stability Std                       : 0.0039
+  Phi Stability Mean Abs                  : 0.0011
   Num Nodes Explained                     : 2000
 
 [Metric C — GT = LFPN-Strict]
