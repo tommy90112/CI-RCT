@@ -65,70 +65,76 @@ Loaded checkpoint: checkpoints_txwallet_fix/ci_rct_elliptic++_joint_best.pt
 [fraud_label_set] tx fraud nodes: 683, illicit wallets added: 14,266, total fraud_label_set size: 18,811
 
 [diagnostic 4/4] Predicted root cause type breakdown
-  root type = transaction         :   15  (3 in fraud_label_set, 20.0%)
-  root type = wallet              :   35  (24 in fraud_label_set, 68.6%)
+  root type = transaction         :  469  (249 in fraud_label_set, 53.1%)
+  root type = wallet              : 1531  (684 in fraud_label_set, 44.7%)
 
-[diagnostic 2/3] Chain depth histogram (num_traced=50, max_hops=20)
-  depth= 0:    8  ██████
-  depth= 1:   20  ████████████████
-  depth= 2:    3  ██
-  depth= 3:   14  ███████████
-  depth= 4:    3  ██
-  depth= 5:    2  █
+[diagnostic 2/3] Chain depth histogram (num_traced=2000, max_hops=20)
+  depth= 0:  497  █████████
+  depth= 1:  322  ██████
+  depth= 2:  710  ██████████████
+  depth= 3:  255  █████
+  depth= 4:  131  ██
+  depth= 5:   38  
+  depth= 6:   24  
+  depth= 7:    6  
+  depth= 8:   12  
+  depth= 9:    1  
+  depth=10:    2  
+  depth=12:    2  
 
-[diagnostic 3/3] Stuck-at-target trace analysis (8/50 chains have depth 0)
-  reason: target has no parents in causal graph : 5
-  reason: parents exist but max CE < threshold  : 3
-    -> max-CE among stuck-but-has-parents:  mean=-0.1283  median=-0.1283  min=-0.1283  max=-0.1282
+[diagnostic 3/3] Stuck-at-target trace analysis (497/2000 chains have depth 0)
+  reason: target has no parents in causal graph : 53
+  reason: parents exist but max CE < threshold  : 444
+    -> max-CE among stuck-but-has-parents:  mean=-0.4352  median=-0.6116  min=-0.6469  max=+0.0001
     -> if these are mostly near 0, the relevant edge model is undertrained (NCM hypothesis confirmed).
 
 ───────────────────────────────────────────────────────
   B. Root Cause Tracing Metrics
 ───────────────────────────────────────────────────────
-  Root Cause Precision                    : 0.5400
-  Root Cause Hit Rate                     : 0.8200
-  Chain Validity                          : 0.7140
-  Mean Tracing Depth                      : 1.8000
-  Num Traced                              : 50
-  Root Cause Precision True Pos           : 0.5909
-  Num True Pos Traced                     : 44
+  Root Cause Precision                    : 0.4665
+  Root Cause Hit Rate                     : 0.4015
+  Chain Validity                          : 0.6399
+  Mean Tracing Depth                      : 1.7780
+  Num Traced                              : 2000
+  Root Cause Precision True Pos           : 0.5027
+  Num True Pos Traced                     : 1848
   Root Labeled Ratio                      : 1.0000
-  Root Cause Precision Labeled Only       : 0.5400
-  Root Cause Precision All Fraud Tx       : 0.5400
+  Root Cause Precision Labeled Only       : 0.4665
+  Root Cause Precision All Fraud Tx       : 0.4665
 
 ───────────────────────────────────────────────────────
   D. φ-Stability Metrics
 ───────────────────────────────────────────────────────
-  Phi Stability Std                       : 0.0015
-  Phi Stability Mean Abs                  : 0.0004
-  Num Nodes Explained                     : 50
+  Phi Stability Std                       : 0.0037
+  Phi Stability Mean Abs                  : 0.0010
+  Num Nodes Explained                     : 2000
 
 [Metric C — GT = LFPN-Strict]
   Explanation Quality: 4545/4545 GT transactions found in causal graph.
-  Explainer: phi_sym
+  Explainer: saliency
 
 ───────────────────────────────────────────────────────
   C. Explanation Quality — LFPN-Strict
 ───────────────────────────────────────────────────────
-  Explanation Accuracy                    : 0.3087
-  Explanation Recall                      : 0.8684
-  Gt Match Accuracy                       : 0.8376
+  Explanation Accuracy                    : 0.2945
+  Explanation Recall                      : 0.9237
+  Gt Match Accuracy                       : 0.8915
   Gt Match Mode                           : subset
 
 [Metric C — GT = LFPN-Extended (k=2)]
   Explanation Quality: 4545/4545 GT transactions found in causal graph.
-  Explainer: phi_sym
+  Explainer: saliency
   [note] subset gt-match suppressed: GT is broader than the bounded causal chain, so 'recover ALL gt nodes' is structurally ~0; Explanation Recall is the coverage metric.
 
 ───────────────────────────────────────────────────────
   C. Explanation Quality — LFPN-Extended (k=2)
 ───────────────────────────────────────────────────────
-  Explanation Accuracy                    : 0.3227
-  Explanation Recall                      : 0.1167
-  Gt Match                                : n/a — GT broader than chain (14% of cases size-feasible); see Recall
+  Explanation Accuracy                    : 0.3167
+  Explanation Recall                      : 0.1307
+  Gt Match                                : n/a — GT broader than chain (18% of cases size-feasible); see Recall
 
 ───────────────────────────────────────────────────────
   Evaluation complete.
 ───────────────────────────────────────────────────────
 
-WALLCLOCK_SECONDS=8184
+WALLCLOCK_SECONDS=508
