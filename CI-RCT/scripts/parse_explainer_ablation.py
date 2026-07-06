@@ -61,7 +61,7 @@ def main():
         print("| " + " | ".join(fmt(r, k, s) for k, _, s in cols) + " |")
 
     print("\n★ 主判準 = LFPN-Strict 解釋召回(ER);EA=精度、ER=覆蓋。")
-    print("phi_asym=主方法;對照 ce_only(無 Shapley)、phi_sym(無時序不對稱)、cxgnn_ncm(外部 SOTA)。")
+    print("phi_asym=主方法;對照 saliency(無因果介入)、ce_only(無 Shapley)、phi_sym(無時序不對稱);cxgnn_ncm=外部 SOTA(比較非消融)。")
     print("註:各 explainer 輸出的節點集大小不同 → 公平比較建議再補 matched-top-k / PR 曲線(見 writeup §B)。")
 
 

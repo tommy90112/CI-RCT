@@ -20,7 +20,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-CKPT="${CKPT:-checkpoints/ci_rct_elliptic++_joint_best.pt}"
+CKPT="${CKPT:-checkpoints_txwallet_fix/ci_rct_elliptic++_joint_best.pt}"
 MAX_EXPLAIN="${MAX_EXPLAIN:-2000}"
 OUTDIR="${OUTDIR:-logs/elliptic/ablation}"
 # evaluate.py defaults --device to cpu; the model forward over the full
@@ -42,6 +42,7 @@ COMMON=(
   --max_explain "$MAX_EXPLAIN" --max_hops 20 --node_limit 1000000 --ce_threshold 0.0001
   --threshold_tuning val --threshold_objective fraud_f1
   --prefer_root_types wallet
+  --ncm_baseline "${NCM_BASELINE:-marginal}" --tracer_score "${TRACER_SCORE:-ce_signed}"
   --device "$DEVICE"
   --lfpn_mode both --debug
 )
