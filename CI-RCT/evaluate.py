@@ -894,15 +894,18 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
                     getattr(model, "config", None), "num_hgt_layers", None
                 )
 
-            def _asym_score_fn_for_seed(seed_global):
-                # The φ readout reuses the primary classifier head, so the true
-                # asymmetric φ is only valid for seeds of that type; other (e.g.
-                # joint dual-seed) nodes get additive φ only (phi_asym = None).
-                if causal_graph.node_type.get(seed_global) != phi_readout_type:
-                    return None
+            def _asym_phi_fn(readout_global, intervene_global):
+                # Option A — per-hop rolling readout. chain_phi resolves the
+                # readout node (the intervene node itself, or its nearest
+                # downstream head node) and passes it here. v(S) then reads out
+                # fraud probability at `readout_global` while the coalition
+                # controls `intervene_global`'s parent edges, making φ_asym a
+                # per-hop LOCAL causal responsibility instead of a global
+                # attribution to the fixed seed — deep hops are no longer forced
+                # to φ≈0 by the backbone's receptive-field horizon.
                 base = _make_phi_score_fn(
                     model=model, data=data, causal_graph=causal_graph,
-                    target_node=seed_global, type_offsets=type_offsets,
+                    target_node=readout_global, type_offsets=type_offsets,
                     target_node_type=phi_readout_type, fraud_class=1, mode="asym",
                     n_permutations=getattr(args, "shapley_permutations", 64),
                     causal_effects=causal_effects,
@@ -910,7 +913,7 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
                     use_subgraph=getattr(args, "coalition_subgraph", True),
                     num_layers=phi_num_layers,
                 )
-                return lambda child: base(child, None)
+                return base(intervene_global, None)
 
             print(f"[dump_phi] computing per-node φ (phi_add + phi_asym) for "
                   f"{len(records)} chains — asym uses coalition forwards, may be "
@@ -925,7 +928,8 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
                 records = attach_phi_to_records(
                     records, causal_graph=causal_graph,
                     causal_effects=causal_effects,
-                    asym_score_fn_for_seed=_asym_score_fn_for_seed,
+                    asym_phi_fn=_asym_phi_fn,
+                    readout_type=phi_readout_type,
                     on_progress=_phi_progress,
                 )
 
