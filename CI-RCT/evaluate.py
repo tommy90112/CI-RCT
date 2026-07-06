@@ -949,6 +949,14 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
                     nodes = rec.get("nodes", [])
                     if not nodes:
                         continue
+                    # L3's readout reuses the PRIMARY classifier head, so it is
+                    # only defined for chains whose target IS that type. Joint
+                    # wallet-seeded chains must be skipped (mirrors the φ-tracer
+                    # readout-type guard) — their global id would otherwise be
+                    # misread as a transaction-local index (IndexError).
+                    if causal_graph.node_type.get(nodes[0]["global"]) \
+                            != phi_readout_type:
+                        continue
                     # pivot = node with peak |φ_asym| (None when chain unscored).
                     pivot = None
                     best = 0.0

@@ -108,9 +108,18 @@ def compute_causal_feature_attribution(
     }
     if target_node_type not in type_offsets or pivot_type not in type_offsets:
         return base_record
+    # The readout head only exists for target_node_type; a mixed-type caller
+    # (joint dual seeds) handing us a target of another type would turn its
+    # GLOBAL id into a bogus local index and corrupt the receptive-field seed.
+    if causal_graph.node_type.get(target_node) != target_node_type:
+        return base_record
 
     target_local = target_node - type_offsets[target_node_type]
     pivot_local = pivot_node - type_offsets[pivot_type]
+    if not (0 <= target_local < _num_rows(data, target_node_type)):
+        return base_record
+    if not (0 <= pivot_local < _num_rows(data, pivot_type)):
+        return base_record
 
     # ── Restrict to the target's L-hop receptive field (exact + cheap) ──────────
     active = data
