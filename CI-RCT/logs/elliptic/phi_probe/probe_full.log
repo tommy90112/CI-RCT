@@ -1,0 +1,43 @@
+Loading dataset: elliptic++ (variant=joint)
+  Loading CSVs …
+  Building transaction features …
+  Building labels …
+  Filtering connected wallets …
+  Building wallet features …
+  Building edges …
+  Transactions: 203,769  (illicit=4,545, licit=199,224, unknown=0)
+  Wallets (connected): 822,942 [per-address, deduped]  (feat_dim=56)
+  Edges:  wallet→tx=477,117  tx→wallet=837,124  tx→tx=234,355  wallet→wallet=2,868,964
+  Joint wallet aux: illicit=14,266 / labeled=265,354 / 822,942 wallets; split train=185,747 val=39,802 test=39,805
+
+Building TypedCausalGraph...
+  [BFS] blocked edge types (2, src=dataset-default): ['address__to__address', 'wallet__to__wallet']
+  [data_utils] Skipped 3,779 blocked edges from causal graph (types=['address__to__address', 'wallet__to__wallet']).
+  [data_utils] Rejected 25 edges violating temporal precedence (time-respecting DAG; 844,812/3,491 nodes timed).
+  Causal graph: 3491 nodes, 5460 directed edges
+  [arch] aux_num_classes: checkpoint={'wallet': 2} (overrides CLI={})
+Loaded checkpoint: checkpoints_txwallet_fix/ci_rct_elliptic++_joint_best.pt
+
+───────────────────────────────────────────────────────
+  A. Classification (POOLED test N = transaction 6,987 + wallet 39,805)
+───────────────────────────────────────────────────────
+  F1                                      : 0.8091
+  Auc                                     : 0.9507
+  Fraud F1                                : 0.6465
+  Pred Fraud Rate                         : 0.0878
+    · transaction fraud_f1=0.6735  pred_rate=0.1692  thr=0.500
+    · wallet      fraud_f1=0.6365  pred_rate=0.0735  thr=0.500
+  ▶ Headline F1-score (fraud class) = 0.6465
+
+[φ-stability probe] σ-sweep over 5 levels, K=5 draws, N=500 seeds, 104 with a defined pivot
+       σ   all-parent mean|Δφ|    pivot mean|Δφ|   pivot rel-drift
+   0.010              0.000053          0.000624          0.004339
+   0.050              0.000248          0.002987          0.022267
+   0.100              0.000536          0.006982          0.052433
+   0.200              0.001042          0.012735          0.098616
+   0.500              0.003291          0.044534          0.355262
+
+───────────────────────────────────────────────────────
+  Stability probe complete.
+───────────────────────────────────────────────────────
+
