@@ -237,9 +237,27 @@ def parse_args() -> argparse.Namespace:
                              "do-passes per chain.")
     parser.add_argument("--feat_attr_topk", type=int, default=12,
                         help="L3: number of features to report per pivot node.")
+    parser.add_argument("--feat_attr_all_nodes", action="store_true",
+                        help="L3: attribute EVERY chain node, not only the φ_asym "
+                             "pivot. Nodes outside the target's num_layers-hop "
+                             "receptive field still return empty (cannot reach the "
+                             "readout). Trades compute for near-target coverage.")
     parser.add_argument("--debug", action="store_true",
                         help="Print tracer diagnostics: CE distribution by edge "
                              "type, chain length histogram, stuck-trace analysis.")
+    parser.add_argument("--stability_probe_only", action="store_true",
+                        help="Skip LFPN/tracing/Metric-C and run ONLY the φ "
+                             "perturbation-stability probe (a σ-sweep of input "
+                             "noise, K draws each). Fast comparison of L_stab's "
+                             "effect across checkpoints (Full vs no_stab).")
+    parser.add_argument("--phi_noise_sweep", type=str,
+                        default="0.01,0.05,0.1,0.2,0.5",
+                        help="Comma-separated σ values for --stability_probe_only: "
+                             "Gaussian noise std added to node embeddings before "
+                             "recomputing φ. Larger σ probes harder.")
+    parser.add_argument("--phi_noise_draws", type=int, default=5,
+                        help="Number of independent noise draws averaged per σ in "
+                             "--stability_probe_only (reduces estimator variance).")
     parser.add_argument("--eval_split", type=str, default="test",
                         choices=["test", "val"],
                         help="Which split to compute Metric A/B/C/D on. "
@@ -573,6 +591,89 @@ def eval_classification_pooled(model, data, threshold_objective=None,
     metrics["fraud_f1"] = compute_fraud_f1(y_true, y_pred)
     metrics["pred_fraud_rate"] = float(y_pred.float().mean())
     return metrics, per_type_n, per_type_info
+
+
+def phi_stability_probe(model, data, causal_graph, args, device,
+                        type_offsets, target_type, extra_fraud_seeds=None):
+    """φ perturbation-stability probe (Metric D, strengthened).
+
+    The legacy Phi-Stability metric perturbs embeddings at a single small σ
+    (0.01) and averages |Δφ| over ALL parents — dominated by near-zero φ, it
+    saturates and cannot distinguish an L_stab-trained model from an ablated
+    one. This probe instead (i) sweeps σ so degradation shows as a curve,
+    (ii) averages K independent noise draws to cut estimator variance, and
+    (iii) reports drift at each chain's PIVOT (argmax|φ|) — the node that
+    actually carries the explanation — both absolute and relative to |φ|.
+
+    A model regularised by L_stab should keep pivot drift flatter as σ grows.
+    """
+    model.eval()
+    with torch.no_grad():
+        _logits, h_dict = model.forward(data)
+        flat_h = model._build_flat_h(h_dict)
+    causal_effects = model.compute_causal_effects(flat_h, causal_graph)
+
+    # Same predicted-fraud seed selection as the main Metric-B path.
+    offset = type_offsets[target_type]
+    logits, _ = model.all_logits(data)
+    tgt_logits = logits[target_type] if isinstance(logits, dict) else logits
+    pred = tgt_logits.argmax(dim=-1)
+    seeds = [
+        offset + idx for idx in range(pred.size(0))
+        if pred[idx].item() == 1 and (offset + idx) in causal_graph.set_v
+    ]
+    if extra_fraud_seeds:
+        seeds.extend(g for g in extra_fraud_seeds if g in causal_graph.set_v)
+    seeds = list(dict.fromkeys(seeds))[: args.max_explain]
+    if not seeds:
+        print("  [φ-probe] No fraud-predicted seeds in causal graph — skipping.")
+        return
+
+    # Original φ and its pivot (argmax|φ|) per seed.
+    phi_orig = {s: compute_asymmetric_causal_shapley(causal_effects, causal_graph, s)
+                for s in seeds}
+    pivots = {}
+    for s, phi in phi_orig.items():
+        if phi:
+            pivots[s] = max(phi.items(), key=lambda kv: abs(kv[1]))[0]
+
+    sweep = [float(x) for x in str(args.phi_noise_sweep).split(",") if x.strip()]
+    K = max(1, int(args.phi_noise_draws))
+    eps = 1e-8
+
+    print(f"\n[φ-stability probe] σ-sweep over {len(sweep)} levels, "
+          f"K={K} draws, N={len(seeds)} seeds, "
+          f"{len(pivots)} with a defined pivot")
+    print(f"  {'σ':>6s}  {'all-parent mean|Δφ|':>20s}  "
+          f"{'pivot mean|Δφ|':>16s}  {'pivot rel-drift':>16s}")
+
+    rows = []
+    for sigma in sweep:
+        all_diffs, pivot_abs, pivot_rel = [], [], []
+        for _ in range(K):
+            with torch.no_grad():
+                flat_h_pert = {
+                    gid: emb + torch.randn_like(emb) * sigma
+                    for gid, emb in flat_h.items()
+                }
+            ce_pert = model.compute_causal_effects(flat_h_pert, causal_graph)
+            for s in seeds:
+                phi_p = compute_asymmetric_causal_shapley(ce_pert, causal_graph, s)
+                phi_o = phi_orig[s]
+                for p in set(phi_o) & set(phi_p):
+                    all_diffs.append(abs(phi_o[p] - phi_p[p]))
+                piv = pivots.get(s)
+                if piv is not None and piv in phi_p:
+                    d = abs(phi_o[piv] - phi_p[piv])
+                    pivot_abs.append(d)
+                    pivot_rel.append(d / (abs(phi_o[piv]) + eps))
+        m_all = float(np.mean(all_diffs)) if all_diffs else 0.0
+        m_piv = float(np.mean(pivot_abs)) if pivot_abs else 0.0
+        m_rel = float(np.mean(pivot_rel)) if pivot_rel else 0.0
+        rows.append((sigma, m_all, m_piv, m_rel))
+        print(f"  {sigma:>6.3f}  {m_all:>20.6f}  {m_piv:>16.6f}  {m_rel:>16.6f}")
+
+    return rows
 
 
 def eval_root_cause_and_stability(model, data, labels, test_mask,
@@ -1274,7 +1375,9 @@ def main():
             for i in (data["wallet"].y == 1).nonzero(as_tuple=True)[0].tolist()
         ]
 
-    gt_list = build_gt_list(args, data, type_offsets)
+    # LFPN ground-truth (Metric C) is expensive and irrelevant to the φ probe.
+    gt_list = [] if args.stability_probe_only \
+        else build_gt_list(args, data, type_offsets)
 
     print("\nBuilding TypedCausalGraph...")
     gt_tx_ids = []
@@ -1462,6 +1565,15 @@ def main():
         )
         print_section("A. Classification Metrics", cls_metrics)
     print(f"  ▶ Headline F1-score (fraud class) = {cls_metrics['fraud_f1']:.4f}")
+
+    if args.stability_probe_only:
+        phi_stability_probe(
+            model, data, causal_graph, args, device,
+            type_offsets=type_offsets, target_type=target_type,
+            extra_fraud_seeds=extra_fraud_seeds,
+        )
+        print(f"\n{'─' * 55}\n  Stability probe complete.\n{'─' * 55}\n")
+        return
 
     rct_metrics, stab_metrics = eval_root_cause_and_stability(
         model, data, labels, test_mask, causal_graph, args, device,
