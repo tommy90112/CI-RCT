@@ -96,6 +96,36 @@ def default_blocked_edge_types(dataset: str) -> Set[str]:
     return set()
 
 
+def build_global_timestamps(
+    data: HeteroData,
+    type_offsets: Dict[str, int],
+) -> Dict[int, int]:
+    """
+    Collect per-node timestamps into a single {global_id: timestamp} dict.
+
+    Reads each node type's optional `.time` tensor (set e.g. by
+    elliptic_plus_loader: transaction = its discrete step, wallet = earliest
+    funding step). Entries with a negative sentinel (-1 = "no known time") are
+    skipped so those nodes stay temporally unconstrained — the TypedCausalGraph
+    guard only fires when BOTH endpoints carry a timestamp.
+
+    Returns an empty dict when no node type exposes `.time` (the causal graph
+    then behaves exactly as before — direction from edge orientation only).
+    """
+    timestamps: Dict[int, int] = {}
+    for ntype, off in type_offsets.items():
+        t = getattr(data[ntype], "time", None)
+        if t is None:
+            continue
+        t_cpu = t.detach().cpu()
+        for local_idx in range(t_cpu.size(0)):
+            val = int(t_cpu[local_idx].item())
+            if val < 0:
+                continue
+            timestamps[off + local_idx] = val
+    return timestamps
+
+
 def compute_type_offsets(data: HeteroData) -> Dict[str, int]:
     """
     Compute global node ID offsets for each node type.
@@ -239,15 +269,22 @@ def build_typed_causal_graph_from_hetero(
                 node_type_dict[gid] = ntype
 
     # --- Create TypedCausalGraph ---
+    # Temporal precedence: when node types expose `.time`, edges that run
+    # strictly backward in time are rejected at add_edge, turning the causal
+    # graph into a time-respecting DAG (follow-the-money). Empty dict → the
+    # guard no-ops and direction comes from edge orientation only (legacy).
+    timestamps = build_global_timestamps(data, type_offsets)
     tcg = TypedCausalGraph(
         V=list(included_nodes),
         node_types=node_type_dict,
+        timestamps=timestamps if timestamps else None,
     )
 
     # --- Add directed causal edges (forward only) ---
     # Drop blocked edge types from the final graph too, not just from BFS,
     # otherwise the tracer can still drift via included-by-other-paths.
     n_blocked = 0
+    n_temporal_reject = 0
     for src_g, neighbours in causal_adj.items():
         if src_g not in included_nodes:
             continue
@@ -257,12 +294,19 @@ def build_typed_causal_graph_from_hetero(
             if blocked_edge_types and etype_str in blocked_edge_types:
                 n_blocked += 1
                 continue
-            tcg.add_edge(src_g, dst_g, etype_str)
+            # Both endpoints are in V, so a False return here means the
+            # temporal guard rejected a strictly-backward-in-time edge.
+            if not tcg.add_edge(src_g, dst_g, etype_str):
+                n_temporal_reject += 1
 
     if blocked_edge_types and n_blocked > 0:
         # Diagnostic: prints once per call so user knows the filter fired.
         print(f"  [data_utils] Skipped {n_blocked:,} blocked edges "
               f"from causal graph (types={sorted(blocked_edge_types)}).")
+    if timestamps and n_temporal_reject > 0:
+        print(f"  [data_utils] Rejected {n_temporal_reject:,} edges violating "
+              f"temporal precedence (time-respecting DAG; "
+              f"{len(timestamps):,}/{len(included_nodes):,} nodes timed).")
 
     return tcg
 

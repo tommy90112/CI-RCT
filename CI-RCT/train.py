@@ -23,6 +23,7 @@ Supported datasets: dblp, acm, imdb, elliptic
 import argparse
 import os
 import random
+import sys
 
 import numpy as np
 import torch
@@ -49,6 +50,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dataset", type=str, default="dblp",
                         choices=["dblp", "acm", "imdb", "elliptic", "elliptic++", "crypto", "unsw_nb15", "unsw_mg24"])
+    # Elliptic++ detection target: 'transaction' (default, unchanged original
+    # behaviour), 'wallet' (clean wallet labels), or 'joint' (one model that
+    # classifies both, pooled F1). wallet/joint require --dataset elliptic++.
+    parser.add_argument("--variant", type=str, default="transaction",
+                        choices=["transaction", "wallet", "joint"])
+    parser.add_argument("--lambda_aux_detection", type=float, default=0.3,
+                        help="Weight of the auxiliary (wallet) detection loss "
+                             "in --variant joint.")
     parser.add_argument("--data_root", type=str, default="data")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -429,6 +438,95 @@ def evaluate_split(model, data, labels, mask):
     return metrics
 
 
+# ── Variant helpers (wallet / joint detection) ──────────────────────────────────
+
+def _early_stop_metric_explicit() -> bool:
+    """True if the user explicitly passed --early_stop_metric on the CLI."""
+    return any(
+        a == "--early_stop_metric" or a.startswith("--early_stop_metric=")
+        for a in sys.argv
+    )
+
+
+def _inverse_freq_class_weight(labels, mask, device):
+    """Inverse-frequency [1.0, neg/pos] weight, or None for a balanced split."""
+    pos = labels[mask].sum().float()
+    neg = (labels[mask] == 0).sum().float()
+    if pos > 0 and neg > 0 and pos != neg:
+        return torch.tensor([1.0, (neg / pos).item()], dtype=torch.float32, device=device)
+    return None
+
+
+def _load_variant_dataset(args):
+    """Dispatch the loader by --variant (elliptic++ only for wallet/joint)."""
+    if args.variant == "transaction":
+        return load_dataset(
+            args.dataset, args.data_root,
+            include_addr_addr=args.include_addr_addr,
+            labeled_only=args.labeled_only,
+            fraud_subgraph=args.fraud_subgraph,
+            fraud_subgraph_hops=args.fraud_subgraph_hops,
+            max_flows=args.max_flows,
+            mg24_subsample_ddos=args.mg24_subsample_ddos,
+            mg24_min_host_flows=args.mg24_min_host_flows,
+            mg24_prune_external=args.mg24_prune_external,
+            mg24_split_mode=args.mg24_split_mode,
+            mg24_host_role=args.mg24_host_role,
+            mg24_drop_features=args.mg24_drop_features,
+            seed=args.seed,
+        )
+    if args.dataset != "elliptic++":
+        raise ValueError(
+            f"--variant {args.variant} requires --dataset elliptic++ "
+            f"(got {args.dataset!r})."
+        )
+    root = os.path.join(args.data_root, "Elliptic++")
+    if args.variant == "wallet":
+        from utils.elliptic_plus_wallet_loader import load_elliptic_plus_wallet_dataset
+        return load_elliptic_plus_wallet_dataset(
+            root, include_addr_addr=args.include_addr_addr,
+            fraud_subgraph=args.fraud_subgraph,
+            fraud_subgraph_hops=args.fraud_subgraph_hops,
+        )
+    # joint
+    from utils.elliptic_plus_joint_loader import load_elliptic_plus_joint_dataset
+    return load_elliptic_plus_joint_dataset(
+        root, include_addr_addr=args.include_addr_addr,
+        fraud_subgraph=args.fraud_subgraph,
+        fraud_subgraph_hops=args.fraud_subgraph_hops,
+    )
+
+
+@torch.no_grad()
+def pooled_eval(model, data, mask_attr: str) -> dict:
+    """Pooled metrics over ALL classified types' <mask_attr> nodes (joint).
+
+    Each type's predictions come from its OWN head (primary for transaction,
+    aux head for wallet); the (y_true, y_pred, score) triples are concatenated
+    and a single set of metrics is computed — the joint model's overall F1.
+    """
+    model.eval()
+    logits_by_type, _ = model.all_logits(data)
+    y_true, y_pred, scores = [], [], []
+    for ntype, logits in logits_by_type.items():
+        mask = getattr(data[ntype], mask_attr, None)
+        if mask is None or not bool(mask.any()):
+            continue
+        probs = torch.softmax(logits[mask], dim=-1)
+        y_pred.append(probs.argmax(dim=-1).cpu())
+        scores.append(probs[:, 1].cpu())
+        y_true.append(data[ntype].y[mask].cpu())
+    if not y_true:
+        return {"f1": 0.0, "fraud_f1": 0.0, "weighted_f1": 0.0, "auc": 0.0}
+    y_true = torch.cat(y_true)
+    y_pred = torch.cat(y_pred)
+    scores = torch.cat(scores)
+    m = compute_classification_metrics(y_pred, y_true, scores)
+    m["fraud_f1"] = compute_fraud_f1(y_true, y_pred)
+    m["weighted_f1"] = 0.5 * m["f1"] + 0.5 * m["fraud_f1"]
+    return m
+
+
 # ── Graph subsampling ───────────────────────────────────────────────────────────
 
 def _subsample_hetero(data, target_type: str, max_target: int, seed: int = 42):
@@ -488,22 +586,8 @@ def main() -> None:
     device = torch.device(args.device)
     os.makedirs(args.checkpoint_dir, exist_ok=True)
 
-    print(f"Loading dataset: {args.dataset}")
-    data, target_type = load_dataset(
-        args.dataset, args.data_root,
-        include_addr_addr=args.include_addr_addr,
-        labeled_only=args.labeled_only,
-        fraud_subgraph=args.fraud_subgraph,
-        fraud_subgraph_hops=args.fraud_subgraph_hops,
-        max_flows=args.max_flows,
-        mg24_subsample_ddos=args.mg24_subsample_ddos,
-        mg24_min_host_flows=args.mg24_min_host_flows,
-        mg24_prune_external=args.mg24_prune_external,
-        mg24_split_mode=args.mg24_split_mode,
-        mg24_host_role=args.mg24_host_role,
-        mg24_drop_features=args.mg24_drop_features,
-        seed=args.seed,
-    )
+    print(f"Loading dataset: {args.dataset} (variant={args.variant})")
+    data, target_type = _load_variant_dataset(args)
 
     # Subsample graph before moving to GPU to avoid OOM on large datasets
     if args.subsample_tx > 0 and data[target_type].num_nodes > args.subsample_tx:
@@ -628,19 +712,41 @@ def main() -> None:
     if args.dataset == "unsw_mg24" and args.mg24_host_role == "detection_excluded":
         backbone_exclude_node_types = ["host_node"]
         print(f"  Detection graph excludes: {backbone_exclude_node_types} (DD-8 Fix 4)")
-    model = CI_RCT(
-        config=config,
-        metadata=data.metadata(),
-        in_channels_dict=in_channels_dict,
-        node_feature_dim=node_feature_dim if args.use_gan else None,
-        use_gan=args.use_gan,
-        num_classes=num_classes,
-        backbone_exclude_node_types=backbone_exclude_node_types,
-    ).to(device)
+    if args.variant == "joint":
+        from model.ci_rct_joint import CI_RCT_Joint
+        aux_num_classes = {"wallet": int(data["wallet"].y.max().item()) + 1}
+        model = CI_RCT_Joint(
+            config=config,
+            metadata=data.metadata(),
+            in_channels_dict=in_channels_dict,
+            node_feature_dim=node_feature_dim if args.use_gan else None,
+            use_gan=args.use_gan,
+            num_classes=num_classes,
+            backbone_exclude_node_types=backbone_exclude_node_types,
+            aux_node_types=["wallet"],
+            aux_num_classes=aux_num_classes,
+        ).to(device)
+        print(f"  Joint heads: primary={target_type}  aux=['wallet']  "
+              f"(λ_aux={args.lambda_aux_detection})")
+    else:
+        model = CI_RCT(
+            config=config,
+            metadata=data.metadata(),
+            in_channels_dict=in_channels_dict,
+            node_feature_dim=node_feature_dim if args.use_gan else None,
+            use_gan=args.use_gan,
+            num_classes=num_classes,
+            backbone_exclude_node_types=backbone_exclude_node_types,
+        ).to(device)
 
     # --- Optimisers ---
+    _backbone_params = (
+        list(model.backbone.parameters()) + list(model.hetero_ncm.parameters())
+    )
+    if args.variant == "joint":
+        _backbone_params += list(model.aux_classifiers.parameters())
     optimizer_backbone = optim.Adam(
-        list(model.backbone.parameters()) + list(model.hetero_ncm.parameters()),
+        _backbone_params,
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
     )
@@ -664,6 +770,17 @@ def main() -> None:
     else:
         class_weight = None
         print("  Class weight: None (balanced dataset)")
+
+    # --- Joint variant: auxiliary (wallet) supervision tensors ---
+    aux_labels = aux_masks = aux_class_weights = None
+    if args.variant == "joint":
+        aux_labels = {"wallet": data["wallet"].y}
+        aux_masks = {"wallet": data["wallet"].train_mask}
+        aux_class_weights = {
+            "wallet": _inverse_freq_class_weight(
+                data["wallet"].y, data["wallet"].train_mask, device
+            )
+        }
 
     # --- Fraud features for GAN (use training fraud nodes) ---
     fraud_features = None
@@ -692,11 +809,19 @@ def main() -> None:
 
     # --- Training loop ---
     mode_str = "Phase 2 (GAN)" if args.use_gan else "Phase 1 (No GAN)"
-    print(f"\nTraining [{mode_str}] for {args.epochs} epochs on {device}...")
+    print(f"\nTraining [{mode_str}] for {args.epochs} epochs on {device} "
+          f"(variant={args.variant})...")
+    # wallet/joint default to the binary fraud-class F1 (transaction keeps the
+    # original macro_f1 default unless the user overrides it).
+    if args.variant != "transaction" and not _early_stop_metric_explicit():
+        args.early_stop_metric = "fraud_f1"
     sel_key = {"macro_f1": "f1", "fraud_f1": "fraud_f1",
                "weighted_f1": "weighted_f1"}[args.early_stop_metric]
     best_val_score = 0.0
-    ckpt_path = os.path.join(args.checkpoint_dir, f"ci_rct_{args.dataset}_best.pt")
+    _ckpt_suffix = "" if args.variant == "transaction" else f"_{args.variant}"
+    ckpt_path = os.path.join(
+        args.checkpoint_dir, f"ci_rct_{args.dataset}{_ckpt_suffix}_best.pt"
+    )
     print(f"  Model selection metric: {args.early_stop_metric} (val['{sel_key}'])")
 
     model.reset_phi_buffer()  # initialise once before training starts
@@ -724,8 +849,21 @@ def main() -> None:
             loss_str = (f"Loss {total_loss:.4f} "
                         f"(det={det_loss:.4f}, adv={adv_loss:.4f}, G={g_loss:.4f}, ncm={ncm_loss:.4f})")
 
+        # Joint: extra wallet (auxiliary) step on the shared backbone.
+        if args.variant == "joint":
+            optimizer_backbone.zero_grad()
+            aux_loss = model.aux_detection_loss(
+                data, aux_labels, aux_masks, aux_class_weights
+            )
+            (args.lambda_aux_detection * aux_loss).backward()
+            optimizer_backbone.step()
+            loss_str += f" aux={float(aux_loss.detach().item()):.4f}"
+
         if epoch % args.eval_every == 0:
-            val_metrics = evaluate_split(model, data, labels, val_mask)
+            val_metrics = (
+                pooled_eval(model, data, "val_mask") if args.variant == "joint"
+                else evaluate_split(model, data, labels, val_mask)
+            )
             print(
                 f"Epoch {epoch:03d} | {loss_str} | "
                 f"Val macroF1={val_metrics['f1']:.4f}  fraudF1={val_metrics['fraud_f1']:.4f}  "
@@ -740,9 +878,12 @@ def main() -> None:
     # --- Final test ---
     print("\nLoading best checkpoint for test evaluation...")
     model.load_checkpoint(ckpt_path)
-    test_metrics = evaluate_split(model, data, labels, test_mask)
-    print(f"Test  macroF1={test_metrics['f1']:.4f}  "
-          f"fraudF1={test_metrics['fraud_f1']:.4f}  AUC={test_metrics['auc']:.4f}")
+    test_metrics = (
+        pooled_eval(model, data, "test_mask") if args.variant == "joint"
+        else evaluate_split(model, data, labels, test_mask)
+    )
+    print(f"Test  fraudF1={test_metrics['fraud_f1']:.4f}  "
+          f"(macroF1={test_metrics['f1']:.4f}  AUC={test_metrics['auc']:.4f})")
 
 
 if __name__ == "__main__":

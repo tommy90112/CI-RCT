@@ -198,8 +198,14 @@ def load_elliptic_plus_dataset(
     data["transaction"].train_mask = train_mask
     data["transaction"].val_mask   = val_mask
     data["transaction"].test_mask  = test_mask
+    # Discrete timestep → orients the follow-the-money causal DAG in time.
+    data["transaction"].time       = _build_tx_time(txs_feat, n_tx)
 
     data["wallet"].x = wallet_feat
+    # Wallet timestamp = earliest funding time (min over incoming tx→wallet).
+    data["wallet"].time = _build_wallet_funding_time(
+        tx_addr, txs_feat, tx_to_idx, wallet_to_idx, n_wallets
+    )
 
     # 載入 wallet 標籤
     wallets_cls = pd.read_csv(root / "wallets_classes.csv")
@@ -230,6 +236,59 @@ def load_elliptic_plus_dataset(
           f"wallet→wallet={ei_ww.size(1):,}")
 
     return data, "transaction"
+
+
+# ── Temporal (follow-the-money DAG) builders ────────────────────────────────────
+
+_TX_NO_TIME = -1   # sentinel: node has no known timestep → left unconstrained
+
+
+def _build_tx_time(txs_feat: pd.DataFrame, n_tx: int) -> torch.Tensor:
+    """
+    Per-transaction discrete timestep (Elliptic++ 'Time step', 1..49), in the
+    same local-index order as tx_to_idx. Used to orient the causal DAG in
+    time: money flows from earlier tx to later tx. NOT added to node features
+    (keeps the detection task unchanged).
+    """
+    if "Time step" not in txs_feat.columns:
+        return torch.full((n_tx,), _TX_NO_TIME, dtype=torch.long)
+    t = txs_feat["Time step"].to_numpy()
+    t = np.nan_to_num(t, nan=_TX_NO_TIME).astype(np.int64)
+    return torch.tensor(t, dtype=torch.long)
+
+
+def _build_wallet_funding_time(
+    tx_addr:       pd.DataFrame,
+    txs_feat:      pd.DataFrame,
+    tx_to_idx:     dict,
+    wallet_to_idx: dict,
+    n_wallets:     int,
+) -> torch.Tensor:
+    """
+    Per-wallet timestamp = the EARLIEST timestep at which the wallet is funded,
+    i.e. min(Time step) over all `transaction --pays--> wallet` (TxAddr) edges.
+
+    Rationale (UTXO causality): a wallet cannot spend funds before it receives
+    them, so its earliest funding time is the loosest valid lower bound on when
+    it may act as a cause. Wallets never funded inside the loaded graph get the
+    `_TX_NO_TIME` sentinel and stay temporally unconstrained.
+    """
+    fund = np.full(n_wallets, _TX_NO_TIME, dtype=np.int64)
+    if "Time step" not in txs_feat.columns:
+        return torch.tensor(fund, dtype=torch.long)
+
+    tx_time = dict(zip(txs_feat["txId"], txs_feat["Time step"]))
+    ta = tx_addr.dropna(subset=["txId", "output_address"]).copy()
+    ta = ta[ta["txId"].isin(tx_to_idx) & ta["output_address"].isin(wallet_to_idx)]
+    if ta.empty:
+        return torch.tensor(fund, dtype=torch.long)
+
+    ta["_t"] = ta["txId"].map(tx_time)
+    ta = ta.dropna(subset=["_t"])
+    earliest = ta.groupby("output_address")["_t"].min()   # addr -> min timestep
+    idxs = np.array([wallet_to_idx[a] for a in earliest.index], dtype=np.int64)
+    fund[idxs] = earliest.to_numpy().astype(np.int64)
+    return torch.tensor(fund, dtype=torch.long)
 
 
 # ── Feature builders ───────────────────────────────────────────────────────────

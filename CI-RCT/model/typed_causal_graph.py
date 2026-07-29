@@ -32,8 +32,15 @@ class TypedCausalGraph:
         V:          Iterable of node IDs
         node_types: {node_id: type_str} for every node in V
         timestamps: Optional {node_id: timestamp}.  When provided, edges
-                    violating temporal precedence (ts_src >= ts_dst) are
-                    silently rejected.
+                    violating temporal precedence (ts_src > ts_dst, i.e.
+                    strictly backward in time) are silently rejected.
+                    Same-timestamp edges (ts_src == ts_dst) are KEPT — on
+                    coarse discrete clocks (e.g. Elliptic++'s 49 two-week
+                    steps) most genuine flow edges sit inside one step, so
+                    rejecting equals would discard the bulk of the graph.
+                    Intra-step acyclicity is left to the edges' intrinsic
+                    direction (the Bitcoin spend chain is itself a DAG) and
+                    Kahn's algorithm in topological_order().
     """
 
     def __init__(
@@ -76,9 +83,10 @@ class TypedCausalGraph:
 
         Semantic: src is a direct causal parent (cause) of dst (effect).
 
-        Temporal guard: if timestamps are provided and ts(src) >= ts(dst),
-        the edge is rejected (violates Granger temporal precedence) and
-        False is returned.
+        Temporal guard: if timestamps are provided and ts(src) > ts(dst),
+        the edge is rejected (a cause cannot follow its effect — violates
+        Granger temporal precedence) and False is returned. Equal timestamps
+        are allowed (see class docstring).
 
         Args:
             src:       Source node (cause)
@@ -95,7 +103,7 @@ class TypedCausalGraph:
         if self.timestamps:
             ts_src = self.timestamps.get(src)
             ts_dst = self.timestamps.get(dst)
-            if ts_src is not None and ts_dst is not None and ts_src >= ts_dst:
+            if ts_src is not None and ts_dst is not None and ts_src > ts_dst:
                 return False
 
         self.pa[dst].add(src)

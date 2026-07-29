@@ -149,22 +149,40 @@ def explanation_recall(pred_nodes: Set, gt_nodes: Set) -> float:
     return len(pred_nodes & gt_nodes) / len(gt_nodes)
 
 
-def groundtruth_match(pred_nodes: Set, gt_nodes: Set) -> int:
+def groundtruth_match(pred_nodes: Set, gt_nodes: Set, mode: str = "exact") -> int:
     """
-    Whether the predicted explanation exactly matches the ground truth.
+    Whether the predicted explanation matches the ground truth.
 
-    The strictest metric from the CXGNN paper (Groundtruth Match Accuracy).
+    Modes:
+        "exact"  : 1 iff pred_nodes == gt_nodes. The strictest metric from the
+                   CXGNN paper (Groundtruth Match Accuracy). Assumes prediction
+                   and GT are the same kind of object.
+        "subset" : 1 iff gt_nodes is non-empty and gt_nodes ⊆ pred_nodes — i.e.
+                   the prediction recovered ALL ground-truth nodes (per-instance
+                   perfect recall). Use when the prediction is a causal CHAIN
+                   that necessarily also contains the query node and intermediate
+                   nodes of other types (e.g. Elliptic++: the chain always holds
+                   the queried transaction, while the LFPN GT is a wallet-only
+                   set), making exact set-equality structurally impossible — see
+                   the discussion in utils/lfpn_utils.py / root_cause_tracer.py.
 
     Returns:
-        int: 1 if pred_nodes == gt_nodes, else 0
+        int: 1 on a match under the chosen mode, else 0.
     """
     _validate_sets(pred_nodes, gt_nodes, "groundtruth_match")
-    return int(pred_nodes == gt_nodes)
+    if mode == "exact":
+        return int(pred_nodes == gt_nodes)
+    if mode == "subset":
+        return int(bool(gt_nodes) and gt_nodes.issubset(pred_nodes))
+    raise ValueError(
+        f"groundtruth_match: unknown mode {mode!r} (expected 'exact' or 'subset')."
+    )
 
 
 def compute_explanation_metrics(
     predicted_list: List[Set],
     ground_truth_list: List[Set],
+    gt_match_mode: str = "exact",
 ) -> dict:
     """
     Aggregate explanation metrics over a list of (prediction, ground-truth) pairs.
@@ -172,10 +190,14 @@ def compute_explanation_metrics(
     Args:
         predicted_list:    List of predicted node sets
         ground_truth_list: List of ground-truth node sets (same length)
+        gt_match_mode:     "exact" (CXGNN default) or "subset" — see
+                           groundtruth_match(). "subset" is the meaningful
+                           choice when predictions are causal chains whose node
+                           set can never exactly equal a curated GT set.
 
     Returns:
         dict: {'explanation_accuracy': float, 'explanation_recall': float,
-               'gt_match_accuracy': float}
+               'gt_match_accuracy': float, 'gt_match_mode': str}
     """
     if len(predicted_list) != len(ground_truth_list):
         raise ValueError(
@@ -196,7 +218,7 @@ def compute_explanation_metrics(
         if g  # skip empty ground truths
     ]
     gt_matches = [
-        groundtruth_match(p, g)
+        groundtruth_match(p, g, mode=gt_match_mode)
         for p, g in zip(predicted_list, ground_truth_list)
     ]
 
@@ -204,6 +226,7 @@ def compute_explanation_metrics(
         "explanation_accuracy": float(np.mean(accuracies)) if accuracies else 0.0,
         "explanation_recall": float(np.mean(recalls)) if recalls else 0.0,
         "gt_match_accuracy": float(np.mean(gt_matches)),
+        "gt_match_mode": gt_match_mode,
     }
 
 

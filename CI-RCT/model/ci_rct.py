@@ -395,12 +395,74 @@ class CI_RCT(nn.Module):
         """Reset the φ stability buffer (call at epoch start)."""
         self._prev_phi = None
 
+    # ── Checkpoint format ──────────────────────────────────────────────────
+    # v2 checkpoints store the architecture metadata alongside the weights so
+    # evaluate.py can rebuild a *matching* model regardless of its CLI
+    # defaults. This removes the silent "train with 3 HGT layers, eval with 2
+    # → extra layer stays randomly initialised (strict=False), AUC roughly
+    # right but F1≈0" trap. Legacy bare-state_dict checkpoints still load via
+    # the fallback branch in load_checkpoint().
+    _CKPT_FORMAT = "ci_rct/v2"
+
+    def arch_metadata(self) -> Dict[str, object]:
+        """
+        Architecture fields required to reconstruct this model from a
+        checkpoint. Mirrors the values __init__ passes to the backbone / NCM
+        constructors; kept here as the single source of truth so save and the
+        evaluate-side rebuild never drift apart.
+        """
+        return {
+            "hidden_dim": self.config.hidden_dim,
+            "num_hgt_layers": self.config.num_hgt_layers,
+            "num_heads": self.config.num_heads,
+            "node_type_emb_dim": self.config.node_type_emb_dim,
+            "dropout": self.config.dropout,
+            "ncm_h_size": self.config.ncm_h_size,
+            "ncm_h_layers": self.config.ncm_h_layers,
+            "target_node_type": self.config.target_node_type,
+            "use_gan": self.use_gan,
+            "backbone_exclude_node_types": list(self.backbone_exclude_node_types),
+        }
+
     def save_checkpoint(self, path: str) -> None:
-        """Save model state dict."""
-        torch.save(self.state_dict(), path)
+        """Save model weights plus the architecture metadata needed to rebuild
+        the model at evaluation time (v2 format)."""
+        torch.save(
+            {
+                "format": self._CKPT_FORMAT,
+                "state_dict": self.state_dict(),
+                "arch": self.arch_metadata(),
+            },
+            path,
+        )
 
     def load_checkpoint(self, path: str, device: Optional[str] = None) -> None:
-        """Load model state dict."""
+        """Load model weights. Accepts both the v2 dict format (with arch
+        metadata) and the legacy bare-state_dict format."""
         map_location = device or self.config.device
         state = torch.load(path, map_location=map_location)
+        if isinstance(state, dict) and "state_dict" in state:
+            state = state["state_dict"]
         self.load_state_dict(state, strict=False)
+
+    @staticmethod
+    def read_arch_metadata(
+        path: str, device: str = "cpu"
+    ) -> Optional[Dict[str, object]]:
+        """
+        Return the architecture metadata stored in a v2 checkpoint, or None
+        for a legacy bare-state_dict checkpoint (or on any read failure).
+
+        Lets evaluate.py construct a model whose layer count / hidden dim
+        match the trained weights even when the CLI flags differ from the
+        training recipe — see the v2-format note above.
+        """
+        try:
+            state = torch.load(path, map_location=device)
+        except Exception as e:  # unreadable / not a torch file
+            print(f"  [checkpoint] could not read arch metadata: {e}")
+            return None
+        if isinstance(state, dict) and state.get("format") == CI_RCT._CKPT_FORMAT:
+            arch = state.get("arch")
+            return arch if isinstance(arch, dict) else None
+        return None
