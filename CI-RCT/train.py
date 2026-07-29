@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
         description="Train CI-RCT: Causal Intervention-Based Root Cause Tracing"
     )
     parser.add_argument("--dataset", type=str, default="dblp",
-                        choices=["dblp", "acm", "imdb", "elliptic", "elliptic++", "crypto", "unsw_nb15"])
+                        choices=["dblp", "acm", "imdb", "elliptic", "elliptic++", "crypto", "unsw_nb15", "unsw_mg24"])
     parser.add_argument("--data_root", type=str, default="data")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -95,6 +95,38 @@ def parse_args() -> argparse.Namespace:
                         help="Number of wallet hops from labeled tx (default 2).")
     parser.add_argument("--max_flows", type=int, default=200_000,
                         help="Max flow records for unsw_nb15 (0 = no limit).")
+    # UNSW-MG24 specific options (see DD-1 in unsw_mg24_plan.md)
+    parser.add_argument("--mg24_subsample_ddos", type=float, default=1.0,
+                        help="Fraction of ddos1 flows to retain for unsw_mg24. "
+                             "1.0 = full graph (DD-1 default); 0.1 = 10% (OOM fallback).")
+    parser.add_argument("--mg24_min_host_flows", type=int, default=5,
+                        help="External-IP host pruning threshold for unsw_mg24.")
+    parser.add_argument("--mg24_prune_external", type=lambda x: x.lower() == "true",
+                        default=True,
+                        help="Whether to prune external-only IP hosts in unsw_mg24.")
+    parser.add_argument("--mg24_split_mode", type=str, default="by_file",
+                        choices=("row", "by_file", "hybrid"),
+                        help="Train/val/test split strategy for unsw_mg24 "
+                             "(DD-8). 'row' = row-level random (data-leaky); "
+                             "'by_file' = by-file stratified (default, "
+                             "honest cross-session generalisation); "
+                             "'hybrid' = benign row-level + malicious "
+                             "by-file (production deployment scenario).")
+    parser.add_argument("--mg24_host_role", type=str, default="full",
+                        choices=("full", "no_mal_count", "zeroed",
+                                 "detection_excluded"),
+                        help="DD-8 host-feature fairness ablation:\n"
+                             "  full               baseline (incl. mal_flow_count)\n"
+                             "  no_mal_count       Fix 1: drop label-derived count\n"
+                             "  zeroed             Fix 3: zero all host features\n"
+                             "  detection_excluded Fix 4: remove host_node from HGT\n"
+                             "host_node stays in the graph for RootCauseTracer "
+                             "in all modes.")
+    parser.add_argument("--mg24_drop_features", type=str, default="",
+                        help="DD-8 Fix 5: comma-separated CICFlowMeter "
+                             "feature columns to remove from flow_node. "
+                             "Example for ablating Active timing fingerprint: "
+                             "'Active Std,Active Max,Active Mean'.")
     return parser.parse_args()
 
 
@@ -133,6 +165,55 @@ def load_dataset(name: str, root: str, **kwargs):
             os.path.join(root, "unsw_nb15"),
             max_flows=kwargs.get("max_flows", 200_000),
         )
+    if name == "unsw_mg24":
+        from utils.mg24_loader import (
+            build_edges,
+            load_mg24_data,
+            to_pyg_hetero_data,
+        )
+        mg24 = load_mg24_data(
+            root=os.path.join(root, "unsw_mg24"),
+            subsample_ddos=kwargs.get("mg24_subsample_ddos", 1.0),
+            seed=kwargs.get("seed", 42),
+            prune_external_hosts=kwargs.get("mg24_prune_external", True),
+            min_host_flows=kwargs.get("mg24_min_host_flows", 5),
+            verbose=True,
+        )
+        edges = build_edges(mg24)
+        split_mode = kwargs.get("mg24_split_mode", "by_file")
+        # DD-8 host_role → host_features_mode mapping:
+        #   "full"               → features="full"            (baseline)
+        #   "no_mal_count"       → features="no_mal_count"    (Fix 1)
+        #   "zeroed"             → features="zeroed"          (Fix 3)
+        #   "detection_excluded" → features="full" + backbone exclude (Fix 4;
+        #                          features value doesn't matter because the
+        #                          backbone drops the node type entirely).
+        host_role = kwargs.get("mg24_host_role", "full")
+        host_features_mode = (
+            host_role if host_role in ("full", "no_mal_count", "zeroed")
+            else "full"
+        )
+        drop_raw = kwargs.get("mg24_drop_features", "") or ""
+        flow_features_exclude = [
+            c.strip() for c in drop_raw.split(",") if c.strip()
+        ]
+        print(
+            f"  Split mode: {split_mode} (DD-8)\n"
+            f"  Host role:  {host_role}  "
+            f"(features={host_features_mode})"
+        )
+        if flow_features_exclude:
+            print(f"  Dropping flow features (DD-8 Fix 5): "
+                  f"{flow_features_exclude}")
+        hd = to_pyg_hetero_data(
+            mg24, edges,
+            seed=kwargs.get("seed", 42),
+            split_mode=split_mode,
+            host_features_mode=host_features_mode,
+            flow_features_exclude=flow_features_exclude or None,
+        )
+        # DD-3 primary target: flow_node (main detection task; baseline-comparable).
+        return hd, "flow_node"
     raise ValueError(f"Unknown dataset: {name!r}")
 
 
@@ -140,10 +221,17 @@ def load_dataset(name: str, root: str, **kwargs):
 
 def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
                       target_node, device, type_offsets, target_type,
-                      class_weight=None):
+                      class_weight=None, multi_task_labels=None):
     """
     Single training step without GAN (Phase 1).
     L_total = L_detection + λ2 · L_stability + λ3 · L_ncm
+
+    Args:
+        multi_task_labels: Optional {node_type: label_tensor}. When provided,
+            HeteroNCM's supervision uses each edge's destination type's label
+            instead of assuming dst is the target type. Required for MG24
+            (DD-3) so `host→process`, `device→measurement`, etc. contribute
+            real BCE supervision instead of being silently skipped.
     """
     model.train()
     optimizer.zero_grad()
@@ -182,11 +270,17 @@ def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
 
     model._prev_phi = dict(phi_current)
 
-    # L_ncm: supervise NCM to predict fraud probability from parent embeddings
+    # L_ncm: supervise NCM to predict the destination node's binary label.
+    # For MG24 (DD-3), `multi_task_labels` lets every labelled dst type
+    # (flow / process / measurement) provide BCE signal — without this, all
+    # edges whose dst is not the primary target type would be silently
+    # skipped and the NCM loss would plateau (observed in pilot run).
     ncm_loss = model.hetero_ncm.supervised_ncm_loss(
         flat_h, causal_graph, labels, type_offsets[target_type],
         wallet_labels=data["wallet"].y if hasattr(data["wallet"], "y") else None,
         wallet_type_offset=type_offsets.get("wallet", 0),
+        multi_task_labels=multi_task_labels,
+        type_offsets=type_offsets if multi_task_labels is not None else None,
     )
 
     total_loss = (
@@ -343,6 +437,13 @@ def main() -> None:
         fraud_subgraph=args.fraud_subgraph,
         fraud_subgraph_hops=args.fraud_subgraph_hops,
         max_flows=args.max_flows,
+        mg24_subsample_ddos=args.mg24_subsample_ddos,
+        mg24_min_host_flows=args.mg24_min_host_flows,
+        mg24_prune_external=args.mg24_prune_external,
+        mg24_split_mode=args.mg24_split_mode,
+        mg24_host_role=args.mg24_host_role,
+        mg24_drop_features=args.mg24_drop_features,
+        seed=args.seed,
     )
 
     # Subsample graph before moving to GPU to avoid OOM on large datasets
@@ -426,6 +527,12 @@ def main() -> None:
 
     # --- Model ---
     node_feature_dim = in_channels_dict.get(target_type)
+    # DD-8 Fix 4: when --mg24_host_role=detection_excluded, drop host_node
+    # from HGT message passing (graph stays intact for RootCauseTracer).
+    backbone_exclude_node_types = []
+    if args.dataset == "unsw_mg24" and args.mg24_host_role == "detection_excluded":
+        backbone_exclude_node_types = ["host_node"]
+        print(f"  Detection graph excludes: {backbone_exclude_node_types} (DD-8 Fix 4)")
     model = CI_RCT(
         config=config,
         metadata=data.metadata(),
@@ -433,6 +540,7 @@ def main() -> None:
         node_feature_dim=node_feature_dim if args.use_gan else None,
         use_gan=args.use_gan,
         num_classes=num_classes,
+        backbone_exclude_node_types=backbone_exclude_node_types,
     ).to(device)
 
     # --- Optimisers ---
@@ -472,6 +580,21 @@ def main() -> None:
             # Fallback: use all training nodes
             fraud_features = data[target_type].x[train_mask].to(device)
 
+    # --- Multi-task labels for HeteroNCM supervision (DD-3, MG24-only) ---
+    # Every labelled node type with `y` attached contributes BCE supervision
+    # for its incoming causal edges. For datasets with only a single labelled
+    # type (Elliptic++, NB15, DBLP) this remains None and the legacy
+    # single-task / wallet→tx path in supervised_ncm_loss() is used.
+    multi_task_labels = None
+    if args.dataset == "unsw_mg24":
+        multi_task_labels = {
+            ntype: data[ntype].y
+            for ntype in data.node_types
+            if hasattr(data[ntype], "y") and data[ntype].y is not None
+        }
+        labelled_types = sorted(multi_task_labels.keys())
+        print(f"  Multi-task NCM supervision: {labelled_types}")
+
     # --- Training loop ---
     mode_str = "Phase 2 (GAN)" if args.use_gan else "Phase 1 (No GAN)"
     print(f"\nTraining [{mode_str}] for {args.epochs} epochs on {device}...")
@@ -485,7 +608,8 @@ def main() -> None:
             total_loss, det_loss, stab_loss, ncm_loss = train_step_no_gan(
                 model, data, labels, train_mask, optimizer_backbone,
                 causal_graph, target_node, device,
-                type_offsets, target_type, class_weight=class_weight
+                type_offsets, target_type, class_weight=class_weight,
+                multi_task_labels=multi_task_labels,
             )
             loss_str = (f"Loss {total_loss:.4f} "
                         f"(det={det_loss:.4f}, stab={stab_loss:.2e}, ncm={ncm_loss:.4f})")
