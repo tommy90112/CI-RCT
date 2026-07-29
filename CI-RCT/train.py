@@ -32,8 +32,13 @@ from torch_geometric.data import HeteroData
 
 from configs.config import CI_RCT_Config
 from model.ci_rct import CI_RCT
-from utils.data_utils import build_typed_causal_graph_from_hetero, compute_type_offsets
-from utils.metrics import compute_classification_metrics
+from utils.data_utils import (
+    build_typed_causal_graph_from_hetero,
+    compute_type_offsets,
+    default_blocked_edge_types,
+    default_rare_edge_types,
+)
+from utils.metrics import compute_classification_metrics, compute_fraud_f1
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
@@ -55,6 +60,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_hops", type=int, default=5)
     parser.add_argument("--ce_threshold", type=float, default=0.1)
     parser.add_argument("--node_limit", type=int, default=500)
+    # B1: rare-edge guarantee — see _expand_rare_edge_chain in data_utils.py.
+    # Train-time NCM must see the same sparse-edge subgraph as eval, otherwise
+    # the bridge / process / device edges never accumulate gradient.
+    # Mirrors evaluate.py's --rare_edge_types / --rare_reserve / --rare_max_hops.
+    parser.add_argument(
+        "--rare_edge_types", type=str, default="",
+        help="Comma-separated edge-type strings ('src__to__dst') the BFS "
+             "must preserve. Empty string falls back to the per-dataset "
+             "default; pass 'none' to disable the rare-edge pass entirely.",
+    )
+    parser.add_argument(
+        "--rare_reserve", type=int, default=100,
+        help="Node budget reserved for the rare-edge chain expansion pass.",
+    )
+    parser.add_argument(
+        "--rare_max_hops", type=int, default=5,
+        help="Maximum chain depth followed during the rare-edge pass.",
+    )
+    parser.add_argument(
+        "--blocked_edge_types", type=str, default="",
+        help="Comma-separated edge-type strings dropped from BOTH the BFS "
+             "expansion and the final causal graph. Symmetric to "
+             "--rare_edge_types. Empty falls back to "
+             "default_blocked_edge_types(dataset); 'none' disables.",
+    )
     # Joint loss weights
     parser.add_argument("--lambda_adversarial", type=float, default=0.1,
                         help="λ1: weight of WGAN-GP adversarial loss")
@@ -62,6 +92,13 @@ def parse_args() -> argparse.Namespace:
                         help="λ2: weight of Causal Shapley stability loss")
     parser.add_argument("--lambda_ncm", type=float, default=0.1,
                         help="λ3: weight of NCM supervision (BCE) loss")
+    parser.add_argument("--ncm_edge_balance", type=str, default="none",
+                        choices=("none", "uniform", "sqrt", "inverse"),
+                        help="Per-edge-type NCM loss balancing (DD-17). "
+                             "'sqrt' is recommended for highly imbalanced "
+                             "hetero-graphs (e.g. MG24 host→flow has 200× "
+                             "more edges than process→host, leaving sparse "
+                             "edges' NCM CE≈0.001 at eval time).")
     # GAN settings
     parser.add_argument("--use_gan", type=lambda x: x.lower() == "true",
                         default=False,
@@ -70,6 +107,14 @@ def parse_args() -> argparse.Namespace:
                         help="Discriminator updates per Generator update (WGAN)")
     parser.add_argument("--gp_weight", type=float, default=10.0)
     parser.add_argument("--noise_std", type=float, default=0.05)
+    # Model selection / early stopping (imbalance-aware)
+    parser.add_argument(
+        "--early_stop_metric", type=str, default="macro_f1",
+        choices=["macro_f1", "fraud_f1", "weighted_f1"],
+        help="Val metric used to pick the best checkpoint. macro_f1 (default, "
+             "legacy behaviour) dilutes the minority class; fraud_f1 selects on "
+             "the fraud class directly; weighted_f1 = (macro_f1 + fraud_f1) / 2.",
+    )
     # Misc
     parser.add_argument("--eval_every", type=int, default=10)
     parser.add_argument("--device", type=str, default="cpu")
@@ -98,20 +143,23 @@ def parse_args() -> argparse.Namespace:
     # UNSW-MG24 specific options (see DD-1 in unsw_mg24_plan.md)
     parser.add_argument("--mg24_subsample_ddos", type=float, default=1.0,
                         help="Fraction of ddos1 flows to retain for unsw_mg24. "
-                             "1.0 = full graph (DD-1 default); 0.1 = 10% (OOM fallback).")
+                             "1.0 = full graph (DD-1 default); 0.1 = 10%% (OOM fallback).")
     parser.add_argument("--mg24_min_host_flows", type=int, default=5,
                         help="External-IP host pruning threshold for unsw_mg24.")
     parser.add_argument("--mg24_prune_external", type=lambda x: x.lower() == "true",
                         default=True,
                         help="Whether to prune external-only IP hosts in unsw_mg24.")
     parser.add_argument("--mg24_split_mode", type=str, default="by_file",
-                        choices=("row", "by_file", "hybrid"),
+                        choices=("row", "by_file", "hybrid", "by_incident"),
                         help="Train/val/test split strategy for unsw_mg24 "
-                             "(DD-8). 'row' = row-level random (data-leaky); "
-                             "'by_file' = by-file stratified (default, "
-                             "honest cross-session generalisation); "
+                             "(DD-8/DD-13). 'row' = row-level random "
+                             "(data-leaky); 'by_file' = by-file stratified "
+                             "(default, honest cross-session generalisation); "
                              "'hybrid' = benign row-level + malicious "
-                             "by-file (production deployment scenario).")
+                             "by-file (production deployment scenario); "
+                             "'by_incident' = attack_type aligned across "
+                             "flow/audit modalities (DD-13, cuts cross-modal "
+                             "label leakage).")
     parser.add_argument("--mg24_host_role", type=str, default="full",
                         choices=("full", "no_mal_count", "zeroed",
                                  "detection_excluded"),
@@ -221,7 +269,8 @@ def load_dataset(name: str, root: str, **kwargs):
 
 def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
                       target_node, device, type_offsets, target_type,
-                      class_weight=None, multi_task_labels=None):
+                      class_weight=None, multi_task_labels=None,
+                      ncm_edge_balance="none"):
     """
     Single training step without GAN (Phase 1).
     L_total = L_detection + λ2 · L_stability + λ3 · L_ncm
@@ -281,6 +330,7 @@ def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
         wallet_type_offset=type_offsets.get("wallet", 0),
         multi_task_labels=multi_task_labels,
         type_offsets=type_offsets if multi_task_labels is not None else None,
+        edge_balance=ncm_edge_balance,
     )
 
     total_loss = (
@@ -365,9 +415,18 @@ def evaluate_split(model, data, labels, mask):
         scores = probs[:, 1]
     else:
         scores = probs
-    return compute_classification_metrics(
-        preds.cpu(), labels[mask].cpu(), scores.cpu()
-    )
+    y_true = labels[mask].cpu()
+    preds_cpu = preds.cpu()
+    metrics = compute_classification_metrics(preds_cpu, y_true, scores.cpu())
+    # Imbalance-aware extras for model selection (binary detection only).
+    if probs.size(1) == 2:
+        fraud_f1 = compute_fraud_f1(y_true, preds_cpu)
+        metrics["fraud_f1"] = fraud_f1
+        metrics["weighted_f1"] = 0.5 * metrics["f1"] + 0.5 * fraud_f1
+    else:
+        metrics["fraud_f1"] = metrics["f1"]
+        metrics["weighted_f1"] = metrics["f1"]
+    return metrics
 
 
 # ── Graph subsampling ───────────────────────────────────────────────────────────
@@ -496,10 +555,46 @@ def main() -> None:
     ]
     seed_ids = fraud_global_ids[:20]  # up to 20 fraud seeds for multi-source BFS
 
+    # B1: same rare-edge handling as evaluate.py — explicit > default > none.
+    raw_rare = args.rare_edge_types.strip()
+    if raw_rare.lower() == "none":
+        rare_edge_types = set()
+        rare_src = "disabled"
+    elif raw_rare:
+        rare_edge_types = {t.strip() for t in raw_rare.split(",") if t.strip()}
+        rare_src = "explicit"
+    else:
+        rare_edge_types = default_rare_edge_types(args.dataset)
+        rare_src = "dataset-default"
+    if rare_edge_types:
+        print(f"  [BFS] rare edge types ({len(rare_edge_types)}, "
+              f"reserve={args.rare_reserve}, "
+              f"max_hops={args.rare_max_hops}, src={rare_src}): "
+              f"{sorted(rare_edge_types)}")
+
+    # Symmetric: --blocked_edge_types (replaces the legacy block_addr_to_addr).
+    raw_b = args.blocked_edge_types.strip()
+    if raw_b.lower() == "none":
+        blocked_edge_types = set()
+        blocked_src = "disabled"
+    elif raw_b:
+        blocked_edge_types = {t.strip() for t in raw_b.split(",") if t.strip()}
+        blocked_src = "explicit"
+    else:
+        blocked_edge_types = default_blocked_edge_types(args.dataset)
+        blocked_src = "dataset-default"
+    if blocked_edge_types:
+        print(f"  [BFS] blocked edge types ({len(blocked_edge_types)}, "
+              f"src={blocked_src}): {sorted(blocked_edge_types)}")
+
     causal_graph = build_typed_causal_graph_from_hetero(
         data,
         seed_node_ids=seed_ids if seed_ids else None,
         node_limit=config.node_limit,
+        blocked_edge_types=blocked_edge_types if blocked_edge_types else None,
+        rare_edge_types=rare_edge_types if rare_edge_types else None,
+        rare_reserve=args.rare_reserve,
+        rare_max_hops=args.rare_max_hops,
     )
     topo_order = causal_graph.topological_order()
 
@@ -598,8 +693,11 @@ def main() -> None:
     # --- Training loop ---
     mode_str = "Phase 2 (GAN)" if args.use_gan else "Phase 1 (No GAN)"
     print(f"\nTraining [{mode_str}] for {args.epochs} epochs on {device}...")
-    best_val_f1 = 0.0
+    sel_key = {"macro_f1": "f1", "fraud_f1": "fraud_f1",
+               "weighted_f1": "weighted_f1"}[args.early_stop_metric]
+    best_val_score = 0.0
     ckpt_path = os.path.join(args.checkpoint_dir, f"ci_rct_{args.dataset}_best.pt")
+    print(f"  Model selection metric: {args.early_stop_metric} (val['{sel_key}'])")
 
     model.reset_phi_buffer()  # initialise once before training starts
     for epoch in range(1, args.epochs + 1):
@@ -610,6 +708,7 @@ def main() -> None:
                 causal_graph, target_node, device,
                 type_offsets, target_type, class_weight=class_weight,
                 multi_task_labels=multi_task_labels,
+                ncm_edge_balance=args.ncm_edge_balance,
             )
             loss_str = (f"Loss {total_loss:.4f} "
                         f"(det={det_loss:.4f}, stab={stab_loss:.2e}, ncm={ncm_loss:.4f})")
@@ -629,18 +728,21 @@ def main() -> None:
             val_metrics = evaluate_split(model, data, labels, val_mask)
             print(
                 f"Epoch {epoch:03d} | {loss_str} | "
-                f"Val F1={val_metrics['f1']:.4f}  AUC={val_metrics['auc']:.4f}"
+                f"Val macroF1={val_metrics['f1']:.4f}  fraudF1={val_metrics['fraud_f1']:.4f}  "
+                f"AUC={val_metrics['auc']:.4f}"
             )
-            if val_metrics["f1"] > best_val_f1:
-                best_val_f1 = val_metrics["f1"]
+            if val_metrics[sel_key] > best_val_score:
+                best_val_score = val_metrics[sel_key]
                 model.save_checkpoint(ckpt_path)
-                print(f"  ↑ Best checkpoint saved → {ckpt_path}")
+                print(f"  ↑ Best checkpoint saved (val {args.early_stop_metric}"
+                      f"={best_val_score:.4f}) → {ckpt_path}")
 
     # --- Final test ---
     print("\nLoading best checkpoint for test evaluation...")
     model.load_checkpoint(ckpt_path)
     test_metrics = evaluate_split(model, data, labels, test_mask)
-    print(f"Test  F1={test_metrics['f1']:.4f}  AUC={test_metrics['auc']:.4f}")
+    print(f"Test  macroF1={test_metrics['f1']:.4f}  "
+          f"fraudF1={test_metrics['fraud_f1']:.4f}  AUC={test_metrics['auc']:.4f}")
 
 
 if __name__ == "__main__":

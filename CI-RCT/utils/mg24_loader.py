@@ -27,9 +27,9 @@ from __future__ import annotations
 
 import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from typing import Dict, List, Literal, Optional, Set, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -177,6 +177,11 @@ class MG24Data:
     devices: pd.DataFrame
     measurements: pd.DataFrame
 
+    # DD-11: per-audit-log set of remote IPv4 addresses extracted from
+    # SOCKADDR records (used to build the audit_source ↔ ip_host bridge
+    # that connects the network island to the SCADA island).
+    audit_source_ips: Dict[str, Set[str]] = field(default_factory=dict)
+
     def summary(self) -> str:
         """Return a one-line summary of node counts per type."""
         return (
@@ -229,6 +234,12 @@ def load_mg24_data(
     procmon = _load_procmon(root, verbose=verbose)
     power = _load_power(root, verbose=verbose)
 
+    # ── DD-11 bridge: per-log SOCKADDR IP extraction ──────────────
+    # The bundled audit_parser drops SOCKADDR records (it only keeps
+    # SYSCALL / PATH / SOCKETCALL), so we re-parse the raw .log files
+    # here in a focused pass that only collects IPv4 destinations.
+    audit_source_ips = _extract_audit_log_ips(root, verbose=verbose)
+
     # ── 5 node tables ─────────────────────────────────────────────
     hosts = _build_host_table(flows, audit, procmon)
     hosts = _enrich_host_table(hosts, flows, procmon)
@@ -244,6 +255,7 @@ def load_mg24_data(
             flows=flows, audit=audit, procmon=procmon, power=power,
             hosts=hosts, processes=processes, flow_nodes=flow_nodes,
             devices=devices, measurements=measurements,
+            audit_source_ips=audit_source_ips,
         )
         print(f"=== Done. Node counts: {data.summary()} ===")
         return data
@@ -252,7 +264,102 @@ def load_mg24_data(
         flows=flows, audit=audit, procmon=procmon, power=power,
         hosts=hosts, processes=processes, flow_nodes=flow_nodes,
         devices=devices, measurements=measurements,
+        audit_source_ips=audit_source_ips,
     )
+
+
+# ── DD-11 bridge helper: audit log → remote IPv4 set ─────────────────────────
+
+
+_SOCKADDR_AF_INET_PREFIX = "0200"   # AF_INET in little-endian hex
+_SADDR_RE = re.compile(r"saddr=([0-9A-Fa-f]+)")
+
+
+def _extract_audit_log_ips(
+    root: Path,
+    verbose: bool = True,
+) -> Dict[str, Set[str]]:
+    """
+    Extract per-audit-log unique remote IPv4 addresses from SOCKADDR records.
+
+    DD-11 bridges the two disjoint islands of the kill-chain DAG (the
+    network-side ip-kind hosts and the SCADA-side audit_source-kind hosts)
+    by adding edges audit_source_host → ip_host wherever an audit log
+    recorded a SOCKADDR with that destination IP.
+
+    The bundled audit_parser silently drops SOCKADDR records (it keeps only
+    SYSCALL / PATH / SOCKETCALL — see audit_parser._OUTPUT_COLUMNS), so this
+    function does a focused single-pass scan of the raw .log files that
+    only collects IPv4 sa_family records.
+
+    SOCKADDR hex layout (Linux audit, AF_INET case):
+        bytes 0-1 : sa_family (0x0002, little-endian → '0200')
+        bytes 2-3 : port      (big-endian uint16)
+        bytes 4-7 : IPv4 addr (big-endian, dotted)
+        bytes 8-15: zero padding
+
+    Non-IPv4 families (AF_UNIX 0x0100, AF_INET6 0x0A00, …) are skipped.
+    Loopback (127.0.0.0/8) and the unspecified address (0.0.0.0) are
+    filtered because they cannot meaningfully bridge to a flow's Src IP.
+
+    Returns:
+        Dict[str, Set[str]] keyed by log file basename
+        (e.g. "audit_MITM1.log") — matches `source_file` column added by
+        audit_parser.parse_audit_dir().
+    """
+    result: Dict[str, Set[str]] = {}
+
+    candidates: List[Path] = []
+    mal_dir = root / "Malicious system call traces"
+    if mal_dir.is_dir():
+        candidates.extend(sorted(mal_dir.glob("audit_*.log")))
+    ben_dir = root / "Benign system call traces"
+    if ben_dir.is_dir():
+        for dept_dir in sorted(ben_dir.iterdir()):
+            if not dept_dir.is_dir() or dept_dir.name == "Microgrid department":
+                continue
+            candidates.extend(sorted(dept_dir.glob("*.log")))
+
+    total_records = 0
+    total_ipv4 = 0
+    for log_path in candidates:
+        ips: Set[str] = set()
+        try:
+            with open(log_path, "r", errors="ignore") as fh:
+                for line in fh:
+                    if "type=SOCKADDR" not in line:
+                        continue
+                    total_records += 1
+                    m = _SADDR_RE.search(line)
+                    if not m:
+                        continue
+                    hexstr = m.group(1)
+                    if len(hexstr) < 16:
+                        continue
+                    if hexstr[:4].upper() != _SOCKADDR_AF_INET_PREFIX.upper():
+                        continue
+                    try:
+                        b = bytes.fromhex(hexstr[:16])
+                    except ValueError:
+                        continue
+                    ip = ".".join(str(x) for x in b[4:8])
+                    if ip.startswith("127.") or ip == "0.0.0.0":
+                        continue
+                    ips.add(ip)
+                    total_ipv4 += 1
+        except OSError as e:
+            if verbose:
+                print(f"  [bridge] failed to read {log_path.name}: {e}")
+            continue
+        if ips:
+            result[log_path.name] = ips
+
+    if verbose:
+        n_pairs = sum(len(v) for v in result.values())
+        print(f"[bridge] SOCKADDR scan: {total_records:,} records, "
+              f"{total_ipv4:,} IPv4 decoded; {len(result)} logs contributed "
+              f"{n_pairs} (log,IP) pairs")
+    return result
 
 
 # ── Modality loaders ──────────────────────────────────────────────────────────
@@ -880,43 +987,78 @@ def _read_flow_csv(path: Path) -> pd.DataFrame:
 # Canonical edge type triples following PyG convention: (src_type, rel, dst_type)
 EdgeKey = Tuple[str, str, str]
 
-EDGE_HOST_RUNS_PROCESS: EdgeKey = ("host_node", "runs", "process_node")
-EDGE_PROCESS_FORKS_PROCESS: EdgeKey = ("process_node", "forks", "process_node")
-EDGE_FLOW_TARGETS_HOST: EdgeKey = ("flow_node", "targets", "host_node")
 EDGE_HOST_SOURCES_FLOW: EdgeKey = ("host_node", "sources", "flow_node")
+EDGE_PROCESS_RUNS_ON_HOST: EdgeKey = ("process_node", "runs_on", "host_node")
+EDGE_PROCESS_FORKS_PROCESS: EdgeKey = ("process_node", "forks", "process_node")
+EDGE_DEVICE_HOSTS_PROCESS: EdgeKey = ("device_node", "hosts", "process_node")
 EDGE_DEVICE_REPORTS_MEASUREMENT: EdgeKey = ("device_node", "reports", "measurement_node")
+# DD-11: bridge edge linking the audit-source island to the network-IP island.
+EDGE_HOST_RESOLVES_TO_IP: EdgeKey = ("host_node", "resolves_to_ip", "host_node")
 
 
 def build_edges(data: MG24Data) -> Dict[EdgeKey, np.ndarray]:
     """
-    Construct edge_index arrays for all edge types.
+    Construct edge_index arrays for all edge types
+    (DD-10 reversed kill-chain DAG + DD-11 audit↔ip bridge).
 
     Returns a dict keyed by (src_type, rel, dst_type) PyG triples; each value
     is an int64 array of shape (2, num_edges) where row 0 is source node
     indices and row 1 is destination node indices.
 
-    Phase 1 implements 5 edge types listed in unsw_mg24_plan.md § 4.2.
-    Deferred edges (mark in plan as TODO):
-        - process -[generates]→ flow      (cross-modal, requires host↔IP map)
-        - host -[pivots_to]→ host         (from pivot pcap analysis)
-        - flow -[commands]→ device        (port-based, requires SCADA port catalog)
+    Kill-chain DAG ordering (DD-10): edges point from upstream cause →
+    downstream effect, so backward BFS from a labelled target (e.g. fraud
+    flow_node) can reach its causal parents:
+
+        device_node ──→ process_node ──→ host_node ──→ flow_node
+                              │                   ↘
+                              └→ process_forks      → (downstream)
+        device_node ──→ measurement_node
+
+    DD-11 bridge: audit_source-kind hosts → ip-kind hosts wherever the
+    audit log recorded a SOCKADDR with that destination IP. Connects the
+    two previously disjoint islands (network ip-hosts vs SCADA audit-source
+    hosts) so backward BFS from a fraud flow can reach the audited host,
+    its process, and from there the device/measurement subgraph.
+
+    Why DD-10 reversed vs. DD-9: DD-9 used flow→host→process→device, making
+    flow_node a DAG source with no parents (trace stuck at depth=0;
+    see eval_dag_v1.log). DD-10 flips this to attacker-origin direction.
+
+    Edge details:
+        host → flow         uses Src IP (host as flow origin); replaces
+                            DD-9's flow → host (Dst IP).
+        process → host      process runs on host (DD-10).
+        device → process    device hosts process (DD-10).
+        device → measurement, process → process: unchanged.
+        host → host         DD-11 audit_source → ip_host bridge
+                            (type-level self-loop; src/dst are different
+                            host nodes of different sub-kinds).
+
+    Deferred edges (would require additional inference NOT present in raw
+    dataset columns):
+        - procmon hostname ↔ ip   (procmon CSV records local hostname
+                                   `L-79GJ5Y2`, not remote IPs of its
+                                   connections; would need IP-by-hostname
+                                   lookup or testbed config)
+        - host → host (lateral)   (would require pivot-pcap semantics)
     """
     edges: Dict[EdgeKey, np.ndarray] = {}
-    edges[EDGE_HOST_RUNS_PROCESS] = _build_host_runs_process(data)
-    edges[EDGE_PROCESS_FORKS_PROCESS] = _build_process_forks_process(data)
-
-    flow_targets = _build_flow_targets_host(data)
-    edges[EDGE_FLOW_TARGETS_HOST] = flow_targets
-    # Build the reverse `sources` edge from the same Src IP lookup.
     edges[EDGE_HOST_SOURCES_FLOW] = _build_host_sources_flow(data)
-
+    edges[EDGE_PROCESS_RUNS_ON_HOST] = _build_process_runs_on_host(data)
+    edges[EDGE_PROCESS_FORKS_PROCESS] = _build_process_forks_process(data)
+    edges[EDGE_DEVICE_HOSTS_PROCESS] = _build_device_hosts_process(data)
     edges[EDGE_DEVICE_REPORTS_MEASUREMENT] = _build_device_reports_measurement(data)
+    edges[EDGE_HOST_RESOLVES_TO_IP] = _build_host_resolves_to_ip(data)
     return edges
 
 
-def _build_host_runs_process(data: MG24Data) -> np.ndarray:
+def _build_process_runs_on_host(data: MG24Data) -> np.ndarray:
     """
-    Edges from host_node to process_node.
+    Edges from process_node to host_node (DD-10: reversed direction).
+
+    Causal interpretation: a process is the active agent; running it on a
+    host can compromise that host. The edge therefore points from the
+    process (potential attack vector) to the host (affected resource).
 
     Procmon-derived processes carry host_ref like "host:central"; these match
     a host_node directly. Audit-derived processes carry host_ref like
@@ -934,8 +1076,8 @@ def _build_host_runs_process(data: MG24Data) -> np.ndarray:
     if not valid.any():
         return _empty_edge()
 
-    src = proc_host_idx[valid].astype(np.int64).values
-    dst = data.processes.loc[valid, "node_idx"].astype(np.int64).values
+    src = data.processes.loc[valid, "node_idx"].astype(np.int64).values
+    dst = proc_host_idx[valid].astype(np.int64).values
     return np.stack([src, dst])
 
 
@@ -998,38 +1140,19 @@ def _build_process_forks_process(data: MG24Data) -> np.ndarray:
     return arr
 
 
-def _build_flow_targets_host(data: MG24Data) -> np.ndarray:
-    """
-    Edges flow_node → host_node, where host is the flow's Dst IP.
-
-    Flows whose Dst IP was pruned in Stage 2a are silently dropped from the
-    edge set (the flow_node still exists in the graph, just disconnected on
-    this edge type).
-    """
-    if data.flow_nodes.empty or data.flows.empty or data.hosts.empty:
-        return _empty_edge()
-
-    ip_hosts = data.hosts[data.hosts["host_kind"] == "ip"]
-    if ip_hosts.empty or "Dst IP" not in data.flows.columns:
-        return _empty_edge()
-
-    ip_to_idx = pd.Series(ip_hosts["node_idx"].values, index=ip_hosts["raw_value"].values)
-    target_idx = data.flows["Dst IP"].astype(str).map(ip_to_idx)
-    valid = target_idx.notna()
-    if not valid.any():
-        return _empty_edge()
-
-    src = data.flow_nodes.loc[valid.values, "node_idx"].astype(np.int64).values
-    dst = target_idx[valid].astype(np.int64).values
-    return np.stack([src, dst])
-
-
 def _build_host_sources_flow(data: MG24Data) -> np.ndarray:
     """
-    Edges host_node → flow_node, where host is the flow's Src IP.
+    Edges host_node → flow_node, where host is the flow's Src IP
+    (DD-10: reversed direction + switched from Dst IP to Src IP).
 
-    Symmetric to _build_flow_targets_host; lets the GNN propagate signal
-    in both directions across the flow/host boundary.
+    Causal interpretation: the host at the flow's Src IP is the originator
+    of that flow — if the flow is malicious, the Src-IP host is the
+    upstream cause. This makes flow_node have a non-empty parent set so
+    backward BFS from a fraud flow can reach the responsible host.
+
+    Flows whose Src IP was pruned in Stage 2a are silently dropped from the
+    edge set (the flow_node still exists in the graph, just disconnected on
+    this edge type).
     """
     if data.flow_nodes.empty or data.flows.empty or data.hosts.empty:
         return _empty_edge()
@@ -1049,6 +1172,61 @@ def _build_host_sources_flow(data: MG24Data) -> np.ndarray:
     return np.stack([src, dst])
 
 
+def _build_device_hosts_process(data: MG24Data) -> np.ndarray:
+    """
+    Edges device_node → process_node (DD-10: reversed direction).
+
+    Causal interpretation: the SCADA device is the physical substrate;
+    processes run on top of it, so the device is the upstream cause of
+    those processes existing. Backward BFS from a malicious process can
+    reach the underlying device.
+
+    Pure mapping from existing dataset columns — NO inferred information:
+      - Procmon CSV records `host_id ∈ {central, local1, local2}`
+      - Dataset has device_node entries `device_id ∈ {local1, local2}`
+      - We connect:
+          device:local1  → process on host:local1
+          device:local2  → process on host:local2
+          {device:local1, device:local2} → process on host:central
+              (central is the SCADA aggregator — see _PROCMON_FILES)
+
+    Linux-audit-derived processes carry host_ref="audit:<filename>" and are
+    NOT connected here, because the dataset does not provide a mapping
+    from audit-source filenames to physical SCADA devices.
+    """
+    if data.processes.empty or data.devices.empty:
+        return _empty_edge()
+
+    procmon_processes = data.processes[data.processes["source"] == "procmon"]
+    if procmon_processes.empty:
+        return _empty_edge()
+
+    device_lookup = pd.Series(
+        data.devices["node_idx"].values, index=data.devices["device_id"].values
+    )
+
+    src_list: List[int] = []
+    dst_list: List[int] = []
+    for _, row in procmon_processes.iterrows():
+        host_id = row["host_ref"].replace("host:", "")  # "host:local1" → "local1"
+        proc_idx = int(row["node_idx"])
+        if host_id == "central":
+            # Central SCADA aggregator: both local sub-devices host
+            # central processes.
+            for d in ("local1", "local2"):
+                if d in device_lookup.index:
+                    src_list.append(int(device_lookup[d]))
+                    dst_list.append(proc_idx)
+        elif host_id in device_lookup.index:
+            src_list.append(int(device_lookup[host_id]))
+            dst_list.append(proc_idx)
+
+    if not src_list:
+        return _empty_edge()
+    return np.stack([np.array(src_list, dtype=np.int64),
+                     np.array(dst_list, dtype=np.int64)])
+
+
 def _build_device_reports_measurement(data: MG24Data) -> np.ndarray:
     """
     Edges device_node → measurement_node. Trivial: each measurement_node
@@ -1063,6 +1241,66 @@ def _build_device_reports_measurement(data: MG24Data) -> np.ndarray:
     src = data.measurements["device_id"].map(dev_lookup).astype(np.int64).values
     dst = data.measurements["node_idx"].astype(np.int64).values
     return np.stack([src, dst])
+
+
+def _build_host_resolves_to_ip(data: MG24Data) -> np.ndarray:
+    """
+    DD-11 bridge edges: audit_source host → ip host.
+
+    For each audit log, the SOCKADDR records contain destination IPv4
+    addresses that the audited host made connections to. We treat the
+    audit_source host as the upstream cause for any ip-kind host whose
+    IP appears in that log's SOCKADDR set. This adds a parent for
+    ip-kind hosts so backward BFS from a fraud flow can cross from
+    the network island into the SCADA / audit island.
+
+    Edge direction (audit_source → ip_host) chosen so that
+    parents(ip_host) ⊇ {audit_source}, enabling the depth ≥ 2
+    backward trace fraud_flow → Src-IP-host → audit_source_host →
+    process → … instead of bottoming out at the Src-IP-host.
+
+    Silently skips any (log, ip) pair where either the audit_source
+    host or the ip host is missing from the pruned host table.
+    """
+    if data.hosts.empty or not data.audit_source_ips:
+        return _empty_edge()
+
+    audit_hosts = data.hosts[data.hosts["host_kind"] == "audit_source"]
+    ip_hosts = data.hosts[data.hosts["host_kind"] == "ip"]
+    if audit_hosts.empty or ip_hosts.empty:
+        return _empty_edge()
+
+    audit_lookup = pd.Series(
+        audit_hosts["node_idx"].values, index=audit_hosts["raw_value"].values
+    )
+    ip_lookup = pd.Series(
+        ip_hosts["node_idx"].values, index=ip_hosts["raw_value"].values
+    )
+
+    src_list: List[int] = []
+    dst_list: List[int] = []
+    seen: set = set()
+    for log_name, ips in data.audit_source_ips.items():
+        # `raw_value` on audit_source hosts == log filename (set in
+        # _build_host_table from audit.source_file). Both keys are str.
+        if log_name not in audit_lookup.index:
+            continue
+        src_idx = int(audit_lookup[log_name])
+        for ip in ips:
+            if ip not in ip_lookup.index:
+                continue
+            dst_idx = int(ip_lookup[ip])
+            pair = (src_idx, dst_idx)
+            if pair in seen:
+                continue
+            seen.add(pair)
+            src_list.append(src_idx)
+            dst_list.append(dst_idx)
+
+    if not src_list:
+        return _empty_edge()
+    return np.stack([np.array(src_list, dtype=np.int64),
+                     np.array(dst_list, dtype=np.int64)])
 
 
 def _empty_edge() -> np.ndarray:
@@ -1106,7 +1344,7 @@ _POWER_FEATURE_COLS: List[str] = [
 ]
 
 
-SplitMode = Literal["row", "by_file", "hybrid"]
+SplitMode = Literal["row", "by_file", "hybrid", "by_incident"]
 
 
 def to_pyg_hetero_data(
@@ -1194,11 +1432,23 @@ def to_pyg_hetero_data(
 
     # ── Train / val / test masks (stratified) ─────────────────────
     rng = np.random.default_rng(seed)
-    split_groups: Dict[str, np.ndarray] = {
-        "flow_node": _split_groups_for_flows(data.flows),
-        "process_node": _split_groups_for_processes(data.processes),
-        "measurement_node": _split_groups_for_measurements(data.measurements),
-    }
+    if split_mode == "by_incident":
+        split_groups: Dict[str, np.ndarray] = {
+            "flow_node": _incident_groups_for_flows(data.flows),
+            "process_node": _incident_groups_for_processes(data.processes),
+            "measurement_node": _incident_groups_for_measurements(data.measurements),
+        }
+        incident_split_map = _build_global_incident_split(
+            split_groups,
+            val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        )
+    else:
+        split_groups = {
+            "flow_node": _split_groups_for_flows(data.flows),
+            "process_node": _split_groups_for_processes(data.processes),
+            "measurement_node": _split_groups_for_measurements(data.measurements),
+        }
+        incident_split_map = None
     for ntype in ("flow_node", "process_node", "measurement_node"):
         labels = hd[ntype].y.numpy()
         groups = split_groups[ntype]
@@ -1206,6 +1456,7 @@ def to_pyg_hetero_data(
             labels, groups,
             val_ratio=val_ratio, test_ratio=test_ratio,
             mode=split_mode, rng=rng,
+            incident_split_map=incident_split_map,
         )
         hd[ntype].train_mask = torch.from_numpy(train_mask)
         hd[ntype].val_mask = torch.from_numpy(val_mask)
@@ -1499,6 +1750,427 @@ def _split_groups_for_measurements(measurements: pd.DataFrame) -> np.ndarray:
     return np.array([f"{dev[i]}:mal{is_mal[i]}" for i in range(len(measurements))], dtype=object)
 
 
+# ── DD-13: incident-level (cross-modal) stratified split ────────────────────
+#
+# Rationale: by_file splits each node-type independently, so a malicious
+# pcap can land in test while its paired audit log lands in train. The
+# backbone then learns the label from one modality and predicts it on the
+# other → F1 stays ~0.99 even after host_features_mode="zeroed".
+#
+# by_incident aligns split assignment across modalities by reusing the
+# `attack_type` already present on flows/audit (mapped via _ATTACK_TYPE_MAP
+# from filename stems). All rows tagged with the same attack_type — pcap,
+# audit log, derived process_node — go into the same split. Benign rows
+# fall back to per-file/per-host grouping (no cross-modal leakage risk
+# since labels are uniformly 0).
+#
+# Procmon-derived processes have no attack_type concept (one CSV per host
+# × is_malicious pair), and Power measurements live on an independent SCADA
+# modality with no network/audit overlap; both keep their by_file group key
+# under a namespace prefix that excludes them from incident alignment.
+
+
+_INCIDENT_PREFIX = "incident:"
+_BENIGN_PREFIX = "benign:"
+
+
+def _normalize_incident_stem(stem: str) -> str:
+    """
+    Normalise a file stem into a cross-modal incident core-id.
+
+    Strips the `audit_` prefix so pcap-side stems align with their
+    audit-side counterparts of the same attack execution
+    (e.g. `dos1` ↔ `audit_dos1` → `dos1`).
+
+    Why: the previous incident key was `incident:<attack_type>` — one
+    group per attack_type — so the entire attack landed in a single
+    split (L1 diagnostic showed 10/12 attack_types were exclusive to
+    train, val, or test). Including the normalised stem in the key
+    lets each attack_type's distinct executions (e.g. dos1, dos2)
+    distribute across splits while still aligning the pcap side and
+    audit side of the SAME execution to one split.
+    """
+    s = stem.lower().strip()
+    if s.startswith("audit_"):
+        s = s[len("audit_"):]
+    return s
+
+
+def _attack_type_from_audit_host_ref(host_ref: str, is_malicious: int) -> Optional[str]:
+    """
+    Reverse-derive attack_type from a process_node's host_ref string.
+
+    audit-derived host_ref takes the form "audit:<source_file>" (malicious)
+    or "audit:<dept>" (benign). For malicious rows we strip the prefix and
+    run the resulting filename through the same _stem_for_attack_lookup +
+    _ATTACK_TYPE_MAP path that _load_flows / _load_audit use.
+
+    Returns None when the row is benign or the host_ref does not resolve.
+    """
+    if is_malicious != 1:
+        return None
+    if not host_ref.startswith("audit:"):
+        return None
+    file_part = host_ref.split(":", 1)[1]
+    stem = _stem_for_attack_lookup(Path(file_part))
+    return _ATTACK_TYPE_MAP.get(stem, "other_malicious")
+
+
+def _incident_groups_for_flows(flows: pd.DataFrame) -> np.ndarray:
+    """
+    Per-row incident-group identifier for flow_node.
+
+    Malicious rows are keyed by `incident:<attack_type>:<core_stem>`
+    where core_stem is the source filename stem with the `audit_`
+    prefix stripped (see _normalize_incident_stem). This makes each
+    distinct attack execution (e.g. dos1 vs dos2) its own group while
+    still aligning the pcap and audit sides of the same execution
+    (`dos1.pcap_Flow.csv` and `audit_dos1.log` both → core_stem `dos1`).
+
+    Benign rows keep a `benign:<source_file>` key — by_file behaviour,
+    namespaced to avoid accidental collision with incident keys.
+    """
+    if flows.empty:
+        return np.array([], dtype=object)
+    is_mal = flows["is_malicious"].astype(int).values
+    attack = flows["attack_type"].fillna("unknown").astype(str).values
+    source = flows.get("source_file", pd.Series([""] * len(flows))).fillna("unknown").astype(str).values
+    out = np.empty(len(flows), dtype=object)
+    for i in range(len(flows)):
+        if is_mal[i] == 1:
+            stem = _stem_for_attack_lookup(Path(source[i]))
+            core_id = _normalize_incident_stem(stem)
+            out[i] = f"{_INCIDENT_PREFIX}{attack[i]}:{core_id}"
+        else:
+            out[i] = f"{_BENIGN_PREFIX}{source[i]}"
+    return out
+
+
+def _incident_groups_for_processes(processes: pd.DataFrame) -> np.ndarray:
+    """
+    Per-row incident-group identifier for process_node.
+
+    Audit-derived malicious rows reverse-derive both attack_type and
+    core_stem from host_ref so they align with the matching flow_node
+    rows under the key `incident:<attack_type>:<core_stem>` (same scheme
+    as _incident_groups_for_flows). Audit-derived benign rows keep the
+    host_ref as a benign group (one per dept). Procmon-derived rows have
+    no attack_type — they stay under a `procmon:` namespace so the
+    incident-split path falls back to by_file behaviour for them.
+    """
+    if processes.empty:
+        return np.array([], dtype=object)
+    src = processes["source"].astype(str).values
+    host_ref = processes["host_ref"].astype(str).values
+    is_mal = processes["is_malicious"].astype(int).values
+    out = np.empty(len(processes), dtype=object)
+    for i in range(len(processes)):
+        if src[i] == "audit":
+            attack = _attack_type_from_audit_host_ref(host_ref[i], int(is_mal[i]))
+            if attack is not None:
+                file_part = host_ref[i].split(":", 1)[1] if ":" in host_ref[i] else host_ref[i]
+                stem = _stem_for_attack_lookup(Path(file_part))
+                core_id = _normalize_incident_stem(stem)
+                out[i] = f"{_INCIDENT_PREFIX}{attack}:{core_id}"
+            else:
+                out[i] = f"{_BENIGN_PREFIX}{host_ref[i]}"
+        else:
+            out[i] = f"procmon:{host_ref[i]}:mal{is_mal[i]}"
+    return out
+
+
+def _incident_groups_for_measurements(measurements: pd.DataFrame) -> np.ndarray:
+    """
+    Per-row incident-group identifier for measurement_node.
+
+    Power telemetry lives on a separate SCADA modality with no shared
+    filename or attack_type with the network/audit side, so measurements
+    do not participate in incident alignment — they stay under a
+    `measure:` namespace and fall back to by_file behaviour.
+    """
+    if measurements.empty:
+        return np.array([], dtype=object)
+    dev = measurements["device_id"].astype(str).values
+    is_mal = measurements["is_malicious"].astype(int).values
+    return np.array(
+        [f"measure:{dev[i]}:mal{is_mal[i]}" for i in range(len(measurements))],
+        dtype=object,
+    )
+
+
+def _build_global_incident_split(
+    incident_groups: Dict[str, np.ndarray],
+    *,
+    val_ratio: float,
+    test_ratio: float,
+    rng: np.random.Generator,
+) -> Dict[str, str]:
+    """
+    Build a deterministic group → split assignment shared across all node
+    types. Only `incident:*` groups are aligned globally; `benign:*` /
+    `procmon:*` / `measure:*` groups are assigned per-namespace using the
+    same stratified-by-file routine so that within each namespace val/test
+    receive a balanced size mix.
+
+    Args:
+        incident_groups: {node_type: per-row group array}
+        val_ratio:       Fraction of (incident or per-namespace) groups
+                         routed to val.
+        test_ratio:      Fraction routed to test.
+        rng:             Shared numpy Generator.
+
+    Returns:
+        {group_key: "train" | "val" | "test"}
+    """
+    # Aggregate group sizes across all node types (a group's "size" is the
+    # union of rows tagged with it; this matches what the size-tier logic
+    # in _stratified_split_by_file uses for balancing).
+    group_size: Dict[str, int] = {}
+    for arr in incident_groups.values():
+        if len(arr) == 0:
+            continue
+        unique, counts = np.unique(arr, return_counts=True)
+        for g, c in zip(unique, counts):
+            group_size[g] = group_size.get(g, 0) + int(c)
+
+    # Modality-presence sets — used to make sure each split receives at
+    # least one pcap-bearing (= flow-row-bearing) stem per attack_type.
+    # Without this, a per-attack random shuffle frequently sends every
+    # aligned pcap+audit stem to train and leaves val/test with only
+    # audit-only stems (which contribute 0 flow_node rows).
+    flow_set: Set[str] = set(np.unique(incident_groups.get("flow_node", np.array([], dtype=object))).tolist())
+
+    # Bucket groups by namespace.
+    incidents: List[str] = sorted(g for g in group_size if g.startswith(_INCIDENT_PREFIX))
+    benigns: List[str] = sorted(g for g in group_size if g.startswith(_BENIGN_PREFIX))
+    procmons: List[str] = sorted(g for g in group_size if g.startswith("procmon:"))
+    measures: List[str] = sorted(g for g in group_size if g.startswith("measure:"))
+
+    assignment: Dict[str, str] = {}
+
+    def _assign_bucket(groups: List[str]) -> None:
+        if not groups:
+            return
+        # Sort by size descending then partition into 3 tiers so val/test
+        # each get a balanced large/medium/small mix (mirrors DD-8 logic).
+        groups_sorted = sorted(groups, key=lambda g: -group_size[g])
+        n = len(groups_sorted)
+        tiers = 3 if n >= 6 else 1
+        tier_chunks = np.array_split(groups_sorted, tiers)
+        for tier_arr in tier_chunks:
+            tier = list(tier_arr)
+            rng.shuffle(tier)
+            n_tier = len(tier)
+            n_test = max(1, int(round(n_tier * test_ratio))) if n_tier >= 2 else 0
+            n_val = max(1, int(round(n_tier * val_ratio))) if n_tier >= 3 else 0
+            if n_test + n_val >= n_tier:
+                n_val = max(0, n_tier - n_test - 1)
+            for g in tier[:n_test]:
+                assignment[g] = "test"
+            for g in tier[n_test:n_test + n_val]:
+                assignment[g] = "val"
+            for g in tier[n_test + n_val:]:
+                assignment[g] = "train"
+
+    def _stratify_three_way(stems: List[str]) -> None:
+        """≥3 stems: shuffled 70/15/15 with ≥1 stem per split."""
+        n = len(stems)
+        n_test = max(1, int(round(n * test_ratio)))
+        n_val = max(1, int(round(n * val_ratio)))
+        if n_test + n_val >= n:
+            n_val = max(1, n - n_test - 1)
+        shuffled = list(stems)
+        rng.shuffle(shuffled)
+        for g in shuffled[:n_test]:
+            assignment[g] = "test"
+        for g in shuffled[n_test:n_test + n_val]:
+            assignment[g] = "val"
+        for g in shuffled[n_test + n_val:]:
+            assignment[g] = "train"
+
+    def _assign_per_attack(incidents: List[str]) -> None:
+        """
+        Per-attack-type, modality-aware stratification.
+
+        Each incident key has the form `incident:<attack_type>:<core_stem>`.
+        Within each attack_type we partition stems by whether they
+        contribute flow_node rows (pcap-bearing, in `flow_set`) or only
+        process_node rows (audit-only), then allocate splits with three
+        invariants:
+
+          1. n_total = 1 → train (no choice).
+          2. Pcap-bearing stems are distributed across splits whenever
+             possible (n_pcap ≥ 2). Largest pcap → train (training signal),
+             remaining pcap stems fill val/test. This is the fix for the
+             initial dryrun where every aligned pcap+audit stem landed in
+             train and val/test had 0 malicious flow rows.
+          3. Audit-only stems are also distributed when n_audit ≥ 2.
+             When n_audit = 1 and pcap stems exist, the audit-only stem
+             goes to val/test (alternating) so the audit modality reaches
+             eval splits without sacrificing flow training signal.
+
+        Alternation between val and test uses the sorted attack_idx so
+        coverage is roughly balanced across many attack_types.
+        """
+        if not incidents:
+            return
+        by_attack: Dict[str, List[str]] = {}
+        for g in incidents:
+            parts = g.split(":", 2)  # "incident", attack_type, core_stem
+            attack_type = parts[1] if len(parts) >= 3 else "_unknown"
+            by_attack.setdefault(attack_type, []).append(g)
+
+        for idx, attack_type in enumerate(sorted(by_attack.keys())):
+            stems = by_attack[attack_type]
+            pcap_stems = sorted(
+                (s for s in stems if s in flow_set),
+                key=lambda g: -group_size[g],
+            )
+            audit_stems = sorted(
+                (s for s in stems if s not in flow_set),
+                key=lambda g: -group_size[g],
+            )
+            n_pcap = len(pcap_stems)
+            n_audit = len(audit_stems)
+            if n_pcap + n_audit == 1:
+                assignment[(pcap_stems + audit_stems)[0]] = "train"
+                continue
+
+            # Allocate pcap-bearing stems first and track which splits the
+            # pcap side already covers — the audit side then fills the
+            # remaining splits so the attack spans train AND val AND test
+            # whenever there are enough stems for it.
+            pcap_covers: Set[str] = set()
+            if n_pcap >= 3:
+                _stratify_three_way(pcap_stems)
+                pcap_covers = {"train", "val", "test"}
+            elif n_pcap == 2:
+                second = "val" if idx % 2 == 0 else "test"
+                assignment[pcap_stems[0]] = "train"
+                assignment[pcap_stems[1]] = second
+                pcap_covers = {"train", second}
+            elif n_pcap == 1:
+                assignment[pcap_stems[0]] = "train"
+                pcap_covers = {"train"}
+
+            remaining = {"train", "val", "test"} - pcap_covers
+
+            def _eval_priority(split: str) -> int:
+                # When picking 1 split, prefer val|test (the eval splits)
+                # over train (pcap usually covers it). val/test alternate
+                # by attack_idx parity.
+                eval_first = "val" if idx % 2 == 0 else "test"
+                eval_second = "test" if eval_first == "val" else "val"
+                order = {eval_first: 0, eval_second: 1, "train": 2}
+                return order[split]
+
+            if n_audit >= 3:
+                _stratify_three_way(audit_stems)
+            elif n_audit == 2:
+                if len(remaining) >= 2:
+                    # Cover two missing splits — favour val/test over train
+                    # so the attack reaches both eval splits.
+                    prio = sorted(remaining, key=_eval_priority)
+                    assignment[audit_stems[0]] = prio[0]
+                    assignment[audit_stems[1]] = prio[1]
+                elif len(remaining) == 1:
+                    sole = next(iter(remaining))
+                    assignment[audit_stems[0]] = sole
+                    assignment[audit_stems[1]] = (
+                        "test" if sole == "val" else "val"
+                    )
+                else:
+                    # pcap already covers all 3 → second audit goes to eval.
+                    assignment[audit_stems[0]] = "train"
+                    assignment[audit_stems[1]] = "val" if idx % 2 == 0 else "test"
+            elif n_audit == 1:
+                if remaining:
+                    target = sorted(remaining, key=_eval_priority)[0]
+                else:
+                    target = "val" if idx % 2 == 0 else "test"
+                assignment[audit_stems[0]] = target
+
+    def _assign_benigns(benign_groups: List[str]) -> None:
+        """
+        Modality-aware benign assignment.
+
+        The benign bucket mixes pcap-derived groups (e.g. `benign:admin
+        traffic.csv`, 4 dept files dominating flow row count) with audit-
+        derived groups (e.g. `benign:audit:audit_admin_3.log`, many small
+        per-dept logs). A single tier-shuffle over all of them frequently
+        sent every pcap-bearing benign to train+test, leaving val with 0
+        benign flow rows — which destroys the val base-rate. Splitting by
+        modality forces each split to receive at least one pcap-bearing
+        benign whenever ≥3 dept files exist.
+        """
+        pcap_benigns = [g for g in benign_groups if g in flow_set]
+        audit_benigns = [g for g in benign_groups if g not in flow_set]
+        _assign_bucket(pcap_benigns)
+        _assign_bucket(audit_benigns)
+
+    _assign_per_attack(incidents)
+    _assign_benigns(benigns)
+    _assign_bucket(procmons)
+    _assign_bucket(measures)
+
+    return assignment
+
+
+def _stratified_split_by_incident(
+    labels: np.ndarray,
+    groups: np.ndarray,
+    incident_split_map: Dict[str, str],
+    *,
+    val_ratio: float,
+    test_ratio: float,
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Apply a precomputed global group → split mapping to one node type.
+
+    Rows whose group is in `incident_split_map` follow the global
+    assignment (this is what aligns audit & pcap across modalities).
+    Rows whose group is unknown fall back to _stratified_split_by_file
+    using the original groups (defensive — should not happen when the
+    mapping was built from these same groups).
+    """
+    n = len(labels)
+    train = np.zeros(n, dtype=bool)
+    val = np.zeros(n, dtype=bool)
+    test = np.zeros(n, dtype=bool)
+
+    if len(groups) != n:
+        return _stratified_split(
+            labels, val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        )
+
+    fallback_idx: List[int] = []
+    for i in range(n):
+        split = incident_split_map.get(groups[i])
+        if split == "train":
+            train[i] = True
+        elif split == "val":
+            val[i] = True
+        elif split == "test":
+            test[i] = True
+        else:
+            fallback_idx.append(i)
+
+    if fallback_idx:
+        sub_labels = labels[fallback_idx]
+        sub_groups = groups[fallback_idx]
+        sub_train, sub_val, sub_test = _stratified_split_by_file(
+            sub_labels, sub_groups,
+            val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        )
+        fb = np.array(fallback_idx, dtype=int)
+        train[fb[sub_train]] = True
+        val[fb[sub_val]] = True
+        test[fb[sub_test]] = True
+
+    return train, val, test
+
+
 def _build_split_masks(
     labels: np.ndarray,
     groups: np.ndarray,
@@ -1507,6 +2179,7 @@ def _build_split_masks(
     test_ratio: float,
     mode: SplitMode,
     rng: np.random.Generator,
+    incident_split_map: Optional[Dict[str, str]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Dispatch to the requested split strategy.
@@ -1525,6 +2198,16 @@ def _build_split_masks(
     if mode == "hybrid":
         return _stratified_split_hybrid(
             labels, groups,
+            val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
+        )
+    if mode == "by_incident":
+        if incident_split_map is None:
+            raise ValueError(
+                "split_mode='by_incident' requires a precomputed "
+                "incident_split_map (built in to_pyg_hetero_data)."
+            )
+        return _stratified_split_by_incident(
+            labels, groups, incident_split_map,
             val_ratio=val_ratio, test_ratio=test_ratio, rng=rng,
         )
     raise ValueError(f"Unknown split_mode: {mode!r}")

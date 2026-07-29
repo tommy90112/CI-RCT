@@ -191,6 +191,7 @@ class HeteroNCM(nn.Module):
         wallet_type_offset: int = 0,
         multi_task_labels: Optional[Dict[str, "torch.Tensor"]] = None,
         type_offsets: Optional[Dict[str, int]] = None,
+        edge_balance: str = "none",
     ) -> "torch.Tensor":
         """
         Supervision loss for the NCM: train each edge-type MLP to predict
@@ -237,13 +238,34 @@ class HeteroNCM(nn.Module):
                                  contributes BCE supervision for its incoming
                                  causal edges.
             type_offsets:        {node_type: global_offset} (path 1 lookup).
+            edge_balance:        Per-edge-type loss re-weighting mode.
+                                   - "none"    : plain mean over all BCE terms
+                                                 (legacy behaviour; dominant
+                                                 edge type drowns out rare ones)
+                                   - "uniform" : each edge type contributes
+                                                 equally regardless of count
+                                                 (mean of per-type means)
+                                   - "sqrt"    : inverse-sqrt-frequency weight
+                                                 normalised to mean=1; rare
+                                                 edges get strong but not
+                                                 runaway gradient — recommended
+                                                 default for highly imbalanced
+                                                 hetero-graphs (DD-17)
+                                   - "inverse" : 1/N_edges per type (aggressive,
+                                                 usable as ablation comparator)
+
+                                 See unsw_mg24_plan.md § DD-17 for the
+                                 motivation: on MG24 `host→flow` had ~200k
+                                 edges while `process→host` had ~1k, leading
+                                 to NCM CE≈0.001 on sparse edges and tracer
+                                 stuck at depth 1 in evaluation.
 
         Returns:
             Scalar BCE loss tensor (0 if no valid edges found)
         """
         import torch.nn.functional as F
 
-        losses: list = []
+        losses_by_type: Dict[str, list] = {et: [] for et in self.all_edge_types}
         n_labels = node_labels.size(0)
         device = next(self.parameters()).device
         use_multi_task = multi_task_labels is not None and type_offsets is not None
@@ -299,11 +321,55 @@ class HeteroNCM(nn.Module):
             type_emb = self.type_embeddings(type_idx)
             u_actual = torch.cat([flat_h[src].to(device), type_emb], dim=-1)
             p_actual = self.edge_type_models[edge_type](u_actual).squeeze(-1)
-            losses.append(F.binary_cross_entropy(p_actual, y))
+            losses_by_type[edge_type].append(F.binary_cross_entropy(p_actual, y))
 
-        if not losses:
+        return self._aggregate_ncm_losses(losses_by_type, edge_balance, device)
+
+    def _aggregate_ncm_losses(
+        self,
+        losses_by_type: Dict[str, list],
+        edge_balance: str,
+        device: "torch.device",
+    ) -> "torch.Tensor":
+        """Combine per-edge-type BCE terms into a single scalar loss.
+
+        Centralised so the four `edge_balance` modes share the same
+        zero-loss / numerical-normalisation guarantees.
+        """
+        # Drop edge types with no valid samples this batch.
+        non_empty = {et: ls for et, ls in losses_by_type.items() if ls}
+        if not non_empty:
             return torch.zeros(1, device=device)
-        return torch.stack(losses).mean()
+
+        if edge_balance == "none":
+            # Legacy: every BCE term weighted equally → dominant edge type wins.
+            flat = [t for ls in non_empty.values() for t in ls]
+            return torch.stack(flat).mean()
+
+        # Per-edge-type aggregate (mean within each type).
+        per_type_mean = {
+            et: torch.stack(ls).mean() for et, ls in non_empty.items()
+        }
+        counts = {et: float(len(ls)) for et, ls in non_empty.items()}
+
+        if edge_balance == "uniform":
+            weights = {et: 1.0 for et in per_type_mean}
+        elif edge_balance == "sqrt":
+            raw = {et: 1.0 / (counts[et] ** 0.5) for et in per_type_mean}
+            s = sum(raw.values()) / max(1, len(raw))  # mean of raw weights
+            weights = {et: raw[et] / s for et in per_type_mean}  # mean=1
+        elif edge_balance == "inverse":
+            raw = {et: 1.0 / counts[et] for et in per_type_mean}
+            s = sum(raw.values()) / max(1, len(raw))
+            weights = {et: raw[et] / s for et in per_type_mean}  # mean=1
+        else:
+            raise ValueError(
+                f"Unknown edge_balance mode: {edge_balance!r}. "
+                f"Expected one of 'none' / 'uniform' / 'sqrt' / 'inverse'."
+            )
+
+        weighted = [weights[et] * per_type_mean[et] for et in per_type_mean]
+        return torch.stack(weighted).mean()
 
     def detached_causal_effects(
         self,

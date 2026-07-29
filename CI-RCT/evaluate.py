@@ -25,8 +25,7 @@ Usage:
 import argparse
 import os
 from collections import Counter, defaultdict
-from typing import Dict, List, Set, Tuple
- 
+
 import numpy as np
 import torch
 from sklearn.metrics import recall_score
@@ -35,11 +34,18 @@ from configs.config import CI_RCT_Config
 from model.causal_shapley import compute_asymmetric_causal_shapley
 from model.ci_rct import CI_RCT
 from model.root_cause_tracer import RootCauseTracer
-from utils.data_utils import build_typed_causal_graph_from_hetero, compute_type_offsets
+from utils.data_utils import (
+    build_typed_causal_graph_from_hetero,
+    compute_type_offsets,
+    default_blocked_edge_types,
+    default_rare_edge_types,
+)
 from utils.metrics import (
     compute_classification_metrics,
+    compute_fraud_f1,
     compute_root_cause_metrics,
 )
+from utils.threshold_utils import sweep_best_threshold
  
  
 def parse_args() -> argparse.Namespace:
@@ -51,6 +57,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--max_hops", type=int, default=5)
     parser.add_argument("--ce_threshold", type=float, default=0.1)
+    # Type-aware tie-break for the tracer (opt-in; empty string = legacy
+    # |CE|-only ranking). Comma-separated node types that are "root-capable"
+    # (labelable malicious types). When set, the greedy search prefers
+    # climbing to these over same-type relay hops (e.g. the host→host bridge),
+    # recovering RCP on models whose CE landscape diverts the trace to host.
+    # Example: --prefer_root_types process_node,measurement_node
+    parser.add_argument("--prefer_root_types", type=str, default="")
+    # DD-18 LOOKAHEAD tie-break depth. prefer_root_types alone only inspects
+    # the immediate upstream's type; on MG24 a fraud flow's hub host has an
+    # all-host upstream (bridge edges), so the greedy |CE|-max dead-ends at a
+    # 0-parent bridge host while the branch that actually leads to a process
+    # has marginally smaller |CE|. With d > 0, among threshold-passing upstream
+    # candidates the tracer prefers those that can REACH a prefer_root_types
+    # node within d backward hops. 0 = disabled (legacy). Needs prefer_root_types.
+    # Example: --prefer_root_types process_node --prefer_reachable_depth 3
+    parser.add_argument("--prefer_reachable_depth", type=int, default=0)
     parser.add_argument("--top_k", type=int, default=3)
     parser.add_argument("--node_limit", type=int, default=5000)
     parser.add_argument("--hop_limit", type=int, default=2)
@@ -58,7 +80,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_explain", type=int, default=50)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--hidden_dim", type=int, default=128)
-    parser.add_argument("--num_hgt_layers", type=int, default=3)
+    # default=2 matches train.py default & DD-14 training recipe. If you
+    # trained with --num_hgt_layers 3 you MUST pass the same flag here, or
+    # the extra layer stays randomly initialised (silently, since
+    # state_dict load is strict=False), giving correct AUC but F1≈0.
+    parser.add_argument("--num_hgt_layers", type=int, default=2)
     parser.add_argument("--num_heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--type_emb_dim", type=int, default=16)
@@ -68,13 +94,25 @@ def parse_args() -> argparse.Namespace:
                         default=False)
     parser.add_argument("--fraud_subgraph_hops", type=int, default=2)
     parser.add_argument("--max_flows", type=int, default=200_000)
+    # ── Decision-threshold tuning (binary detection; no retrain needed) ──────
+    # 'none' keeps the legacy argmax (==0.5) cut. 'val' sweeps a threshold on
+    # the validation split to maximise --threshold_objective, then applies it
+    # to the test split (test distribution never leaks into the choice).
+    # --threshold >= 0 overrides the sweep with a fixed manual cut.
+    parser.add_argument("--threshold_tuning", type=str, default="none",
+                        choices=["none", "val"])
+    parser.add_argument("--threshold_objective", type=str, default="macro_f1",
+                        choices=["macro_f1", "fraud_f1"])
+    parser.add_argument("--threshold", type=float, default=-1.0,
+                        help="Manual class-1 probability cut in (0,1); "
+                             "overrides --threshold_tuning when >= 0.")
     # ── UNSW-MG24 specific (mirror train.py) ─────────────────────────────────
     parser.add_argument("--mg24_subsample_ddos", type=float, default=1.0)
     parser.add_argument("--mg24_min_host_flows", type=int, default=5)
     parser.add_argument("--mg24_prune_external", type=lambda x: x.lower() == "true",
                         default=True)
     parser.add_argument("--mg24_split_mode", type=str, default="by_file",
-                        choices=("row", "by_file", "hybrid"))
+                        choices=("row", "by_file", "hybrid", "by_incident"))
     parser.add_argument("--mg24_host_role", type=str, default="full",
                         choices=("full", "no_mal_count", "zeroed",
                                  "detection_excluded"))
@@ -86,9 +124,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--debug", action="store_true",
                         help="Print tracer diagnostics: CE distribution by edge "
                              "type, chain length histogram, stuck-trace analysis.")
+    # ── B1: type-aware BFS sampling for rare/bridge edges ────────────────────
+    parser.add_argument("--rare_edge_types", type=str, default="",
+                        help="Comma-separated edge-type strings "
+                             "(formatted 'src__to__dst') that the BFS "
+                             "subgraph sampler must guarantee inclusion of. "
+                             "Designed for sparse bridge edges crowded out "
+                             "by high-degree types. Empty string falls back "
+                             "to default_rare_edge_types(dataset). Pass "
+                             "'none' to disable the rare-edge pass entirely.")
+    parser.add_argument("--rare_edge_reserve", type=int, default=500,
+                        help="Node-budget reserve for the rare-edge pass.")
+    parser.add_argument("--rare_edge_max_hops", type=int, default=5,
+                        help="Chain depth for the rare-edge expansion.")
+    parser.add_argument("--blocked_edge_types", type=str, default="",
+                        help="Comma-separated edge-type strings dropped "
+                             "from BOTH BFS expansion and the final causal "
+                             "graph. Symmetric to --rare_edge_types. Empty "
+                             "string falls back to "
+                             "default_blocked_edge_types(dataset). Pass "
+                             "'none' to disable the filter entirely.")
     return parser.parse_args()
- 
- 
+
+
 def load_dataset(name, root, **kwargs):
     if name == "dblp":
         from torch_geometric.datasets import DBLP
@@ -151,10 +209,19 @@ def load_dataset(name, root, **kwargs):
             flow_features_exclude=flow_features_exclude or None,
         )
         # DD-3 primary target: flow_node (same as train.py).
+        # DD-16: stash the raw MG24Data on hd so build_gt_list can derive
+        # kill-chain explanation ground truth from the original DataFrames.
+        hd._mg24 = mg24  # type: ignore[attr-defined]
         return hd, "flow_node"
     raise ValueError(f"Unknown dataset: {name!r}")
  
  
+def _parse_prefer_root_types(raw: str):
+    """Parse --prefer_root_types CSV into a set, or None when empty (legacy)."""
+    types = {t.strip() for t in (raw or "").split(",") if t.strip()}
+    return types or None
+
+
 def print_section(title, metrics):
     print(f"\n{'─' * 55}")
     print(f"  {title}")
@@ -244,16 +311,33 @@ def _load_illicit_wallet_globals(
  
  
 @torch.no_grad()
-def eval_classification(model, data, labels, test_mask):
+def eval_classification(model, data, labels, test_mask, threshold=None):
+    """
+    Binary classification metrics on the test split.
+
+    threshold: if None, use argmax (== 0.5 cut, legacy). If a float in (0, 1),
+    predict fraud where P(class-1) > threshold. AUC is threshold-independent
+    (computed from scores) so it is unaffected.
+    """
     model.eval()
     logits, _ = model.forward(data)
-    preds  = logits[test_mask].argmax(dim=-1).cpu()
     scores = torch.softmax(logits[test_mask], dim=-1)[:, 1].cpu()
+    if threshold is None:
+        preds = logits[test_mask].argmax(dim=-1).cpu()
+    else:
+        preds = (scores > threshold).long()
     y_true = labels[test_mask].cpu()
     metrics = compute_classification_metrics(preds, y_true, scores)
+    metrics["fraud_f1"] = compute_fraud_f1(y_true, preds)
     metrics["recall_fraud"] = float(
         recall_score(y_true.numpy(), preds.numpy(), pos_label=1, zero_division=0)
     )
+    # Fraction predicted fraud — a degenerate threshold (≈1.0 → "everything is
+    # fraud", or ≈0.0 → "nothing is fraud") shows up here immediately and
+    # explains a collapsed macro F1.
+    metrics["pred_fraud_rate"] = float(preds.float().mean())
+    if threshold is not None:
+        metrics["threshold"] = float(threshold)
     return metrics
  
  
@@ -288,6 +372,8 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         causal_graph=causal_graph,
         max_hops=args.max_hops,
         threshold=args.ce_threshold,
+        prefer_root_types=_parse_prefer_root_types(args.prefer_root_types),
+        prefer_reachable_depth=args.prefer_reachable_depth,
     )
  
     offset = type_offsets[target_type]
@@ -344,6 +430,30 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
             print(f"\n[fraud_label_set] tx fraud nodes: "
                   f"{sum(1 for i in test_indices if labels[i].item() == 1)}, "
                   f"illicit wallets added: {len(illicit_wallet_globals):,}, "
+                  f"total fraud_label_set size: {len(fraud_label_set):,}")
+    elif args.dataset == "unsw_mg24":
+        # DAG is `device → process → host → flow`, so backward trace from a
+        # fraud flow_node walks through host_node / process_node / device_node.
+        # Add malicious node ids on every labelled type so reaching them counts.
+        n_flow_fraud = sum(1 for i in test_indices if labels[i].item() == 1)
+        per_type_added: dict = {}
+        for ntype in ("process_node", "measurement_node"):
+            if ntype not in data.node_types or not hasattr(data[ntype], "y"):
+                continue
+            ntype_offset = type_offsets.get(ntype, 0)
+            ntype_labels = data[ntype].y
+            added = {
+                ntype_offset + i for i in range(ntype_labels.size(0))
+                if int(ntype_labels[i].item()) == 1
+            }
+            per_type_added[ntype] = len(added)
+            fraud_label_set |= added
+        if args.debug:
+            extras = ", ".join(
+                f"{t}={n:,}" for t, n in per_type_added.items()
+            )
+            print(f"\n[fraud_label_set] flow fraud (test): {n_flow_fraud:,}; "
+                  f"added malicious nodes: {extras}; "
                   f"total fraud_label_set size: {len(fraud_label_set):,}")
  
     rct_metrics = compute_root_cause_metrics(
@@ -444,6 +554,7 @@ def eval_explanation_quality(model, data, labels, test_mask,
         causal_graph=causal_graph,
         max_hops=args.max_hops,
         threshold=0.0,
+        prefer_root_types=_parse_prefer_root_types(args.prefer_root_types),
     )
     preds_list, gts_list = [], []
     for node_id, gt_set in eligible.items():
@@ -470,6 +581,22 @@ def build_gt_list(args, data, type_offsets):
         )
         if gt:
             gt_list.append(("Granger", gt))
+    elif args.dataset == "unsw_mg24" and hasattr(data, "_mg24"):
+        print("Computing kill-chain ground-truth for Metric C (UNSW-MG24)...")
+        from utils.mg24_kill_chain_gt import compute_mg24_kill_chain_gt
+        test_mask = (
+            data["flow_node"].test_mask.cpu().numpy()
+            if hasattr(data["flow_node"], "test_mask") else None
+        )
+        gt = compute_mg24_kill_chain_gt(
+            mg24_data=data._mg24,  # type: ignore[attr-defined]
+            type_offsets=type_offsets,
+            test_mask=test_mask,
+            include_devices=True,
+            verbose=True,
+        )
+        if gt:
+            gt_list.append(("KillChain", gt))
     elif args.dataset == "elliptic++":
         from utils.lfpn_utils import compute_lfpn_ground_truth
         modes = ["strict", "extended"] if args.lfpn_mode == "both" else [args.lfpn_mode]
@@ -532,11 +659,53 @@ def main():
     seed_ids = list(dict.fromkeys(
         fraud_global_ids[:args.num_seeds] + gt_tx_ids
     ))
+
+    # B1: resolve rare-edge-type set. Explicit --rare_edge_types wins;
+    # the literal string "none" disables the pass; empty string falls back
+    # to the per-dataset default from default_rare_edge_types().
+    raw = args.rare_edge_types.strip()
+    if raw.lower() == "none":
+        rare_edge_types = set()
+        source = "disabled"
+    elif raw:
+        rare_edge_types = {tok.strip() for tok in raw.split(",") if tok.strip()}
+        source = "explicit"
+    else:
+        rare_edge_types = default_rare_edge_types(args.dataset)
+        source = "dataset-default"
+
+    if rare_edge_types:
+        print(f"  [BFS] rare edge types ({len(rare_edge_types)}, "
+              f"reserve={args.rare_edge_reserve}, "
+              f"max_hops={args.rare_edge_max_hops}, src={source}): "
+              f"{sorted(rare_edge_types)}")
+
+    # Symmetric resolution for blocked_edge_types (replaces the legacy
+    # block_addr_to_addr param; Elliptic-style wallet/address self-loops
+    # come from default_blocked_edge_types).
+    raw_b = args.blocked_edge_types.strip()
+    if raw_b.lower() == "none":
+        blocked_edge_types = set()
+        blocked_src = "disabled"
+    elif raw_b:
+        blocked_edge_types = {tok.strip() for tok in raw_b.split(",") if tok.strip()}
+        blocked_src = "explicit"
+    else:
+        blocked_edge_types = default_blocked_edge_types(args.dataset)
+        blocked_src = "dataset-default"
+    if blocked_edge_types:
+        print(f"  [BFS] blocked edge types ({len(blocked_edge_types)}, "
+              f"src={blocked_src}): {sorted(blocked_edge_types)}")
+
     causal_graph = build_typed_causal_graph_from_hetero(
         data,
         seed_node_ids=seed_ids if seed_ids else None,
         hop_limit=args.hop_limit,
         node_limit=args.node_limit,
+        blocked_edge_types=blocked_edge_types if blocked_edge_types else None,
+        rare_edge_types=rare_edge_types if rare_edge_types else None,
+        rare_reserve=args.rare_edge_reserve,
+        rare_max_hops=args.rare_edge_max_hops,
     )
     print(f"  Causal graph: {len(causal_graph.v)} nodes, "
           f"{len(causal_graph.edge_type_map)} directed edges")
@@ -565,12 +734,47 @@ def main():
         use_gan=False,
     ).to(device)
     if args.checkpoint:
+        # PyG's HGTConv has per-relation lazy weights that only materialise
+        # on the first forward(). If load_state_dict(strict=False) is called
+        # before that, those weights' state-dict keys silently skip — the
+        # subsequent forward then initialises them randomly, leaving the
+        # model with checkpoint weights elsewhere but random per-relation
+        # heads. Symptom: AUC roughly correct (ranking preserved by trained
+        # layers) but F1 collapses (argmax bias from random heads).
+        # Warm up with a dummy forward, then load.
+        model.eval()
+        with torch.no_grad():
+            model.forward(data)
         model.load_checkpoint(args.checkpoint, device=args.device)
         print(f"Loaded checkpoint: {args.checkpoint}")
     else:
         print("No checkpoint — evaluating randomly initialised model (baseline).")
  
-    cls_metrics = eval_classification(model, data, labels, test_mask)
+    # Resolve the decision threshold (argmax by default; manual or val-tuned).
+    chosen_threshold = None
+    if args.threshold >= 0.0:
+        chosen_threshold = args.threshold
+        print(f"\n[threshold] using manual cut = {chosen_threshold:.3f}")
+    elif args.threshold_tuning == "val":
+        val_mask = getattr(data[target_type], "val_mask", None)
+        if val_mask is None:
+            print("\n[threshold] --threshold_tuning val requested but no val_mask; "
+                  "falling back to argmax.")
+        else:
+            model.eval()
+            with torch.no_grad():
+                logits, _ = model.forward(data)
+            val_scores = torch.softmax(logits[val_mask], dim=-1)[:, 1].cpu().numpy()
+            val_true = labels[val_mask].cpu().numpy()
+            chosen_threshold, val_obj = sweep_best_threshold(
+                val_scores, val_true, objective=args.threshold_objective
+            )
+            print(f"\n[threshold] val-tuned cut = {chosen_threshold:.3f} "
+                  f"({args.threshold_objective}={val_obj:.4f} on val)")
+
+    cls_metrics = eval_classification(
+        model, data, labels, test_mask, threshold=chosen_threshold
+    )
     print_section("A. Classification Metrics", cls_metrics)
  
     rct_metrics, stab_metrics = eval_root_cause_and_stability(

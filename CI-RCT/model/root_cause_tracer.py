@@ -38,7 +38,7 @@ Stopping conditions (priority order):
 Reference: CI-RCT_Thesis_Plan.md § 5.4
 """
 import heapq
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from model.typed_causal_graph import TypedCausalGraph
 
@@ -58,15 +58,45 @@ class RootCauseTracer:
         causal_graph: TypedCausalGraph,
         max_hops: int = 5,
         threshold: float = 0.1,
+        prefer_root_types: Optional[Set[str]] = None,
+        prefer_reachable_depth: int = 0,
     ) -> None:
         if max_hops < 1:
             raise ValueError(f"max_hops must be >= 1, got {max_hops}")
         if not (0.0 <= threshold <= 1.0):
             raise ValueError(f"threshold must be in [0, 1], got {threshold}")
+        if prefer_reachable_depth < 0:
+            raise ValueError(
+                f"prefer_reachable_depth must be >= 0, got {prefer_reachable_depth}"
+            )
 
         self.graph = causal_graph
         self.max_hops = max_hops
         self.threshold = threshold
+        # Opt-in type-aware tie-break. When set, among the upstream parents
+        # that clear the CE threshold, those whose node type is in
+        # prefer_root_types (the root-capable / labelable types, e.g.
+        # {"process_node"}) win over other types, ranked by |CE| within the
+        # preferred group. This stops the greedy search from being diverted
+        # into same-type relay hops (e.g. the host→host DD-11 bridge whose
+        # |CE| can marginally exceed process→host) and dead-ending at a node
+        # that can never be a true root cause. None ⇒ legacy |CE|-only ranking.
+        self.prefer_root_types = prefer_root_types
+        # Opt-in LOOKAHEAD tie-break (DD-18). prefer_root_types alone only
+        # inspects the *immediate* upstream's type — but on MG24 a flow's only
+        # parent is an IP host whose 12 upstream parents are ALL host→host
+        # bridges (no process in sight); the greedy |CE|-max then picks a
+        # dead-end bridge host (0 parents) while the 2 bridge branches that
+        # actually lead to a process_node have marginally smaller |CE| and are
+        # skipped. With prefer_reachable_depth = d > 0, among threshold-passing
+        # candidates we first prefer those whose ancestors within d backward
+        # hops include a prefer_root_types node — i.e. candidates from which a
+        # true root is still REACHABLE — ranked by |CE| within that group.
+        # 0 ⇒ disabled, behaviour identical to prefer_root_types-only / legacy.
+        self.prefer_reachable_depth = prefer_reachable_depth
+        # Memoised reachability: gid → bool (can reach a prefer type within
+        # prefer_reachable_depth backward hops). Built lazily per node.
+        self._reach_cache: Dict[object, bool] = {}
 
     # ── Primary tracing API ───────────────────────────────────────────────────
 
@@ -171,12 +201,87 @@ class RootCauseTracer:
         Return (upstream_node, |CE|) with the strongest absolute causal
         influence on `current`.  Magnitude is what determines tracing
         priority — see the module docstring for rationale.
+
+        Preference order among threshold-passing candidates (each tier ranked
+        by |CE| internally; fall through to the next tier only when a tier is
+        empty):
+            1. prefer_root_types  — candidate IS a root-capable type
+            2. prefer_reachable_depth > 0 — candidate can still REACH a
+               root-capable type within d backward hops (lookahead): skips the
+               dead-end bridge hosts that the greedy |CE|-max would otherwise
+               pick, when a true root lies just past a marginally-smaller-|CE|
+               branch (see __init__ DD-18 note).
+            3. global |CE|-max over all parents — legacy fallback.
+
+        With prefer_root_types=None and prefer_reachable_depth=0 this is byte-
+        for-byte the legacy |CE|-only ranking.
         """
-        best = max(
-            upstream_nodes,
-            key=lambda u: abs(causal_effects.get((u, current), 0.0)),
-        )
-        return best, abs(causal_effects.get((best, current), 0.0))
+        def abs_ce(u):
+            return abs(causal_effects.get((u, current), 0.0))
+
+        if self.prefer_root_types:
+            preferred = [
+                u for u in upstream_nodes
+                if abs_ce(u) >= self.threshold
+                and self.graph.node_type.get(u) in self.prefer_root_types
+            ]
+            if preferred:
+                best = max(preferred, key=abs_ce)
+                return best, abs_ce(best)
+
+        if self.prefer_reachable_depth > 0 and self.prefer_root_types:
+            reachable = [
+                u for u in upstream_nodes
+                if abs_ce(u) >= self.threshold
+                and self._can_reach_prefer(u, self.prefer_reachable_depth)
+            ]
+            if reachable:
+                best = max(reachable, key=abs_ce)
+                return best, abs_ce(best)
+
+        best = max(upstream_nodes, key=abs_ce)
+        return best, abs_ce(best)
+
+    def _can_reach_prefer(self, node, depth: int) -> bool:
+        """
+        True if `node` itself is a prefer_root_types node, or one of its
+        backward ancestors within `depth` hops is. Memoised on `node`
+        (cache keyed by the start node; the depth is fixed per tracer run).
+
+        Used by the lookahead tie-break so the greedy search prefers upstream
+        branches from which a true root cause is still reachable, instead of
+        dead-ending at a same-type relay node whose single-hop |CE| happens to
+        be largest.
+        """
+        if node in self._reach_cache:
+            return self._reach_cache[node]
+
+        target_types = self.prefer_root_types or set()
+        visited = {node}
+        # BFS layer by layer up to `depth` hops; the start node counts as a
+        # hit too (handles the case where `node` is already a prefer type).
+        frontier = [node]
+        hops = 0
+        found = False
+        while frontier and hops <= depth:
+            next_frontier = []
+            for v in frontier:
+                if self.graph.node_type.get(v) in target_types:
+                    found = True
+                    break
+                if hops == depth:
+                    continue  # don't expand past the budget
+                for p in self.graph.get_upstream_neighbors(v):
+                    if p not in visited:
+                        visited.add(p)
+                        next_frontier.append(p)
+            if found:
+                break
+            frontier = next_frontier
+            hops += 1
+
+        self._reach_cache[node] = found
+        return found
 
     @staticmethod
     def score_chain(chain: List, causal_effects: Dict[Tuple, float]) -> float:

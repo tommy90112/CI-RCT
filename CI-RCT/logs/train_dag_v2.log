@@ -1,0 +1,99 @@
+Loading dataset: unsw_mg24
+=== Loading MG24 from data/unsw_mg24 ===
+[flows] loading network flows...
+  benign  admin      admin traffic.csv: 305,919 rows
+  benign  microgrid  microgrid traffic.csv: 3,616 rows
+  benign  research   research traffic.csv: 163,101 rows
+  benign  teaching   teaching traffic.csv: 402,833 rows
+  attack  mitm           MITM1.pcap_Flow.csv: 253 rows
+  attack  backdoor       backdoor1.pcap_Flow.csv: 794 rows
+  attack  backdoor       backdoor2.pcap_Flow.csv: 990 rows
+  attack  ddos           ddos1.pcap_Flow.csv: 2,233,313 rows
+  attack  dos            dos1.pcap_Flow.csv: 131,308 rows
+  attack  credential     ftp_password.pcap_Flow.csv: 257 rows
+  attack  credential     hydra_password.pcap_Flow.csv: 2,037 rows
+  attack  ransomware     ransomware.pcap_Flow.csv: 294 rows
+  attack  samba          samba_permission.pcap_Flow.csv: 118 rows
+  attack  recon          scan1_nmap.pcap_Flow.csv: 66,141 rows
+  attack  recon          scan2_nikto.pcap_Flow.csv: 337 rows
+  attack  shellshock     shellshock.pcap_Flow.csv: 241 rows
+  attack  sql_injection  sql_injection.pcap_Flow.csv: 2,212 rows
+  ddos subsample: 2,233,313 → 223,331 (10%); seed=42
+[flows] total: 1,303,782 rows (428,313 malicious)
+[audit] loading Linux audit logs...
+  benign  Admin department: 31,754 events
+  benign  Research department: 50,444 events
+  benign  Teaching department: 42,576 events
+  attack  mitm           audit_MITM1.log: 11,524 events
+  attack  mitm           audit_MITM2.log: 7,315 events
+  attack  backdoor       audit_backdoor.log: 11,033 events
+  attack  backdoor       audit_backdoor2.log: 16,585 events
+  attack  backdoor       audit_backdoor_3.log: 11,724 events
+  attack  dos            audit_dos1.log: 18,527 events
+  attack  dos            audit_dos2.log: 1,690 events
+  attack  credential     audit_ftp_password.log: 8,058 events
+  attack  credential     audit_hydra_passowrd_1.log: 9,455 events
+  attack  credential     audit_password.log: 13,479 events
+  attack  ransomware     audit_ransomware_1.log: 8,080 events
+  attack  reverse_shell  audit_reverse_shell.log: 9,024 events
+  attack  samba          audit_samaba_permission.log: 15,519 events
+  attack  recon          audit_scan_nikto1.log: 8,977 events
+  attack  recon          audit_scan_nikto2.log: 3,554 events
+  attack  recon          audit_scan_nmap1.log: 4,104 events
+  attack  sql_injection  audit_sql1.log: 2,715 events
+  attack  sql_injection  audit_sql2.log: 3,114 events
+  attack  sql_injection  audit_sql3.log: 5,681 events
+  attack  ddos           ddos1.log: 9,986 events
+  attack  mimicry        mimicry1.log: 7,309 events
+  attack  mimicry        mimicry2.log: 5,452 events
+  attack  ransomware     ransomware2.log: 5,833 events
+  attack  shellshock     shellshock1.log: 14,602 events
+  attack  shellshock     shellshock2.log: 13,154 events
+  attack  shellshock     shellshock3.log: 15,840 events
+[audit] total: 367,108 events (242,334 malicious)
+[procmon] loading Windows Procmon CSVs...
+  central  ben central_normal_system_calls.CSV: 12,170 events
+  local1   ben local1_normal_system_calls.CSV: 305,994 events
+  local2   ben local2_normal_system_calls.CSV: 92,149 events
+  central  mal central_malicious.CSV: 6,947 events
+  local1   mal local1_macilious.CSV: 279,994 events
+  local2   mal local2_macilious.CSV: 227,253 events
+[procmon] total: 924,507 events (514,194 malicious)
+[power] loading power measurements...
+  local1 ben local1_normal.csv: 893 samples (mechanical)
+  local1 mal local1_malicious.csv: 987 samples (mechanical)
+  local2 ben local2_normal.csv: 833 samples (electrical)
+  local2 mal local2_malicious.csv: 903 samples (electrical)
+[power] total: 3,616 samples
+[hosts] pruned 379,240 → 255,283 (retained: {'ip': 255238, 'audit_source': 37, 'hostname': 8}; min_flows=5)
+=== Done. Node counts: hosts=255283 processes=1500 flows=1303782 devices=2 measurements=3616 ===
+  Split mode: hybrid (DD-8)
+  Host role:  full  (features=full)
+Building TypedCausalGraph...
+  Causal graph: 500 nodes, 496 directed edges
+  [debug] target_node=875471, in_graph=True, parents={1412138}
+  Class weight: licit=1.00  illicit=2.67  (pos=229735, neg=612829)
+  Multi-task NCM supervision: ['flow_node', 'measurement_node', 'process_node']
+
+Training [Phase 1 (No GAN)] for 100 epochs on cuda...
+Epoch 010 | Loss 0.5955 (det=0.5305, stab=5.87e-07, ncm=0.6494) | Val F1=0.3869  AUC=0.2698
+  ↑ Best checkpoint saved → checkpoints/dag_v2/ci_rct_unsw_mg24_best.pt
+Epoch 020 | Loss 0.3440 (det=0.2821, stab=4.14e-06, ncm=0.6197) | Val F1=0.3854  AUC=0.3475
+Epoch 030 | Loss 0.1792 (det=0.1170, stab=2.16e-06, ncm=0.6220) | Val F1=0.3749  AUC=0.7973
+Epoch 040 | Loss 0.1065 (det=0.0445, stab=1.08e-05, ncm=0.6199) | Val F1=0.9642  AUC=1.0000
+  ↑ Best checkpoint saved → checkpoints/dag_v2/ci_rct_unsw_mg24_best.pt
+Epoch 050 | Loss 0.0906 (det=0.0286, stab=2.26e-06, ncm=0.6200) | Val F1=0.9647  AUC=1.0000
+  ↑ Best checkpoint saved → checkpoints/dag_v2/ci_rct_unsw_mg24_best.pt
+Epoch 060 | Loss 0.0865 (det=0.0246, stab=3.87e-07, ncm=0.6195) | Val F1=0.9658  AUC=1.0000
+  ↑ Best checkpoint saved → checkpoints/dag_v2/ci_rct_unsw_mg24_best.pt
+Epoch 070 | Loss 0.0852 (det=0.0232, stab=6.34e-06, ncm=0.6195) | Val F1=0.9695  AUC=1.0000
+  ↑ Best checkpoint saved → checkpoints/dag_v2/ci_rct_unsw_mg24_best.pt
+Epoch 080 | Loss 0.0824 (det=0.0204, stab=6.70e-06, ncm=0.6194) | Val F1=0.9733  AUC=1.0000
+  ↑ Best checkpoint saved → checkpoints/dag_v2/ci_rct_unsw_mg24_best.pt
+Epoch 090 | Loss 0.0829 (det=0.0209, stab=1.71e-06, ncm=0.6195) | Val F1=0.9791  AUC=1.0000
+  ↑ Best checkpoint saved → checkpoints/dag_v2/ci_rct_unsw_mg24_best.pt
+Epoch 100 | Loss 0.0797 (det=0.0177, stab=1.02e-05, ncm=0.6194) | Val F1=0.9838  AUC=1.0000
+  ↑ Best checkpoint saved → checkpoints/dag_v2/ci_rct_unsw_mg24_best.pt
+
+Loading best checkpoint for test evaluation...
+Test  F1=0.9892  AUC=1.0000

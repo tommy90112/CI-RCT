@@ -30,13 +30,70 @@ have wallet→wallet-style same-type edges except possibly tx→tx,
 which we deliberately allow).
 """
 from collections import deque
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import torch
 from torch import Tensor
 from torch_geometric.data import HeteroData
 
 from model.typed_causal_graph import TypedCausalGraph
+
+
+def default_rare_edge_types(dataset: str) -> Set[str]:
+    """
+    Default rare-edge-type set for each dataset. For MG24 (DD-11), all
+    edge types EXCEPT the abundant host_sources_flow are rare and must be
+    preserved through chained expansion or they get crowded out of the
+    BFS subgraph by the 1.2M+ host→flow edges.
+
+    Returns empty set for datasets where the rare-edge pass is not needed
+    (the BFS then runs identically to the legacy behaviour).
+    """
+    if dataset == "unsw_mg24":
+        return {
+            "host_node__to__host_node",         # DD-11 bridge
+            "process_node__to__host_node",       # process runs_on host
+            "process_node__to__process_node",    # process forks
+            "device_node__to__process_node",     # device hosts process
+            "device_node__to__measurement_node", # device reports measurement
+        }
+    return set()
+
+
+def default_blocked_edge_types(dataset: str) -> Set[str]:
+    """
+    Default blocked-edge-type set for each dataset — edges dropped from
+    BOTH the BFS expansion and the final causal graph.
+
+    Symmetric to `default_rare_edge_types`: where `rare` lists edges that
+    MUST be preserved through chained expansion, `blocked` lists edges
+    that MUST be skipped. Both are per-dataset because the structural
+    concern is dataset-specific.
+
+    Elliptic / Elliptic++:
+        Wallet↔wallet and address↔address shortcuts let BFS waste its
+        node budget on lateral wallet-to-wallet expansion without ever
+        advancing to upstream tx. We block them so the tracer has to
+        traverse tx ↔ addr alternating paths.
+
+    Other datasets (MG24, UNSW-NB15, DBLP, …):
+        No analogous shortcut concern; returns empty set so the filter
+        no-ops.
+
+    Replaces the legacy `_is_addr_to_addr_edge` heuristic (May 2026):
+    the old version was a blacklist ("same-type and does not contain
+    'tx'/'transaction'") which silently dropped MG24's
+    `host_node__to__host_node` (DD-11 audit↔ip bridge) and
+    `process_node__to__process_node` (process forks) too — meaning
+    the bridge edges never appeared in the causal graph and NCM never
+    trained on them. Allowlist via dataset key is unambiguous.
+    """
+    if dataset in ("elliptic", "elliptic++"):
+        return {
+            "wallet__to__wallet",
+            "address__to__address",
+        }
+    return set()
 
 
 def compute_type_offsets(data: HeteroData) -> Dict[str, int]:
@@ -71,7 +128,10 @@ def build_typed_causal_graph_from_hetero(
     hop_limit: int = 2,
     node_limit: int = 500,
     directed: bool = True,
-    block_addr_to_addr: bool = True,
+    blocked_edge_types: Optional[Set[str]] = None,
+    rare_edge_types: Optional[Set[str]] = None,
+    rare_reserve: int = 500,
+    rare_max_hops: int = 5,
 ) -> TypedCausalGraph:
     """
     Build a TypedCausalGraph from a HeteroData object.
@@ -89,12 +149,29 @@ def build_typed_causal_graph_from_hetero(
         hop_limit:          BFS depth for subgraph extraction
         node_limit:         Hard cap on number of nodes to include
         directed:           Whether to register edges as directed (for upstream BFS)
-        block_addr_to_addr: If True (default), drop addr→addr edges from BOTH
-                            BFS expansion and the final causal graph.  This
-                            forces the tracer to traverse tx↔addr alternating
-                            paths instead of getting stuck in lateral wallet
-                            chains.  Set False to mirror the legacy behaviour
-                            (e.g. for ablation experiments).
+        blocked_edge_types: Optional set of edge-type strings ("src__to__dst")
+                            dropped from BOTH BFS expansion and the final
+                            causal graph. See `default_blocked_edge_types()`
+                            for per-dataset defaults — e.g. Elliptic blocks
+                            wallet/address self-loops so the tracer must
+                            traverse tx↔addr alternating paths.  None / empty
+                            = no edges blocked.
+        rare_edge_types:    Optional set of edge-type strings that the BFS
+                            should guarantee inclusion of.  After the main
+                            BFS fills `node_limit - rare_reserve` nodes, a
+                            second pass walks ONLY these edge types from
+                            the current visited set, up to `rare_max_hops`
+                            chained levels.  Designed for sparse bridge
+                            edges (e.g. DD-11 host_resolves_to_ip with
+                            only ~70 edges) that would otherwise be
+                            crowded out by high-degree edge types like
+                            host_sources_flow (~1.2M).  No-op if None.
+        rare_reserve:       Node-budget reserve for the rare-edge pass.
+                            Total visited remains <= node_limit.
+        rare_max_hops:      Maximum chain length followed during the
+                            rare-edge pass (e.g. 5 lets us walk
+                            bridge → audit_source → process → forks
+                            and still have room).
 
     Returns:
         TypedCausalGraph with typed nodes and edges
@@ -133,13 +210,19 @@ def build_typed_causal_graph_from_hetero(
     if target_node_id is not None:
         included_nodes = _bfs_subgraph(
             target_node_id, bfs_adj, hop_limit, node_limit,
-            block_addr_to_addr=block_addr_to_addr,
+            blocked_edge_types=blocked_edge_types,
+            rare_edge_types=rare_edge_types,
+            rare_reserve=rare_reserve,
+            rare_max_hops=rare_max_hops,
         )
     elif seed_node_ids:
         # Multi-source BFS from seed nodes — guarantees connectivity
         included_nodes = _multi_source_bfs(
             seed_node_ids, bfs_adj, hop_limit, node_limit,
-            block_addr_to_addr=block_addr_to_addr,
+            blocked_edge_types=blocked_edge_types,
+            rare_edge_types=rare_edge_types,
+            rare_reserve=rare_reserve,
+            rare_max_hops=rare_max_hops,
         )
     else:
         included_nodes = _sample_nodes_proportional(
@@ -162,25 +245,24 @@ def build_typed_causal_graph_from_hetero(
     )
 
     # --- Add directed causal edges (forward only) ---
-    # Block addr→addr edges from the final graph too, not just from BFS,
-    # otherwise the tracer can still drift between wallets that BFS
-    # happened to include via tx-mediated paths.
-    n_aa_skipped = 0
+    # Drop blocked edge types from the final graph too, not just from BFS,
+    # otherwise the tracer can still drift via included-by-other-paths.
+    n_blocked = 0
     for src_g, neighbours in causal_adj.items():
         if src_g not in included_nodes:
             continue
         for dst_g, etype_str in neighbours:
             if dst_g not in included_nodes:
                 continue
-            if block_addr_to_addr and _is_addr_to_addr_edge(etype_str):
-                n_aa_skipped += 1
+            if blocked_edge_types and etype_str in blocked_edge_types:
+                n_blocked += 1
                 continue
             tcg.add_edge(src_g, dst_g, etype_str)
 
-    if block_addr_to_addr and n_aa_skipped > 0:
+    if blocked_edge_types and n_blocked > 0:
         # Diagnostic: prints once per call so user knows the filter fired.
-        print(f"  [data_utils] Skipped {n_aa_skipped:,} addr→addr edges "
-              f"from causal graph (block_addr_to_addr=True).")
+        print(f"  [data_utils] Skipped {n_blocked:,} blocked edges "
+              f"from causal graph (types={sorted(blocked_edge_types)}).")
 
     return tcg
 
@@ -212,57 +294,84 @@ def heterodata_to_flat_feature_dict(
 # ── Private helpers ────────────────────────────────────────────────────────────
 
 
-def _is_addr_to_addr_edge(etype_str: str) -> bool:
-    """Return True if `etype_str` is a same-type non-tx edge (e.g. wallet↔wallet).
-
-    Enforces tx ↔ addr alternating traversal by blocking addr→addr shortcuts
-    such as `wallet__to__wallet` or `address__to__address`.
-
-    Same-type tx edges (`transaction__to__transaction`, `tx__to__tx`) are
-    intentionally allowed: a tx can plausibly be the upstream cause of
-    another tx via a `flows_to` relation, and the tracer needs that link
-    to chain multiple tx hops.
-
-    For graphs whose edge-type strings don't follow `src__to__dst` (e.g. a
-    custom serialisation), the function falls back to False, which means
-    the filter no-ops and we keep the legacy behaviour — safe default.
-    """
-    parts = etype_str.split("__to__")
-    if len(parts) != 2:
-        return False
-    src_type, dst_type = parts
-    if src_type != dst_type:
-        return False
-    # Allow same-type tx links (tx→tx flows_to is a legitimate hop).
-    return "tx" not in src_type and "transaction" not in src_type
-
-
 def _multi_source_bfs(
     seeds: List[int],
     adj: Dict[int, List[Tuple[int, str]]],
     hop_limit: int,
     node_limit: int,
-    block_addr_to_addr: bool = True,
+    blocked_edge_types: Optional[Set[str]] = None,
+    rare_edge_types: Optional[Set[str]] = None,
+    rare_reserve: int = 500,
+    rare_max_hops: int = 5,
 ) -> set:
     """
     BFS from multiple seed nodes simultaneously.
     Each seed expands up to hop_limit hops; stops when node_limit reached.
+
+    If `blocked_edge_types` is non-empty, edges of those types are skipped
+    during the traversal (and also dropped when building the final causal
+    graph in `build_typed_causal_graph_from_hetero`).
+
+    If `rare_edge_types` is set, the main BFS is capped at
+    `node_limit - rare_reserve` and the remaining budget is spent on a
+    chained walk that follows only those rare edge types — see
+    `_expand_rare_edge_chain`.
     """
     visited = set(seeds)
     queue = deque([(s, 0) for s in seeds])
 
-    while queue and len(visited) < node_limit:
+    main_cap = (
+        max(len(seeds), node_limit - rare_reserve)
+        if rare_edge_types else node_limit
+    )
+
+    while queue and len(visited) < main_cap:
         node, depth = queue.popleft()
         if depth >= hop_limit:
             continue
         for neighbour, etype_str in adj.get(node, []):
-            if block_addr_to_addr and _is_addr_to_addr_edge(etype_str):
-                continue  # skip addr→addr; force tx↔addr alternating path
-            if neighbour not in visited and len(visited) < node_limit:
+            if blocked_edge_types and etype_str in blocked_edge_types:
+                continue
+            if neighbour not in visited and len(visited) < main_cap:
                 visited.add(neighbour)
                 queue.append((neighbour, depth + 1))
 
+    if rare_edge_types:
+        _expand_rare_edge_chain(
+            visited, adj, rare_edge_types,
+            max_total=node_limit, max_hops=rare_max_hops,
+        )
+
     return visited
+
+
+def _expand_rare_edge_chain(
+    visited: set,
+    adj: Dict[int, List[Tuple[int, str]]],
+    rare_edge_types: Set[str],
+    max_total: int,
+    max_hops: int,
+) -> None:
+    """
+    Mutate `visited` by walking only `rare_edge_types` edges from each
+    currently-visited node, up to `max_hops` chained levels deep.
+
+    Used as a second pass after the main BFS to guarantee that sparse
+    edge types (e.g. DD-11 bridge with ~70 edges out of 1.27M total)
+    contribute nodes to the final causal-graph subgraph instead of being
+    crowded out by high-degree edge types in the main BFS.
+    """
+    queue = deque([(n, 0) for n in list(visited)])
+    while queue and len(visited) < max_total:
+        node, depth = queue.popleft()
+        if depth >= max_hops:
+            continue
+        for neighbour, etype_str in adj.get(node, []):
+            if etype_str not in rare_edge_types:
+                continue
+            if neighbour not in visited and len(visited) < max_total:
+                visited.add(neighbour)
+                queue.append((neighbour, depth + 1))
 
 
 def _sample_nodes_proportional(
@@ -306,21 +415,38 @@ def _bfs_subgraph(
     adj: Dict[int, List[Tuple[int, str]]],
     hop_limit: int,
     node_limit: int,
-    block_addr_to_addr: bool = True,
+    blocked_edge_types: Optional[Set[str]] = None,
+    rare_edge_types: Optional[Set[str]] = None,
+    rare_reserve: int = 500,
+    rare_max_hops: int = 5,
 ) -> set:
-    """BFS from start up to hop_limit hops; return node set (at most node_limit)."""
+    """BFS from start up to hop_limit hops; return node set (at most node_limit).
+
+    `blocked_edge_types`/`rare_edge_types`/`rare_reserve`/`rare_max_hops`
+    work identically to `_multi_source_bfs` — see that function for details.
+    """
     visited = {start}
     queue = deque([(start, 0)])
 
-    while queue and len(visited) < node_limit:
+    main_cap = (
+        max(1, node_limit - rare_reserve) if rare_edge_types else node_limit
+    )
+
+    while queue and len(visited) < main_cap:
         node, depth = queue.popleft()
         if depth >= hop_limit:
             continue
         for neighbour, etype_str in adj.get(node, []):
-            if block_addr_to_addr and _is_addr_to_addr_edge(etype_str):
-                continue  # skip addr→addr; force tx↔addr alternating path
-            if neighbour not in visited and len(visited) < node_limit:
+            if blocked_edge_types and etype_str in blocked_edge_types:
+                continue
+            if neighbour not in visited and len(visited) < main_cap:
                 visited.add(neighbour)
                 queue.append((neighbour, depth + 1))
+
+    if rare_edge_types:
+        _expand_rare_edge_chain(
+            visited, adj, rare_edge_types,
+            max_total=node_limit, max_hops=rare_max_hops,
+        )
 
     return visited
