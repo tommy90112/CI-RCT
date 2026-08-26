@@ -29,7 +29,34 @@ pytest tests/test_typed_causal_graph.py  # single file
 pytest tests/ -v --cov=model --cov=utils --cov-report=term-missing
 ```
 
-### Training
+### One-command pipeline (recommended)
+
+`run_pipeline.py` chains train → evaluate → export → static viewer, using the
+frozen configuration in `pipeline/config.py`. Stages whose output already
+exists are skipped, so re-running is cheap.
+
+```bash
+cd CI-RCT
+
+python run_pipeline.py --dry-run          # show the plan + exact commands
+python run_pipeline.py --device cuda      # full run, all three variants
+python run_pipeline.py --from evaluate    # reuse existing checkpoints
+python run_pipeline.py --force evaluate   # redo a stage (and everything downstream)
+python run_pipeline.py --only frontend    # rebuild just the viewer
+```
+
+Two flags in that frozen config deliberately differ from the CLI defaults, and
+from each other:
+
+| Flag | Train | Evaluate | Why |
+|------|-------|----------|-----|
+| `--ncm_baseline` | `type_mean` | `marginal` | `marginal` hangs during training (per-step MLP over 822k wallets); it is an eval-time choice only |
+| `--tracer_score` | — | `ce_signed` | matches the reported results; the argparse default is `ce` |
+
+Outputs land where the viewer already looks (`frontend_temp/vite.config.ts`
+serves `../viz` and `../results` directly), so no paths need matching by hand.
+
+### Training (individual stages)
 
 ```bash
 cd CI-RCT
@@ -116,13 +143,14 @@ HeteroData (PyG)
 
 | File | Purpose |
 |------|---------|
+| `run_pipeline.py` | One-command pipeline: train → evaluate → export → static viewer |
 | `train.py` | CLI training; supports Phase 1 (no GAN) and Phase 2 (WGAN-GP) |
 | `evaluate.py` | Four-dimension evaluation: classification, root cause, explanation quality, φ-stability |
 | `infer.py` | Single-graph inference |
 
 ### Configuration
 
-All hyperparameters live in `configs/config.py` as the frozen `CI_RCT_Config` dataclass. Nothing is hardcoded in model files. CLI flags in `train.py` / `evaluate.py` map 1-to-1 to config fields.
+The pipeline's own frozen flag sets live in `pipeline/config.py` (transcribed from `ablation_plan.md` §0). All model hyperparameters live in `configs/config.py` as the frozen `CI_RCT_Config` dataclass. Nothing is hardcoded in model files. CLI flags in `train.py` / `evaluate.py` map 1-to-1 to config fields.
 
 ### Data loaders (`CI-RCT/utils/`)
 
