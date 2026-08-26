@@ -1,0 +1,12 @@
+[transaction] n=679 mean_depth=1.6186
+  root_type: wallet=413 transaction=266
+  depth buckets 0..10+: [152, 239, 91, 146, 27, 18, 2, 3, 0, 1, 0]
+
+[wallet] n=1737 mean_depth=2.5492
+  root_type: wallet=1239 transaction=498
+  depth buckets 0..10+: [60, 153, 987, 238, 128, 82, 42, 16, 15, 5, 11]
+
+[joint] n=2000 mean_depth=1.7780
+  root_type: wallet=1531 transaction=469
+  depth buckets 0..10+: [497, 322, 710, 255, 131, 38, 24, 6, 12, 1, 4]
+

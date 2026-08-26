@@ -1,4 +1,4 @@
-"""
+r"""
 Backbone do-intervention coalition value — Module 2c-bis of CI-RCT.
 
 Provides the *non-additive* coalition value v(S) that the asymmetric Causal

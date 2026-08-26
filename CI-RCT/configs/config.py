@@ -11,7 +11,7 @@ from typing import Optional
 @dataclass(frozen=True)
 class CI_RCT_Config:
     # ── Dataset ───────────────────────────────────────────────────────────
-    dataset: str = "dblp"
+    dataset: str = "elliptic++"
     data_root: str = "data"
     target_node_type: str = "author"
     hop_limit: int = 2            # BFS depth for causal graph construction

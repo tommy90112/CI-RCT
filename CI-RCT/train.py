@@ -2,8 +2,8 @@
 CI-RCT training entry point.
 
 Two training modes:
-  --use_gan false   Phase 1 — backbone + NCM only (good for DBLP/ACM/IMDB sanity check)
-  --use_gan true    Full training — backbone + NCM + CausalAdversarialGAN (for Elliptic++)
+  --use_gan false   Phase 1 — backbone + NCM only (sanity check / ablation)
+  --use_gan true    Full training — backbone + NCM + CausalAdversarialGAN
 
 GAN training follows the WGAN-GP schedule:
   For every Generator update, run n_critic Discriminator updates first.
@@ -12,13 +12,13 @@ Loss:
   L_total = L_detection + λ1 · L_adversarial + λ2 · L_stability
 
 Usage:
-  # Phase 1 — quick sanity check on DBLP
-  python train.py --dataset dblp --epochs 100 --use_gan false
+  # Phase 1 — backbone + NCM only
+  python train.py --dataset elliptic++ --epochs 100 --use_gan false
 
-  # Full training on Elliptic++
-  python train.py --dataset elliptic --epochs 200 --use_gan true --lambda_adversarial 0.1
+  # Phase 2 — full training
+  python train.py --dataset elliptic++ --epochs 200 --use_gan true --lambda_adversarial 0.1
 
-Supported datasets: dblp, acm, imdb, elliptic
+Supported dataset: elliptic++
 """
 import argparse
 import os
@@ -48,8 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train CI-RCT: Causal Intervention-Based Root Cause Tracing"
     )
-    parser.add_argument("--dataset", type=str, default="dblp",
-                        choices=["dblp", "acm", "imdb", "elliptic", "elliptic++", "crypto", "unsw_nb15", "unsw_mg24"])
+    parser.add_argument("--dataset", type=str, default="elliptic++",
+                        choices=["elliptic++"])
     # Elliptic++ detection target: 'transaction' (default, unchanged original
     # behaviour), 'wallet' (clean wallet labels), or 'joint' (one model that
     # classifies both, pooled F1). wallet/joint require --dataset elliptic++.
@@ -176,43 +176,6 @@ def parse_args() -> argparse.Namespace:
                              "labeled tx, with addr→addr edges within that wallet set.")
     parser.add_argument("--fraud_subgraph_hops", type=int, default=2,
                         help="Number of wallet hops from labeled tx (default 2).")
-    parser.add_argument("--max_flows", type=int, default=200_000,
-                        help="Max flow records for unsw_nb15 (0 = no limit).")
-    # UNSW-MG24 specific options (see DD-1 in unsw_mg24_plan.md)
-    parser.add_argument("--mg24_subsample_ddos", type=float, default=1.0,
-                        help="Fraction of ddos1 flows to retain for unsw_mg24. "
-                             "1.0 = full graph (DD-1 default); 0.1 = 10%% (OOM fallback).")
-    parser.add_argument("--mg24_min_host_flows", type=int, default=5,
-                        help="External-IP host pruning threshold for unsw_mg24.")
-    parser.add_argument("--mg24_prune_external", type=lambda x: x.lower() == "true",
-                        default=True,
-                        help="Whether to prune external-only IP hosts in unsw_mg24.")
-    parser.add_argument("--mg24_split_mode", type=str, default="by_file",
-                        choices=("row", "by_file", "hybrid", "by_incident"),
-                        help="Train/val/test split strategy for unsw_mg24 "
-                             "(DD-8/DD-13). 'row' = row-level random "
-                             "(data-leaky); 'by_file' = by-file stratified "
-                             "(default, honest cross-session generalisation); "
-                             "'hybrid' = benign row-level + malicious "
-                             "by-file (production deployment scenario); "
-                             "'by_incident' = attack_type aligned across "
-                             "flow/audit modalities (DD-13, cuts cross-modal "
-                             "label leakage).")
-    parser.add_argument("--mg24_host_role", type=str, default="full",
-                        choices=("full", "no_mal_count", "zeroed",
-                                 "detection_excluded"),
-                        help="DD-8 host-feature fairness ablation:\n"
-                             "  full               baseline (incl. mal_flow_count)\n"
-                             "  no_mal_count       Fix 1: drop label-derived count\n"
-                             "  zeroed             Fix 3: zero all host features\n"
-                             "  detection_excluded Fix 4: remove host_node from HGT\n"
-                             "host_node stays in the graph for RootCauseTracer "
-                             "in all modes.")
-    parser.add_argument("--mg24_drop_features", type=str, default="",
-                        help="DD-8 Fix 5: comma-separated CICFlowMeter "
-                             "feature columns to remove from flow_node. "
-                             "Example for ablating Active timing fingerprint: "
-                             "'Active Std,Active Max,Active Mean'.")
     return parser.parse_args()
 
 
@@ -220,19 +183,6 @@ def parse_args() -> argparse.Namespace:
 
 def load_dataset(name: str, root: str, **kwargs):
     """Return (HeteroData, target_node_type)."""
-    if name == "dblp":
-        from torch_geometric.datasets import DBLP
-        return DBLP(root=os.path.join(root, "dblp"))[0], "author"
-    if name == "acm":
-        from torch_geometric.datasets import ACM
-        return ACM(root=os.path.join(root, "acm"))[0], "paper"
-    if name == "imdb":
-        from torch_geometric.datasets import IMDB
-        return IMDB(root=os.path.join(root, "imdb"))[0], "movie"
-    if name == "elliptic":
-        # Elliptic++ requires manual download — see README for instructions
-        from utils.elliptic_loader import load_elliptic_dataset
-        return load_elliptic_dataset(root)
     if name == "elliptic++":
         from utils.elliptic_plus_loader import load_elliptic_plus_dataset
         return load_elliptic_plus_dataset(
@@ -242,64 +192,6 @@ def load_dataset(name: str, root: str, **kwargs):
             fraud_subgraph=kwargs.get("fraud_subgraph", False),
             fraud_subgraph_hops=kwargs.get("fraud_subgraph_hops", 2),
         )
-    if name == "crypto":
-        from utils.crypto_loader import load_crypto_dataset
-        return load_crypto_dataset(root)
-    if name == "unsw_nb15":
-        from utils.unsw_loader import load_unsw_dataset
-        return load_unsw_dataset(
-            os.path.join(root, "unsw_nb15"),
-            max_flows=kwargs.get("max_flows", 200_000),
-        )
-    if name == "unsw_mg24":
-        from utils.mg24_loader import (
-            build_edges,
-            load_mg24_data,
-            to_pyg_hetero_data,
-        )
-        mg24 = load_mg24_data(
-            root=os.path.join(root, "unsw_mg24"),
-            subsample_ddos=kwargs.get("mg24_subsample_ddos", 1.0),
-            seed=kwargs.get("seed", 42),
-            prune_external_hosts=kwargs.get("mg24_prune_external", True),
-            min_host_flows=kwargs.get("mg24_min_host_flows", 5),
-            verbose=True,
-        )
-        edges = build_edges(mg24)
-        split_mode = kwargs.get("mg24_split_mode", "by_file")
-        # DD-8 host_role → host_features_mode mapping:
-        #   "full"               → features="full"            (baseline)
-        #   "no_mal_count"       → features="no_mal_count"    (Fix 1)
-        #   "zeroed"             → features="zeroed"          (Fix 3)
-        #   "detection_excluded" → features="full" + backbone exclude (Fix 4;
-        #                          features value doesn't matter because the
-        #                          backbone drops the node type entirely).
-        host_role = kwargs.get("mg24_host_role", "full")
-        host_features_mode = (
-            host_role if host_role in ("full", "no_mal_count", "zeroed")
-            else "full"
-        )
-        drop_raw = kwargs.get("mg24_drop_features", "") or ""
-        flow_features_exclude = [
-            c.strip() for c in drop_raw.split(",") if c.strip()
-        ]
-        print(
-            f"  Split mode: {split_mode} (DD-8)\n"
-            f"  Host role:  {host_role}  "
-            f"(features={host_features_mode})"
-        )
-        if flow_features_exclude:
-            print(f"  Dropping flow features (DD-8 Fix 5): "
-                  f"{flow_features_exclude}")
-        hd = to_pyg_hetero_data(
-            mg24, edges,
-            seed=kwargs.get("seed", 42),
-            split_mode=split_mode,
-            host_features_mode=host_features_mode,
-            flow_features_exclude=flow_features_exclude or None,
-        )
-        # DD-3 primary target: flow_node (main detection task; baseline-comparable).
-        return hd, "flow_node"
     raise ValueError(f"Unknown dataset: {name!r}")
 
 
@@ -360,7 +252,7 @@ def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
     model._prev_phi = dict(phi_current)
 
     # L_ncm: supervise NCM to predict the destination node's binary label.
-    # For MG24 (DD-3), `multi_task_labels` lets every labelled dst type
+    # When provided, `multi_task_labels` lets every labelled dst type
     # (flow / process / measurement) provide BCE signal — without this, all
     # edges whose dst is not the primary target type would be silently
     # skipped and the NCM loss would plateau (observed in pilot run).
@@ -548,13 +440,6 @@ def _load_variant_dataset(args):
             labeled_only=args.labeled_only,
             fraud_subgraph=args.fraud_subgraph,
             fraud_subgraph_hops=args.fraud_subgraph_hops,
-            max_flows=args.max_flows,
-            mg24_subsample_ddos=args.mg24_subsample_ddos,
-            mg24_min_host_flows=args.mg24_min_host_flows,
-            mg24_prune_external=args.mg24_prune_external,
-            mg24_split_mode=args.mg24_split_mode,
-            mg24_host_role=args.mg24_host_role,
-            mg24_drop_features=args.mg24_drop_features,
             seed=args.seed,
         )
     if args.dataset != "elliptic++":
@@ -790,12 +675,9 @@ def main() -> None:
 
     # --- Model ---
     node_feature_dim = in_channels_dict.get(target_type)
-    # DD-8 Fix 4: when --mg24_host_role=detection_excluded, drop host_node
-    # from HGT message passing (graph stays intact for RootCauseTracer).
+    # Node types kept in the graph (so RootCauseTracer can still walk them)
+    # but dropped from HGT message passing. Empty for Elliptic++.
     backbone_exclude_node_types = []
-    if args.dataset == "unsw_mg24" and args.mg24_host_role == "detection_excluded":
-        backbone_exclude_node_types = ["host_node"]
-        print(f"  Detection graph excludes: {backbone_exclude_node_types} (DD-8 Fix 4)")
     if args.variant == "joint":
         from model.ci_rct_joint import CI_RCT_Joint
         aux_num_classes = {"wallet": int(data["wallet"].y.max().item()) + 1}
@@ -890,20 +772,11 @@ def main() -> None:
             # Fallback: use all training nodes
             fraud_features = data[target_type].x[train_mask].to(device)
 
-    # --- Multi-task labels for HeteroNCM supervision (DD-3, MG24-only) ---
-    # Every labelled node type with `y` attached contributes BCE supervision
-    # for its incoming causal edges. For datasets with only a single labelled
-    # type (Elliptic++, NB15, DBLP) this remains None and the legacy
-    # single-task / wallet→tx path in supervised_ncm_loss() is used.
+    # --- Multi-task labels for HeteroNCM supervision ---
+    # Reserved for datasets with several labelled node types. Elliptic++ has a
+    # single labelled type, so the single-task / wallet→tx path in
+    # supervised_ncm_loss() is used.
     multi_task_labels = None
-    if args.dataset == "unsw_mg24":
-        multi_task_labels = {
-            ntype: data[ntype].y
-            for ntype in data.node_types
-            if hasattr(data[ntype], "y") and data[ntype].y is not None
-        }
-        labelled_types = sorted(multi_task_labels.keys())
-        print(f"  Multi-task NCM supervision: {labelled_types}")
 
     # --- Training loop ---
     mode_str = "Phase 2 (GAN)" if args.use_gan else "Phase 1 (No GAN)"

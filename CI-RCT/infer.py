@@ -40,7 +40,7 @@ from utils.data_utils import build_typed_causal_graph_from_hetero, compute_type_
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="CI-RCT: Fraud Root Cause Tracer")
     parser.add_argument("--dataset", type=str, default="elliptic++",
-                        choices=["dblp", "acm", "imdb", "elliptic", "elliptic++"])
+                        choices=["elliptic++"])
     parser.add_argument("--data_root", type=str, default="data")
     parser.add_argument("--checkpoint", type=str, required=True,
                         help="Path to trained model checkpoint (.pt)")
@@ -70,18 +70,6 @@ def parse_args() -> argparse.Namespace:
 # ── Dataset loader ─────────────────────────────────────────────────────────────
 
 def load_dataset(name: str, root: str, **kwargs):
-    if name == "dblp":
-        from torch_geometric.datasets import DBLP
-        return DBLP(root=os.path.join(root, "dblp"))[0], "author"
-    if name == "acm":
-        from torch_geometric.datasets import ACM
-        return ACM(root=os.path.join(root, "acm"))[0], "paper"
-    if name == "imdb":
-        from torch_geometric.datasets import IMDB
-        return IMDB(root=os.path.join(root, "imdb"))[0], "movie"
-    if name == "elliptic":
-        from utils.elliptic_loader import load_elliptic_dataset
-        return load_elliptic_dataset(root)
     if name == "elliptic++":
         from utils.elliptic_plus_loader import load_elliptic_plus_dataset
         return load_elliptic_plus_dataset(

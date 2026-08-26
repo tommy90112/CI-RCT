@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1420 640" font-family="'Times New Roman', Times, serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#333"/>
+    </marker>
+  </defs>
+
+  <style>
+    .box   { fill:#ffffff; stroke:#333333; stroke-width:1.2; }
+    .dash  { fill:#ffffff; stroke:#777777; stroke-width:1.2; stroke-dasharray:6 4; }
+    .grp   { fill:#fafafa; stroke:#333333; stroke-width:1.2; }
+    .t     { fill:#1a1a1a; font-size:16px; text-anchor:middle; }
+    .s     { fill:#444444; font-size:12px; text-anchor:middle; }
+    .ti    { fill:#1a1a1a; font-size:15px; font-weight:700; text-anchor:middle; }
+    .tb    { fill:#1a1a1a; font-size:14px; font-weight:600; text-anchor:middle; }
+    .lbl   { fill:#666666; font-size:11px; text-anchor:middle; }
+    .edge  { fill:none; stroke:#333333; stroke-width:1.4; marker-end:url(#arrow); }
+    .edge2 { fill:none; stroke:#777777; stroke-width:1.4; stroke-dasharray:6 4; marker-end:url(#arrow); }
+  </style>
+
+  <!-- ===== Main pipeline ===== -->
+
+  <!-- Import Data -->
+  <rect class="box" x="30"  y="263" width="120" height="74" rx="10"/>
+  <text class="t" x="90" y="305">Import Data</text>
+
+  <!-- Graph construction -->
+  <rect class="box" x="190" y="250" width="170" height="100" rx="10"/>
+  <text class="tb" x="275" y="282">Temporal Hetero-Graph</text>
+  <text class="tb" x="275" y="300">Construction</text>
+  <text class="s"  x="275" y="320">Type-aware directed graph,</text>
+  <text class="s"  x="275" y="337">oriented as a DAG by time</text>
+
+  <!-- Module 1 -->
+  <rect class="box" x="400" y="248" width="195" height="104" rx="10"/>
+  <text class="ti" x="497" y="280">Module 1</text>
+  <text class="tb" x="497" y="302">HeteroGNN Backbone</text>
+  <text class="s"  x="497" y="322">Representation learning</text>
+  <text class="s"  x="497" y="339">+ fraud detection</text>
+
+  <!-- Module 2 (group container) -->
+  <rect class="grp" x="635" y="160" width="300" height="290" rx="12"/>
+  <text class="ti" x="785" y="188">Module 2</text>
+  <text class="s"  x="785" y="207">Causal Intervention Engine</text>
+
+  <rect class="box" x="660" y="222" width="250" height="56" rx="8"/>
+  <text class="tb" x="785" y="245">TypedCausalGraph</text>
+  <text class="s"  x="785" y="265">Temporal typed causal DAG</text>
+
+  <rect class="box" x="660" y="294" width="250" height="56" rx="8"/>
+  <text class="tb" x="785" y="317">HeteroNCM</text>
+  <text class="s"  x="785" y="337">do-calculus effect estimation</text>
+
+  <rect class="box" x="660" y="366" width="250" height="56" rx="8"/>
+  <text class="tb" x="785" y="389">Asymmetric Causal Shapley</text>
+  <text class="s"  x="785" y="409">Upstream causal attribution</text>
+
+  <!-- internal flow -->
+  <path class="edge" d="M785,278 L785,290"/>
+  <path class="edge" d="M785,350 L785,362"/>
+
+  <!-- Module 3 -->
+  <rect class="box" x="975" y="248" width="195" height="104" rx="10"/>
+  <text class="ti" x="1072" y="280">Module 3</text>
+  <text class="tb" x="1072" y="302">RootCauseTracer</text>
+  <text class="s"  x="1072" y="322">Backward causal tracing</text>
+  <text class="s"  x="1072" y="339">&#8594; causal money-flow chain</text>
+
+  <!-- Four-dimensional evaluation -->
+  <rect class="box" x="1210" y="245" width="200" height="110" rx="10"/>
+  <text class="tb" x="1310" y="282">Four-Dimensional</text>
+  <text class="tb" x="1310" y="300">Evaluation</text>
+  <text class="s"  x="1310" y="320">Classification &#183; Root cause</text>
+  <text class="s"  x="1310" y="337">Explanation &#183; Stability</text>
+
+  <!-- ===== Module 4 (training phase only, dashed) ===== -->
+  <rect class="dash" x="400" y="470" width="195" height="92" rx="10"/>
+  <text class="ti"  x="497" y="500" fill="#555">Module 4</text>
+  <text class="s"   x="497" y="521">CausalAdversarialGAN</text>
+  <text class="lbl" x="497" y="540">WGAN-GP camouflaged samples</text>
+  <text class="lbl" x="497" y="556">(training phase only)</text>
+
+  <!-- ===== Main pipeline arrows ===== -->
+  <path class="edge" d="M150,300 L188,300"/>
+  <path class="edge" d="M360,300 L398,300"/>
+  <path class="edge" d="M595,300 L633,300"/>
+  <path class="edge" d="M935,300 L973,300"/>
+  <path class="edge" d="M1170,300 L1208,300"/>
+
+  <!-- Module 4 -> Module 1 (training-time feedback) -->
+  <path class="edge2" d="M497,470 L497,354"/>
+  <text class="lbl" x="552" y="415" text-anchor="start" fill="#777">Adversarial robustness</text>
+</svg>

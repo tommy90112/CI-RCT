@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<title>CI-RCT · Follow-the-money 時序 DAG</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #1b232c; --ink: #e6edf3; --muted: #8b98a5;
+    --tx: #4c9be8; --wallet: #d9a441; --fraud: #f0506e;
+    --e-tt: #4c9be8; --e-wt: #4caf72; --e-tw: #e08e3c; --e-other: #5a6673;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, "Segoe UI", Roboto, "Noto Sans TC", sans-serif; }
+  #app { display: flex; height: 100vh; }
+  #stage { flex: 1; position: relative; overflow: hidden; }
+  svg { width: 100%; height: 100%; display: block; cursor: grab; }
+  svg.dragging { cursor: grabbing; }
+  #side { width: 270px; background: var(--panel); padding: 16px 18px;
+    overflow-y: auto; border-left: 1px solid #2a3441; }
+  h1 { font-size: 15px; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  .sec { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); margin: 16px 0 6px; }
+  .row { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 5px 0; }
+  .row .k { color: var(--muted); }
+  .row .v { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .legend .row { font-size: 12px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+  .line { width: 18px; height: 0; border-top: 3px solid; flex: none; }
+  .hint { color: var(--muted); font-size: 11px; line-height: 1.6; margin-top: 14px; }
+  button { background: #263340; color: var(--ink); border: 1px solid #36465699;
+    border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
+  button:hover { background: #2f3e4c; }
+  #tip { position: absolute; pointer-events: none; background: #000d; color: #fff;
+    padding: 6px 9px; border-radius: 6px; font-size: 12px; line-height: 1.5;
+    opacity: 0; transition: opacity .08s; white-space: nowrap; z-index: 5; }
+  .axis text { fill: var(--muted); font-size: 11px; }
+  .axis line { stroke: #2a3441; }
+  .bandlabel { fill: var(--muted); font-size: 12px; font-weight: 600; opacity: .8; }
+  .node { cursor: pointer; }
+  .node:hover { stroke: #fff !important; }
+  .banner { position: absolute; top: 10px; left: 12px; font-size: 12px;
+    color: var(--muted); background: #0008; padding: 4px 8px; border-radius: 6px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <div class="banner" id="banner">載入中…</div>
+    <svg id="svg">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7"
+          markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#7a8794"></path>
+        </marker>
+      </defs>
+      <g id="viewport">
+        <g id="gAxis" class="axis"></g>
+        <g id="gBands"></g>
+        <g id="gLinks"></g>
+        <g id="gNodes"></g>
+      </g>
+    </svg>
+    <div id="tip"></div>
+  </div>
+
+  <div id="side">
+    <h1>Follow-the-money 時序 DAG</h1>
+    <div class="sub">X 軸＝時間步(早→晚)・邊只會往右(因在果前)</div>
+
+    <button id="btnReset">重設視角</button>
+
+    <div class="sec">圖摘要</div>
+    <div class="row"><span class="k">資料集</span><span class="v" id="mDataset">—</span></div>
+    <div class="row"><span class="k">節點</span><span class="v" id="mNodes">—</span></div>
+    <div class="row"><span class="k">邊</span><span class="v" id="mLinks">—</span></div>
+    <div class="row"><span class="k">fraud 節點</span><span class="v" id="mFraud">—</span></div>
+    <div class="row"><span class="k">有時間戳</span><span class="v" id="mTimed">—</span></div>
+    <div class="row"><span class="k">時間範圍</span><span class="v" id="mRange">—</span></div>
+
+    <div class="sec">節點</div>
+    <div class="legend">
+      <div class="row"><span class="dot" style="background:var(--tx)"></span>transaction</div>
+      <div class="row"><span class="dot" style="background:var(--wallet)"></span>wallet</div>
+      <div class="row"><span class="dot" style="background:#2a3441;border:3px solid var(--fraud)"></span>illicit / fraud</div>
+    </div>
+
+    <div class="sec">邊(因 → 果)</div>
+    <div class="legend">
+      <div class="row"><span class="line" style="border-color:var(--e-tt)"></span>tx → tx(金流)</div>
+      <div class="row"><span class="line" style="border-color:var(--e-wt)"></span>wallet → tx(注入)</div>
+      <div class="row"><span class="line" style="border-color:var(--e-tw)"></span>tx → wallet(支付)</div>
+    </div>
+
+    <div class="hint">
+      滾輪縮放・拖曳平移・滑過節點看細節。<br>
+      左側「t?」欄＝無時間戳節點(未在子圖內被注資的 wallet),不受時序約束。<br><br>
+      此檢視器讀 <code>dag_elliptic.json</code>;讀不到時顯示內建示範資料。
+    </div>
+  </div>
+</div>
+
+<script>
+// ── 顏色對映 ────────────────────────────────────────────────────────────────
+const TYPE_COLOR = { transaction: "#4c9be8", wallet: "#d9a441" };
+const EDGE_COLOR = {
+  "transaction__to__transaction": "#4c9be8",
+  "wallet__to__transaction":      "#4caf72",
+  "transaction__to__wallet":      "#e08e3c",
+};
+const typeColor = t => TYPE_COLOR[t] || "#9aa7b3";
+const edgeColor = e => EDGE_COLOR[e] || "#5a6673";
+
+// ── 內建示範資料(fetch 失敗時用)────────────────────────────────────────────
+const DEMO = {
+  meta: { dataset: "demo (內建示範)", target_type: "transaction" },
+  nodes: [
+    { id: 0, type: "wallet",      time: 1,    label: "wallet#0", fraud: true },
+    { id: 1, type: "transaction", time: 1,    label: "tx#0",     fraud: true, is_seed: true },
+    { id: 2, type: "transaction", time: 1,    label: "tx#1",     fraud: false },
+    { id: 3, type: "transaction", time: 2,    label: "tx#2",     fraud: true },
+    { id: 4, type: "wallet",      time: 2,    label: "wallet#1", fraud: false },
+    { id: 5, type: "transaction", time: 3,    label: "tx#3",     fraud: false },
+    { id: 6, type: "transaction", time: 4,    label: "tx#4",     fraud: false },
+    { id: 7, type: "wallet",      time: null, label: "wallet#2", fraud: false },
+  ],
+  links: [
+    { source: 0, target: 1, etype: "wallet__to__transaction" },      // t1→t1
+    { source: 1, target: 2, etype: "transaction__to__transaction" }, // t1→t1 (同步)
+    { source: 1, target: 3, etype: "transaction__to__transaction" }, // t1→t2
+    { source: 4, target: 3, etype: "wallet__to__transaction" },      // t2→t2
+    { source: 3, target: 5, etype: "transaction__to__transaction" }, // t2→t3
+    { source: 1, target: 4, etype: "transaction__to__wallet" },      // t1→t2 (pays)
+    { source: 5, target: 6, etype: "transaction__to__transaction" }, // t3→t4
+    { source: 7, target: 1, etype: "wallet__to__transaction" },      // 無時間 → tx0
+  ],
+};
+
+// ── 版面常數 ────────────────────────────────────────────────────────────────
+const M = { top: 46, right: 60, bottom: 40, left: 70 };
+const NODE_R = 7, COL_GAP = 150, CELL_W = 26, ROW_GAP = 22;
+
+const svg = document.getElementById("svg");
+const viewport = document.getElementById("viewport");
+const tip = document.getElementById("tip");
+let view = { x: 0, y: 0, k: 1 };
+
+function applyView() {
+  viewport.setAttribute("transform",
+    `translate(${view.x},${view.y}) scale(${view.k})`);
+}
+
+function el(tag, attrs) {
+  const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  return e;
+}
+
+// ── 佈局:X=時間,Y=類型帶內堆疊 ─────────────────────────────────────────────
+function layout(data) {
+  const nodes = data.nodes, byId = new Map(nodes.map(n => [n.id, n]));
+  const timed = nodes.filter(n => n.time != null).map(n => n.time);
+  const tMin = timed.length ? Math.min(...timed) : 0;
+  const tMax = timed.length ? Math.max(...timed) : 0;
+  // 無時間戳節點放到 tMin-1 的「t?」欄
+  const GUT = tMin - 1;
+  const timeKey = n => (n.time == null ? GUT : n.time);
+  const steps = [];
+  for (let t = GUT; t <= tMax; t++) steps.push(t);
+  const xOf = t => M.left + (t - GUT) * COL_GAP;
+
+  // 類型帶:依字母序由上到下
+  const types = [...new Set(nodes.map(n => n.type))].sort();
+  const bandOf = {}; types.forEach((t, i) => bandOf[t] = i);
+  const BAND_H = 260;
+  const bandTop = t => M.top + bandOf[t] * BAND_H;
+
+  // 同一 (type,time) 格內垂直堆疊,過多就換欄
+  const cell = new Map();   // key -> count
+  for (const n of nodes) {
+    const key = n.type + "@" + timeKey(n);
+    const idx = cell.get(key) || 0;
+    cell.set(key, idx + 1);
+    const perCol = Math.max(1, Math.floor((BAND_H - 30) / ROW_GAP));
+    const col = Math.floor(idx / perCol), rowi = idx % perCol;
+    n._x = xOf(timeKey(n)) + col * CELL_W;
+    n._y = bandTop(n.type) + 24 + rowi * ROW_GAP;
+  }
+  return { byId, types, steps, GUT, xOf, bandTop, BAND_H, tMin, tMax };
+}
+
+function render(data) {
+  ["gAxis", "gBands", "gLinks", "gNodes"].forEach(id =>
+    document.getElementById(id).replaceChildren());
+  const L = layout(data);
+  const gAxis = document.getElementById("gAxis");
+  const gBands = document.getElementById("gBands");
+  const gLinks = document.getElementById("gLinks");
+  const gNodes = document.getElementById("gNodes");
+
+  // 類型帶背景 + 標籤
+  L.types.forEach((t) => {
+    const y = L.bandTop(t);
+    gBands.appendChild(el("rect", {
+      x: 0, y: y, width: L.xOf(L.tMax) + M.right, height: L.BAND_H - 8,
+      fill: t === "transaction" ? "#16202b" : "#1a1c16", opacity: .5,
+    }));
+    gBands.appendChild(el("text", { x: 10, y: y + 16, class: "bandlabel" })).textContent = t;
+  });
+
+  // 時間軸刻度
+  const axisY = L.bandTop(L.types[L.types.length - 1]) + L.BAND_H;
+  L.steps.forEach(t => {
+    const x = L.xOf(t);
+    gAxis.appendChild(el("line", { x1: x, y1: M.top - 10, x2: x, y2: axisY, stroke: "#2a3441" }));
+    const lab = (t === L.GUT && data.nodes.some(n => n.time == null)) ? "t?" : ("t=" + t);
+    gAxis.appendChild(el("text", { x: x, y: M.top - 16, "text-anchor": "middle" })).textContent = lab;
+    gAxis.appendChild(el("text", { x: x, y: axisY + 18, "text-anchor": "middle" })).textContent = lab;
+  });
+
+  // 邊(曲線,帶箭頭)
+  for (const lk of data.links) {
+    const s = L.byId.get(lk.source), d = L.byId.get(lk.target);
+    if (!s || !d) continue;
+    const mx = (s._x + d._x) / 2;
+    const path = el("path", {
+      d: `M${s._x},${s._y} C${mx},${s._y} ${mx},${d._y} ${d._x},${d._y}`,
+      fill: "none", stroke: edgeColor(lk.etype), "stroke-width": 1.6,
+      opacity: .55, "marker-end": "url(#arrow)",
+    });
+    gLinks.appendChild(path);
+  }
+
+  // 節點
+  for (const n of data.nodes) {
+    const c = el("circle", {
+      class: "node", cx: n._x, cy: n._y, r: n.is_seed ? NODE_R + 2 : NODE_R,
+      fill: typeColor(n.type),
+      stroke: n.fraud ? "#f0506e" : "#0f1419",
+      "stroke-width": n.fraud ? 3 : 1.5,
+    });
+    c.addEventListener("mousemove", (ev) => showTip(ev, n));
+    c.addEventListener("mouseleave", hideTip);
+    gNodes.appendChild(c);
+  }
+}
+
+function showTip(ev, n) {
+  const t = n.time == null ? "—(無時間戳)" : n.time;
+  tip.innerHTML = `<b>${n.label}</b><br>type: ${n.type}<br>time: ${t}` +
+    (n.fraud ? `<br><span style="color:#f0506e">illicit / fraud</span>` : "") +
+    (n.is_seed ? `<br>BFS seed` : "");
+  const r = svg.getBoundingClientRect();
+  tip.style.left = (ev.clientX - r.left + 12) + "px";
+  tip.style.top = (ev.clientY - r.top + 12) + "px";
+  tip.style.opacity = 1;
+}
+function hideTip() { tip.style.opacity = 0; }
+
+function fillMeta(meta, nodes, links) {
+  const g = (id, v) => document.getElementById(id).textContent = v;
+  g("mDataset", meta.dataset || "—");
+  g("mNodes", meta.n_nodes ?? nodes.length);
+  g("mLinks", meta.n_links ?? links.length);
+  g("mFraud", meta.n_fraud ?? nodes.filter(n => n.fraud).length);
+  g("mTimed", meta.n_timed ?? nodes.filter(n => n.time != null).length);
+  const lo = meta.time_min, hi = meta.time_max;
+  g("mRange", (lo != null && hi != null) ? `${lo} – ${hi}` : "—");
+  document.getElementById("banner").textContent =
+    `${meta.dataset || "graph"} · ${nodes.length} 節點 / ${links.length} 邊`;
+}
+
+// ── 縮放 / 平移 ─────────────────────────────────────────────────────────────
+svg.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const r = svg.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  const f = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+  const k = Math.max(0.15, Math.min(4, view.k * f));
+  view.x = mx - (mx - view.x) * (k / view.k);
+  view.y = my - (my - view.y) * (k / view.k);
+  view.k = k; applyView();
+}, { passive: false });
+
+let drag = null;
+svg.addEventListener("mousedown", (e) => {
+  drag = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y }; svg.classList.add("dragging");
+});
+window.addEventListener("mousemove", (e) => {
+  if (!drag) return;
+  view.x = drag.vx + (e.clientX - drag.x);
+  view.y = drag.vy + (e.clientY - drag.y); applyView();
+});
+window.addEventListener("mouseup", () => { drag = null; svg.classList.remove("dragging"); });
+
+function resetView() {
+  view = { x: 0, y: 0, k: 0.85 }; applyView();
+}
+document.getElementById("btnReset").addEventListener("click", resetView);
+
+// ── 啟動:讀 JSON,失敗則用 DEMO ────────────────────────────────────────────
+async function boot() {
+  let data = null;
+  try {
+    const res = await fetch("dag_elliptic.json", { cache: "no-store" });
+    if (res.ok) data = await res.json();
+  } catch (_) { /* 落到 demo */ }
+  if (!data) { data = DEMO; data.meta = data.meta || {}; data.meta.dataset += " · 找不到 dag_elliptic.json"; }
+  fillMeta(data.meta || {}, data.nodes, data.links);
+  render(data);
+  resetView();
+}
+boot();
+</script>
+</body>
+</html>

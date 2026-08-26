@@ -13,13 +13,9 @@ Metric C ground-truth sources (automatically selected by dataset):
                   only) and "extended" (+ k-hop labeled illicit wallets
                   via AddrAddr) are run by default; control with
                   --lfpn_mode and --lfpn_k.
-  - unsw_nb15   : Granger causality on per-IP attack-flow time series,
-                  via utils/granger_utils.py.
   - other       : Metric C is skipped.
 
 Usage:
-  python evaluate.py --dataset dblp --checkpoint checkpoints/ci_rct_dblp_best.pt
-  python evaluate.py --dataset elliptic --checkpoint checkpoints/ci_rct_elliptic_best.pt
   python evaluate.py --dataset elliptic++ --checkpoint ... --lfpn_mode both --lfpn_k 2
 """
 import argparse
@@ -50,9 +46,8 @@ from utils.threshold_utils import sweep_best_threshold
  
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a trained CI-RCT model")
-    parser.add_argument("--dataset", type=str, default="dblp",
-                        choices=["dblp", "acm", "imdb", "elliptic", "elliptic++",
-                                 "unsw_nb15", "unsw_mg24"])
+    parser.add_argument("--dataset", type=str, default="elliptic++",
+                        choices=["elliptic++"])
     # Elliptic++ detection target: 'transaction' (default, unchanged), 'wallet',
     # or 'joint' (one model classifying both → single pooled F1 + dual-seed
     # tracing). wallet/joint require --dataset elliptic++.
@@ -128,7 +123,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fraud_subgraph", type=lambda x: x.lower() == "true",
                         default=False)
     parser.add_argument("--fraud_subgraph_hops", type=int, default=2)
-    parser.add_argument("--max_flows", type=int, default=200_000)
     # ── Decision-threshold tuning (binary detection; no retrain needed) ──────
     # 'none' keeps the legacy argmax (==0.5) cut. 'val' sweeps a threshold on
     # the validation split to maximise --threshold_objective, then applies it
@@ -141,17 +135,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threshold", type=float, default=-1.0,
                         help="Manual class-1 probability cut in (0,1); "
                              "overrides --threshold_tuning when >= 0.")
-    # ── UNSW-MG24 specific (mirror train.py) ─────────────────────────────────
-    parser.add_argument("--mg24_subsample_ddos", type=float, default=1.0)
-    parser.add_argument("--mg24_min_host_flows", type=int, default=5)
-    parser.add_argument("--mg24_prune_external", type=lambda x: x.lower() == "true",
-                        default=True)
-    parser.add_argument("--mg24_split_mode", type=str, default="by_file",
-                        choices=("row", "by_file", "hybrid", "by_incident"))
-    parser.add_argument("--mg24_host_role", type=str, default="full",
-                        choices=("full", "no_mal_count", "zeroed",
-                                 "detection_excluded"))
-    parser.add_argument("--mg24_drop_features", type=str, default="")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--lfpn_mode", type=str, default="both",
                         choices=["strict", "extended", "both"])
@@ -289,18 +272,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_dataset(name, root, **kwargs):
-    if name == "dblp":
-        from torch_geometric.datasets import DBLP
-        return DBLP(root=os.path.join(root, "dblp"))[0], "author"
-    if name == "acm":
-        from torch_geometric.datasets import ACM
-        return ACM(root=os.path.join(root, "acm"))[0], "paper"
-    if name == "imdb":
-        from torch_geometric.datasets import IMDB
-        return IMDB(root=os.path.join(root, "imdb"))[0], "movie"
-    if name == "elliptic":
-        from utils.elliptic_loader import load_elliptic_dataset
-        return load_elliptic_dataset(root)
     if name == "elliptic++":
         from utils.elliptic_plus_loader import load_elliptic_plus_dataset
         return load_elliptic_plus_dataset(
@@ -309,51 +280,6 @@ def load_dataset(name, root, **kwargs):
             fraud_subgraph=kwargs.get("fraud_subgraph", False),
             fraud_subgraph_hops=kwargs.get("fraud_subgraph_hops", 2),
         )
-    if name == "unsw_nb15":
-        from utils.unsw_loader import load_unsw_dataset
-        return load_unsw_dataset(
-            os.path.join(root, "unsw_nb15"),
-            max_flows=kwargs.get("max_flows", 200_000),
-        )
-    if name == "unsw_mg24":
-        # Mirrors train.py's load_dataset(unsw_mg24, ...) so that the
-        # HeteroData produced for evaluation has the SAME node/edge layout
-        # and SAME split masks as the training run.
-        from utils.mg24_loader import (
-            build_edges,
-            load_mg24_data,
-            to_pyg_hetero_data,
-        )
-        mg24 = load_mg24_data(
-            root=os.path.join(root, "unsw_mg24"),
-            subsample_ddos=kwargs.get("mg24_subsample_ddos", 1.0),
-            seed=kwargs.get("seed", 42),
-            prune_external_hosts=kwargs.get("mg24_prune_external", True),
-            min_host_flows=kwargs.get("mg24_min_host_flows", 5),
-            verbose=True,
-        )
-        edges = build_edges(mg24)
-        host_role = kwargs.get("mg24_host_role", "full")
-        host_features_mode = (
-            host_role if host_role in ("full", "no_mal_count", "zeroed")
-            else "full"
-        )
-        drop_raw = kwargs.get("mg24_drop_features", "") or ""
-        flow_features_exclude = [
-            c.strip() for c in drop_raw.split(",") if c.strip()
-        ]
-        hd = to_pyg_hetero_data(
-            mg24, edges,
-            seed=kwargs.get("seed", 42),
-            split_mode=kwargs.get("mg24_split_mode", "by_file"),
-            host_features_mode=host_features_mode,
-            flow_features_exclude=flow_features_exclude or None,
-        )
-        # DD-3 primary target: flow_node (same as train.py).
-        # DD-16: stash the raw MG24Data on hd so build_gt_list can derive
-        # kill-chain explanation ground truth from the original DataFrames.
-        hd._mg24 = mg24  # type: ignore[attr-defined]
-        return hd, "flow_node"
     raise ValueError(f"Unknown dataset: {name!r}")
  
  
@@ -492,13 +418,6 @@ def _load_variant_dataset(args):
             include_addr_addr=args.include_addr_addr,
             fraud_subgraph=args.fraud_subgraph,
             fraud_subgraph_hops=args.fraud_subgraph_hops,
-            max_flows=args.max_flows,
-            mg24_subsample_ddos=args.mg24_subsample_ddos,
-            mg24_min_host_flows=args.mg24_min_host_flows,
-            mg24_prune_external=args.mg24_prune_external,
-            mg24_split_mode=args.mg24_split_mode,
-            mg24_host_role=args.mg24_host_role,
-            mg24_drop_features=args.mg24_drop_features,
             seed=args.seed,
         )
     if args.dataset != "elliptic++":
@@ -847,30 +766,6 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
             print(f"\n[fraud_label_set] tx fraud nodes: "
                   f"{sum(1 for i in test_indices if labels[i].item() == 1)}, "
                   f"illicit wallets added: {len(illicit_wallet_globals):,}, "
-                  f"total fraud_label_set size: {len(fraud_label_set):,}")
-    elif args.dataset == "unsw_mg24":
-        # DAG is `device → process → host → flow`, so backward trace from a
-        # fraud flow_node walks through host_node / process_node / device_node.
-        # Add malicious node ids on every labelled type so reaching them counts.
-        n_flow_fraud = sum(1 for i in test_indices if labels[i].item() == 1)
-        per_type_added: dict = {}
-        for ntype in ("process_node", "measurement_node"):
-            if ntype not in data.node_types or not hasattr(data[ntype], "y"):
-                continue
-            ntype_offset = type_offsets.get(ntype, 0)
-            ntype_labels = data[ntype].y
-            added = {
-                ntype_offset + i for i in range(ntype_labels.size(0))
-                if int(ntype_labels[i].item()) == 1
-            }
-            per_type_added[ntype] = len(added)
-            fraud_label_set |= added
-        if args.debug:
-            extras = ", ".join(
-                f"{t}={n:,}" for t, n in per_type_added.items()
-            )
-            print(f"\n[fraud_label_set] flow fraud (test): {n_flow_fraud:,}; "
-                  f"added malicious nodes: {extras}; "
                   f"total fraud_label_set size: {len(fraud_label_set):,}")
  
     rct_metrics = compute_root_cause_metrics(
@@ -1269,37 +1164,7 @@ def eval_explanation_quality(model, data, labels, test_mask,
  
 def build_gt_list(args, data, type_offsets):
     gt_list = []
-    if args.dataset == "unsw_nb15" and hasattr(data, "_df"):
-        print("Computing Granger ground-truth for Metric C (UNSW-NB15)...")
-        from utils.granger_utils import compute_granger_ground_truth
-        gt = compute_granger_ground_truth(
-            df=data._df,
-            ip_global_offset=type_offsets.get("ip_node", 0),
-            flow_global_offset=type_offsets.get("flow_node", 0),
-            window_size=60,
-            max_lag=3,
-            p_threshold=0.05,
-            verbose=True,
-        )
-        if gt:
-            gt_list.append(("Granger", gt))
-    elif args.dataset == "unsw_mg24" and hasattr(data, "_mg24"):
-        print("Computing kill-chain ground-truth for Metric C (UNSW-MG24)...")
-        from utils.mg24_kill_chain_gt import compute_mg24_kill_chain_gt
-        test_mask = (
-            data["flow_node"].test_mask.cpu().numpy()
-            if hasattr(data["flow_node"], "test_mask") else None
-        )
-        gt = compute_mg24_kill_chain_gt(
-            mg24_data=data._mg24,  # type: ignore[attr-defined]
-            type_offsets=type_offsets,
-            test_mask=test_mask,
-            include_devices=True,
-            verbose=True,
-        )
-        if gt:
-            gt_list.append(("KillChain", gt))
-    elif args.dataset == "elliptic++":
+    if args.dataset == "elliptic++":
         from utils.lfpn_utils import compute_lfpn_ground_truth
         modes = ["strict", "extended"] if args.lfpn_mode == "both" else [args.lfpn_mode]
         for m in modes:

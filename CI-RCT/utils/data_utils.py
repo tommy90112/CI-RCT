@@ -41,22 +41,14 @@ from model.typed_causal_graph import TypedCausalGraph
 
 def default_rare_edge_types(dataset: str) -> Set[str]:
     """
-    Default rare-edge-type set for each dataset. For MG24 (DD-11), all
-    edge types EXCEPT the abundant host_sources_flow are rare and must be
-    preserved through chained expansion or they get crowded out of the
-    BFS subgraph by the 1.2M+ host→flow edges.
+    Default rare-edge-type set for each dataset — edge types that must be
+    preserved through chained BFS expansion, or an abundant edge type would
+    crowd them out of the sampled subgraph.
 
-    Returns empty set for datasets where the rare-edge pass is not needed
-    (the BFS then runs identically to the legacy behaviour).
+    Returns an empty set for datasets where the rare-edge pass is not needed
+    (the BFS then runs identically to the plain behaviour). Elliptic++ needs
+    no such pass: its edge-type counts are within one order of magnitude.
     """
-    if dataset == "unsw_mg24":
-        return {
-            "host_node__to__host_node",         # DD-11 bridge
-            "process_node__to__host_node",       # process runs_on host
-            "process_node__to__process_node",    # process forks
-            "device_node__to__process_node",     # device hosts process
-            "device_node__to__measurement_node", # device reports measurement
-        }
     return set()
 
 

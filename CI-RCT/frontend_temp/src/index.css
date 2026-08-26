@@ -1,0 +1,167 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Base ─────────────────────────────────────────────────── */
+html, body {
+  background-color: #050a14;
+  margin: 0;
+  min-height: 100vh;
+}
+
+/* Allow vertical scroll on small viewports; layout shell handles desktop overflow. */
+body {
+  overflow-x: hidden;
+}
+
+@media (min-width: 1280px) {
+  body { overflow: hidden; }
+}
+
+/* ── Corner ambient glows ─────────────────────────────────── */
+body::before,
+body::after {
+  content: '';
+  position: fixed;
+  pointer-events: none;
+  border-radius: 50%;
+  z-index: 0;
+}
+
+/* Top-right — indigo/violet */
+body::before {
+  width: 55vw;
+  height: 55vw;
+  top: -22vw;
+  right: -18vw;
+  background: radial-gradient(circle, rgba(99,40,220,0.13) 0%, transparent 65%);
+  animation: driftA 22s ease-in-out infinite alternate;
+}
+
+/* Bottom-left — cyan */
+body::after {
+  width: 50vw;
+  height: 50vw;
+  bottom: -18vw;
+  left: -14vw;
+  background: radial-gradient(circle, rgba(6,182,212,0.10) 0%, transparent 65%);
+  animation: driftB 28s ease-in-out infinite alternate;
+}
+
+@keyframes driftA {
+  0%   { transform: translate(0, 0)    scale(1); }
+  100% { transform: translate(-4vw, 3vw) scale(1.08); }
+}
+@keyframes driftB {
+  0%   { transform: translate(0, 0)    scale(1); }
+  100% { transform: translate(3vw, -4vw) scale(1.06); }
+}
+
+/* ── Scanline overlay (desktop only, subtle) ─────────────── */
+@media (min-width: 1024px) {
+  #root::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0px,
+      transparent 3px,
+      rgba(0,0,0,0.04) 3px,
+      rgba(0,0,0,0.04) 4px
+    );
+  }
+}
+
+/* ── App shell sits above canvas (z-index 0) ─────────────── */
+#root {
+  position: relative;
+  z-index: 2;
+  min-height: 100vh;
+}
+
+/* ── Reduced motion ──────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Focus-visible default ──────────────────────────────── */
+:focus-visible {
+  outline: 2px solid rgb(56 189 248 / 0.75);
+  outline-offset: 2px;
+}
+
+/* ── Utility: card glass ────────────────────────────────── */
+@layer components {
+  .card-glass {
+    @apply bg-slate-800/50 backdrop-blur-sm ring-1 ring-slate-700/60 rounded-xl shadow-2xl;
+  }
+  .chip-dot {
+    @apply inline-block w-2 h-2 rounded-full;
+  }
+}
+
+/* ── Print-friendly mode (?print=true sets data-print-mode on <html>) ──── */
+html[data-print-mode="true"] body::before,
+html[data-print-mode="true"] body::after,
+html[data-print-mode="true"] #root::before {
+  display: none !important;
+}
+
+html[data-print-mode="true"] {
+  background: #ffffff !important;
+}
+
+html[data-print-mode="true"] body {
+  background: #ffffff !important;
+  color: #111827 !important;
+  overflow: visible !important;
+}
+
+html[data-print-mode="true"] .card-glass,
+html[data-print-mode="true"] [class*="bg-slate"],
+html[data-print-mode="true"] [class*="bg-gradient"] {
+  background: #ffffff !important;
+  color: #111827 !important;
+  box-shadow: 0 0 0 1px #d1d5db !important;
+  backdrop-filter: none !important;
+}
+
+html[data-print-mode="true"] [class*="text-white"],
+html[data-print-mode="true"] [class*="text-slate"],
+html[data-print-mode="true"] [class*="text-sky"],
+html[data-print-mode="true"] [class*="text-violet"],
+html[data-print-mode="true"] [class*="text-emerald"],
+html[data-print-mode="true"] [class*="text-amber"],
+html[data-print-mode="true"] [class*="text-cyan"],
+html[data-print-mode="true"] [class*="text-indigo"],
+html[data-print-mode="true"] [class*="text-yellow"],
+html[data-print-mode="true"] [class*="text-purple"],
+html[data-print-mode="true"] [class*="text-pink"],
+html[data-print-mode="true"] [class*="text-teal"],
+html[data-print-mode="true"] [class*="text-rose"] {
+  color: #111827 !important;
+}
+
+html[data-print-mode="true"] svg text {
+  fill: #111827 !important;
+}
+
+html[data-print-mode="true"] [class*="text-red"] { color: #b91c1c !important; }
+html[data-print-mode="true"] [class*="text-orange"] { color: #c2410c !important; }
+
+html[data-print-mode="true"] canvas,
+html[data-print-mode="true"] .no-print {
+  display: none !important;
+}
+
+html[data-print-mode="true"] * {
+  animation: none !important;
+  transition: none !important;
+}

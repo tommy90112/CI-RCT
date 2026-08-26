@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="1456" height="500" viewBox="0 0 1456 500"
+     font-family="Helvetica, Arial, 'Noto Sans', sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="7" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L8,3.5 L0,7 z" fill="#1a1a1a"/>
+    </marker>
+    <marker id="arrG" markerWidth="10" markerHeight="10" refX="7" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L8,3.5 L0,7 z" fill="#666"/>
+    </marker>
+    <marker id="arrGrev" markerWidth="10" markerHeight="10" refX="7" refY="3.5" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L8,3.5 L0,7 z" fill="#666"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1456" height="500" fill="#ffffff"/>
+
+  <!-- ================= CI-RCT model outer frame (wraps Modules 1-4) ================= -->
+  <rect x="332" y="52" width="920" height="378" rx="14" fill="#f7f7f7" stroke="#1a1a1a" stroke-width="1.8"/>
+  <text x="348" y="74" text-anchor="start" font-size="13.5" font-weight="700" fill="#111">CI-RCT Model</text>
+
+  <!-- ================= main boxes ================= -->
+  <!-- Import Data -->
+  <rect x="24" y="179" width="104" height="64" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.2"/>
+  <text x="76" y="216" text-anchor="middle" font-size="12.5" font-weight="700" fill="#111">Import Data</text>
+
+  <!-- Temporal Hetero-Graph Construction -->
+  <rect x="160" y="167" width="156" height="88" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.2"/>
+  <text x="238" y="207" text-anchor="middle" font-size="12.5" font-weight="700" fill="#111">Temporal Hetero-Graph</text>
+  <text x="238" y="223" text-anchor="middle" font-size="12.5" font-weight="700" fill="#111">Construction</text>
+
+  <!-- Module 1 -->
+  <rect x="348" y="167" width="156" height="88" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.2"/>
+  <text x="426" y="190" text-anchor="middle" font-size="10" font-weight="700" fill="#444">Module 1</text>
+  <text x="426" y="210" text-anchor="middle" font-size="12.5" font-weight="700" fill="#111">HeteroGNN Backbone</text>
+  <text x="426" y="232" text-anchor="middle" font-size="9.2" fill="#555">HGTConv = 3、4 heads / layer</text>
+  <text x="426" y="244" text-anchor="middle" font-size="9.2" fill="#555">hidden dim = 128、dropout 0.3</text>
+
+  <!-- Module 2 container -->
+  <rect x="540" y="120" width="430" height="292" rx="10" fill="#fbfbfb" stroke="#1a1a1a" stroke-width="1.3"/>
+  <text x="755" y="142" text-anchor="middle" font-size="10" font-weight="700" fill="#444">Module 2</text>
+  <text x="755" y="160" text-anchor="middle" font-size="12.5" font-weight="700" fill="#111">Causal Intervention Engine</text>
+
+  <!-- TypedCausalGraph (shared input) -->
+  <rect x="566" y="176" width="378" height="50" rx="7" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.1"/>
+  <text x="755" y="198" text-anchor="middle" font-size="11.5" font-weight="700" fill="#111">TypedCausalGraph</text>
+  <text x="755" y="214" text-anchor="middle" font-size="9" fill="#555">Time-respecting causal DAG — oriented by timestamps, backward edges rejected</text>
+
+  <!-- branch 1: HeteroNCM -->
+  <rect x="566" y="288" width="180" height="96" rx="7" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.1"/>
+  <text x="656" y="312" text-anchor="middle" font-size="11.5" font-weight="700" fill="#111">HeteroNCM</text>
+  <text x="656" y="330" text-anchor="middle" font-size="9" fill="#555">4 edge-type MLPs、type-emb = 16</text>
+  <text x="656" y="344" text-anchor="middle" font-size="9" fill="#555">144 → 64 → 64 → 1 (sigmoid)</text>
+  <text x="656" y="366" text-anchor="middle" font-size="9.6" font-weight="700" fill="#222">→ CE(u→v)</text>
+
+  <!-- branch 2: Asymmetric Causal Shapley -->
+  <rect x="764" y="288" width="180" height="96" rx="7" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.1"/>
+  <text x="854" y="308" text-anchor="middle" font-size="11.5" font-weight="700" fill="#111">Asymmetric Causal</text>
+  <text x="854" y="322" text-anchor="middle" font-size="11.5" font-weight="700" fill="#111">Shapley</text>
+  <text x="854" y="340" text-anchor="middle" font-size="9" fill="#555">coalition do-intervention</text>
+  <text x="854" y="352" text-anchor="middle" font-size="9" fill="#555">baseline: cut parent edges</text>
+  <text x="854" y="372" text-anchor="middle" font-size="9.6" font-weight="700" fill="#222">→ φ<tspan font-size="6.6" dy="-3.6">asym</tspan><tspan font-size="9.6" dy="3.6">(u; target)</tspan></text>
+
+  <!-- internal: TypedCausalGraph feeds BOTH branches (parallel, not series) -->
+  <line x1="656" y1="226" x2="656" y2="288" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arr)"/>
+  <line x1="854" y1="226" x2="854" y2="288" stroke="#1a1a1a" stroke-width="1.2" marker-end="url(#arr)"/>
+
+  <!-- top-k pre-filter (dashed: CE only pre-filters parents, no value passed) -->
+  <line x1="746" y1="336" x2="764" y2="336" stroke="#666" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrG)"/>
+  <text x="755" y="403" text-anchor="middle" font-size="8.6" font-style="italic" fill="#555">CE → Shapley: top-k pre-filter only (no value passed)</text>
+
+  <!-- Module 3 -->
+  <rect x="1030" y="167" width="206" height="88" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.2"/>
+  <text x="1133" y="190" text-anchor="middle" font-size="10" font-weight="700" fill="#444">Module 3</text>
+  <text x="1133" y="210" text-anchor="middle" font-size="12.5" font-weight="700" fill="#111">RootCauseTracer</text>
+  <text x="1133" y="231" text-anchor="middle" font-size="9.2" fill="#555">Backward causal tracing</text>
+  <text x="1133" y="243" text-anchor="middle" font-size="9.2" fill="#555">ranks upstream hops by signed CE</text>
+
+  <!-- Crime Chain Output -->
+  <rect x="1266" y="167" width="170" height="88" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.2"/>
+  <text x="1351" y="204" text-anchor="middle" font-size="12.5" font-weight="700" fill="#111">Crime Chain</text>
+  <text x="1351" y="221" text-anchor="middle" font-size="12.5" font-weight="700" fill="#111">Output (JSON / CSV)</text>
+  <text x="1351" y="240" text-anchor="middle" font-size="8.8" fill="#555">Root cause · chain path ·</text>
+  <text x="1351" y="251" text-anchor="middle" font-size="8.8" fill="#555">CE / φ attribution scores</text>
+
+  <!-- Module 4 (training only, dashed) -->
+  <rect x="348" y="300" width="156" height="88" rx="8" fill="#ffffff" stroke="#666" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text x="426" y="322" text-anchor="middle" font-size="10" font-weight="700" fill="#666">Module 4 (training only)</text>
+  <text x="426" y="342" text-anchor="middle" font-size="12" font-weight="700" fill="#333">CausalAdversarialGAN</text>
+  <text x="426" y="362" text-anchor="middle" font-size="9" fill="#555">WGAN-GP camouflaged samples</text>
+  <text x="426" y="375" text-anchor="middle" font-size="9" fill="#555">(training phase only)</text>
+
+  <!-- hetero-graph structure feeds TypedCausalGraph directly (BFS from fraud seeds) -->
+  <path d="M 238,255 L 238,272 L 600,272 L 600,228"
+        fill="none" stroke="#666" stroke-width="1.1" marker-end="url(#arrG)"/>
+  <text x="283" y="266" text-anchor="middle" font-size="8.6" font-style="italic" fill="#666">graph structure</text>
+
+  <!-- ================= main flow arrows ================= -->
+  <line x1="128" y1="211" x2="158" y2="211" stroke="#1a1a1a" stroke-width="1.3" marker-end="url(#arr)"/>
+  <line x1="316" y1="211" x2="346" y2="211" stroke="#1a1a1a" stroke-width="1.3" marker-end="url(#arr)"/>
+  <line x1="504" y1="211" x2="538" y2="211" stroke="#1a1a1a" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="521" y="204" text-anchor="middle" font-size="8" font-style="italic" fill="#444">h_dict</text>
+
+  <!-- Module 2 combined output → Module 3 -->
+  <line x1="970" y1="211" x2="1028" y2="211" stroke="#1a1a1a" stroke-width="1.3" marker-end="url(#arr)"/>
+  <text x="999" y="200" text-anchor="middle" font-size="9.3" font-weight="700" fill="#222">CE</text>
+
+  <!-- Module 3 → Evaluation -->
+  <line x1="1236" y1="211" x2="1264" y2="211" stroke="#1a1a1a" stroke-width="1.3" marker-end="url(#arr)"/>
+
+  <!-- traced chain feeds Shapley: the chain decides which hops get attributed -->
+  <path d="M 1133,255 L 1133,270 L 900,270 L 900,286"
+        fill="none" stroke="#666" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrG)"/>
+  <text x="1040" y="264" text-anchor="middle" font-size="8.6" font-style="italic" fill="#666">traced chain (hops)</text>
+
+  <!-- φ_asym: computed per hop AFTER tracing, attached to the output chain -->
+  <path d="M 944,336 L 1351,336 L 1351,257"
+        fill="none" stroke="#666" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrG)"/>
+  <text x="1110" y="328" text-anchor="middle" font-size="8.6" font-style="italic" fill="#666">φ<tspan font-size="6.2" dy="-3.2">asym</tspan><tspan font-size="8.6" dy="3.2"> — computed per hop after tracing, attached to the chain</tspan></text>
+
+  <!-- Module 4 → Module 1 (adversarial robustness, training only) -->
+  <line x1="426" y1="300" x2="426" y2="257" stroke="#666" stroke-width="1.2" stroke-dasharray="6 4" marker-end="url(#arrG)"/>
+  <text x="436" y="284" text-anchor="start" font-size="8.6" font-style="italic" fill="#666">adversarial robustness</text>
+
+  <!-- ================= feedback: Shapley re-forwards Module 1 backbone ================= -->
+  <path d="M 944,316 L 957,316 L 957,84 L 426,84 L 426,165"
+        fill="none" stroke="#666" stroke-width="1.3" stroke-dasharray="6 4" marker-start="url(#arrGrev)" marker-end="url(#arrG)"/>
+  <text x="700" y="76" text-anchor="middle" font-size="9.3" font-style="italic" fill="#555">Asymmetric Shapley re-forwards the Module 1 backbone per coalition S — the backbone returns v(S)</text>
+</svg>

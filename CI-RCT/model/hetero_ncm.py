@@ -381,11 +381,10 @@ class HeteroNCM(nn.Module):
                                    - "inverse" : 1/N_edges per type (aggressive,
                                                  usable as ablation comparator)
 
-                                 See unsw_mg24_plan.md § DD-17 for the
-                                 motivation: on MG24 `host→flow` had ~200k
-                                 edges while `process→host` had ~1k, leading
-                                 to NCM CE≈0.001 on sparse edges and tracer
-                                 stuck at depth 1 in evaluation.
+                                 Motivation: when one relation carries orders
+                                 of magnitude more edges than another, the NCM
+                                 collapses to CE≈0 on the sparse relation and
+                                 the tracer stalls at depth 1.
 
         Returns:
             Scalar BCE loss tensor (0 if no valid edges found)
