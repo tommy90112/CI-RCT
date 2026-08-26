@@ -5,69 +5,92 @@
 <title>CI-RCT · 犯罪鏈 3D(真實 txId / 地址)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>
-  :root { --bg:#0e1117; --panel:rgba(22,27,34,.94); --border:#30363d; --ink:#e6edf3;
-          --muted:#8b949e; --tx:#4c9be8; --wallet:#d9a441; --fraud:#f0506e; }
+  :root { --bg:#0b0f14; --panel:rgba(20,26,33,.95); --border:#2c343d; --ink:#e6edf3;
+          --muted:#8b97a4; --tx:#5aa9ff; --wallet:#f2b53a; --fraud:#ff5470; }
   html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
     font-family:-apple-system,"PingFang TC","Microsoft JhengHei",system-ui,sans-serif; }
   #graph { position:fixed; inset:0; }
   .panel { position:fixed; background:var(--panel); border:1px solid var(--border);
-    border-radius:10px; padding:12px 14px; backdrop-filter:blur(6px); font-size:13px;
-    z-index:10; box-shadow:0 4px 18px rgba(0,0,0,.4); }
+    border-radius:11px; padding:12px 14px; backdrop-filter:blur(7px); font-size:13px;
+    z-index:10; box-shadow:0 6px 22px rgba(0,0,0,.5); }
   #ctrl { top:14px; left:14px; width:330px; }
   #legend { top:14px; right:14px; }
-  #detail { bottom:14px; left:14px; width:330px; max-height:38vh; overflow-y:auto;
+  #detail { bottom:14px; left:14px; width:340px; max-height:34vh; overflow-y:auto;
     font-family:ui-monospace,Menlo,monospace; font-size:12px; }
   h1 { font-size:15px; margin:0 0 6px; }
   .muted { color:var(--muted); }
-  .sec { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:10px 0 4px; }
-  select, label.ck { width:100%; }
-  select { background:#0d1117; color:var(--ink); border:1px solid var(--border);
-    border-radius:6px; padding:6px 8px; font-size:12px; font-family:ui-monospace,Menlo,monospace; }
+  .mode { display:inline-block; font-size:11px; padding:1px 7px; border-radius:6px;
+    border:1px solid var(--border); margin-left:6px; }
+  .sec { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:11px 0 5px; }
+  select { width:100%; background:#0d1117; color:var(--ink); border:1px solid var(--border);
+    border-radius:7px; padding:6px 8px; font-size:12px; font-family:ui-monospace,Menlo,monospace; }
   label.ck { display:flex; align-items:center; gap:6px; margin:6px 0; cursor:pointer; font-size:12px; }
   .row { display:flex; gap:8px; align-items:center; margin:3px 0; }
-  .row .v { margin-left:auto; font-variant-numeric:tabular-nums; }
   .sw { width:13px; height:13px; border-radius:50%; flex:none; }
-  .step { display:flex; gap:8px; padding:3px 0; border-bottom:1px solid #1c232b; }
-  .step .ar { color:var(--muted); }
+  .ln { width:18px; height:0; border-top:3px solid; flex:none; }
+  .step { display:flex; gap:8px; padding:3px 0; border-bottom:1px solid #1a2027; align-items:center; }
   .badge { font-size:10px; padding:0 5px; border-radius:5px; border:1px solid var(--border); }
   .b-fraud { color:var(--fraud); border-color:var(--fraud); }
-  .b-root { color:#4caf72; border-color:#4caf72; }
+  .b-root { color:#43d17a; border-color:#43d17a; }
   .b-tgt { color:var(--tx); border-color:var(--tx); }
+  #status { margin-top:6px; font-size:11px; }
+  .err { color:#f0a000; }
+  code { background:#0d1117; padding:1px 4px; border-radius:4px; }
 </style>
-<script src="https://unpkg.com/three-spritetext"></script>
-<script src="https://unpkg.com/3d-force-graph@1.73.4/dist/3d-force-graph.min.js"></script>
+<!-- 本地函式庫(離線可跑)。順序:three(全域 THREE)→ spritetext → 3d-force-graph。 -->
+<script src="lib/three.min.js"></script>
+<script src="lib/three-spritetext.min.js"></script>
+<script src="lib/3d-force-graph.min.js"></script>
 </head>
 <body>
 <div id="graph"></div>
 
 <div id="ctrl" class="panel">
-  <h1>犯罪鏈 3D</h1>
+  <h1>犯罪鏈 3D <span class="mode" id="modeTag">結構佈局(主圖)</span></h1>
   <div class="muted" id="meta">載入中…</div>
-  <div class="sec">選一條鏈(num_traced)</div>
+  <div class="sec">佈局</div>
+  <label class="ck"><input type="checkbox" id="ckTime" /> 時序佈局(附圖:X＝時間、上下分層)</label>
+  <div class="sec">選一條鏈</div>
   <select id="chainSel"></select>
-  <label class="ck"><input type="checkbox" id="ckAll" /> 顯示全部鏈(選中高亮)</label>
+  <label class="ck"><input type="checkbox" id="ckAll" /> 顯示全部鏈(看洗錢網,選中高亮)</label>
+  <label class="ck"><input type="checkbox" id="ckLabels" checked /> 顯示節點標籤</label>
   <label class="ck"><input type="checkbox" id="ckParticles" checked /> 金流方向粒子</label>
-  <div class="muted" style="font-size:11px;margin-top:6px">
-    X 軸＝時間(左＝源頭/早,右＝被標記/晚)。拖曳旋轉、滾輪縮放。
-  </div>
+  <div class="sec">載入資料</div>
+  <input type="file" id="file" accept="application/json" style="font-size:12px;max-width:300px" />
+  <div id="status" class="muted">尚未載入</div>
 </div>
 
 <div id="legend" class="panel">
-  <div class="row"><span class="sw" style="background:var(--tx)"></span>transaction（txId）</div>
-  <div class="row"><span class="sw" style="background:var(--wallet)"></span>wallet（地址）</div>
-  <div class="row"><span class="sw" style="background:var(--fraud)"></span>已標記 illicit</div>
+  <div class="row"><span class="sw" style="background:var(--tx)"></span>transaction</div>
+  <div class="row"><span class="sw" style="background:var(--wallet)"></span>wallet</div>
+  <div class="row"><span class="sw" style="background:var(--fraud)"></span>已標記 illicit（放大）</div>
+  <div class="row" style="margin-top:6px"><span class="ln" style="border-color:#ff5470"></span>CE 為負</div>
+  <div class="row"><span class="ln" style="border-color:#43d17a"></span>CE 為正</div>
+  <div class="muted" style="font-size:11px;margin-top:6px">球越大＝越多鏈共用(hub)</div>
 </div>
 
 <div id="detail" class="panel"></div>
 
 <script>
-const TX = "#4c9be8", WALLET = "#d9a441", FRAUD = "#f0506e", DIM = "#3a4350";
-const short = s => (s && s.length > 14) ? s.slice(0, 8) + "…" + s.slice(-3) : s;
+const TX = "#5aa9ff", WALLET = "#f2b53a", FRAUD = "#ff5470", DIM = "#39424d";
+const short = s => (s && s.length > 13) ? s.slice(0, 7) + "…" + s.slice(-3) : s;
 const nodeBase = n => n.fraud ? FRAUD : (n.type === "transaction" ? TX : WALLET);
-const ceColor = v => v < 0 ? "#f0506e" : "#4caf72";
+const HAS_FG = typeof ForceGraph3D !== "undefined";
+let HAS_SPRITE = typeof SpriteText !== "undefined";
+if (HAS_SPRITE) { try { new SpriteText("x"); } catch (e) { HAS_SPRITE = false; } }
+
+const XSTEP = 80;
+const YBAND = { transaction: 70, wallet: -70 };
+const Y_JITTER = 26;
+
+function status(msg, isErr) {
+  const el = document.getElementById("status");
+  el.className = isErr ? "err" : "muted";
+  el.innerHTML = msg;
+}
 
 const DEMO = {
-  meta:{ dataset:"DEMO（非真實數據）", checkpoint:"—", n_chains:3, demo:true },
+  meta:{ dataset:"DEMO（非真實數據）", demo:true },
   chains:[
     { target_txid:"3321", depth:3, root_type:"wallet", root_real_id:"3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy", root_is_fraud:true, is_true_positive:true,
       nodes:[ {pos:0,global:1,type:"transaction",real_id:"3321",time:12,fraud:true,is_target:true},
@@ -77,91 +100,112 @@ const DEMO = {
     { target_txid:"45102", depth:2, root_type:"wallet", root_real_id:"1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", root_is_fraud:true, is_true_positive:true,
       nodes:[ {pos:0,global:3,type:"transaction",real_id:"45102",time:20,fraud:true,is_target:true},
               {pos:1,global:4,type:"transaction",real_id:"45090",time:18,fraud:false,ce:-0.28},
-              {pos:2,global:1003,type:"wallet",real_id:"1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",time:15,fraud:true,ce:-0.61} ]},
-    { target_txid:"77820", depth:2, root_type:"transaction", root_real_id:"77001", root_is_fraud:false, is_true_positive:false,
-      nodes:[ {pos:0,global:5,type:"transaction",real_id:"77820",time:31,fraud:true,is_target:true},
-              {pos:1,global:1001,type:"wallet",real_id:"1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",time:11,fraud:true,ce:-0.18},
-              {pos:2,global:6,type:"transaction",real_id:"77001",time:28,fraud:false,ce:0.12} ]},
+              {pos:2,global:1001,type:"wallet",real_id:"1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",time:15,fraud:true,ce:-0.61} ]},
   ],
 };
 
-let DATA, Graph, NODES, LINKS, TMIN, showAll = false, particles = true;
-const SPACING = 60;
+let DATA, Graph, NODES, LINKS, TMIN = 0, TMAX = 0, AXIS = [];
+let showAll = false, labels = true, particles = true, timeMode = false;
 
-// 把所有鏈合併成全域 node/link(node 以 global 去重 → 共享實體會合併)
 function buildGlobal(data) {
-  const nodeById = new Map();
-  const linkBy = new Map();
-  const timed = [];
-  data.chains.forEach((c, ci) => {
-    c.nodes.forEach(n => {
-      if (n.time != null) timed.push(n.time);
-      if (!nodeById.has(n.global)) nodeById.set(n.global, { ...n, id: n.global, chains: new Set() });
-      nodeById.get(n.global).chains.add(ci);
-    });
+  const nodeById = new Map(), linkBy = new Map(), timed = [];
+  data.chains.forEach(c => {
     for (let i = 1; i < c.nodes.length; i++) {
-      const parent = c.nodes[i], child = c.nodes[i - 1];
-      const key = parent.global + "->" + child.global;
-      if (!linkBy.has(key))
-        linkBy.set(key, { source: parent.global, target: child.global,
-                          ce: parent.ce ?? 0, chains: new Set() });
-      linkBy.get(key).chains.add(ci);
+      const par = c.nodes[i], ch = c.nodes[i - 1], key = par.global + "->" + ch.global;
+      if (!linkBy.has(key)) linkBy.set(key, { source: par.global, target: ch.global, ce: par.ce ?? 0, deg: 0 });
+      linkBy.get(key).deg++;
     }
+    (c.nodes || []).forEach(n => {
+      if (n.time != null) timed.push(n.time);
+      if (!nodeById.has(n.global)) nodeById.set(n.global, { ...n, id: n.global, deg: 0 });
+    });
+  });
+  linkBy.forEach(l => {
+    if (nodeById.has(l.source)) nodeById.get(l.source).deg += l.deg;
+    if (nodeById.has(l.target)) nodeById.get(l.target).deg += l.deg;
   });
   NODES = [...nodeById.values()];
   LINKS = [...linkBy.values()];
   TMIN = timed.length ? Math.min(...timed) : 0;
-  NODES.forEach(n => { n.fx = ((n.time == null ? TMIN - 1 : n.time) - TMIN) * SPACING; });
+  TMAX = timed.length ? Math.max(...timed) : 0;
+}
+
+// 依模式設定 pin:時序→X=時間/Y=型別層;結構→全部放開(自由力導引)
+function applyLayout() {
+  NODES.forEach(n => {
+    if (timeMode) {
+      n.fx = ((n.time == null ? TMIN - 1 : n.time) - TMIN) * XSTEP;
+      n.fy = (YBAND[n.type] ?? 0) + ((n.global % 7) - 3) * (Y_JITTER / 3);
+      n.fz = undefined;
+    } else {
+      n.fx = n.fy = n.fz = undefined;
+    }
+  });
+  Graph.d3Force("charge").strength(timeMode ? -50 : -130);
+  AXIS.forEach(s => { s.visible = timeMode; });
+  document.getElementById("modeTag").textContent = timeMode ? "時序佈局(附圖)" : "結構佈局(主圖)";
+  Graph.d3ReheatSimulation();
+  setTimeout(() => {
+    try {
+      if (timeMode) Graph.cameraPosition({ x: 0, y: 60, z: 540 });
+      Graph.zoomToFit(700, 90);
+    } catch (e) {}
+  }, 500);
+}
+
+function buildAxis() {
+  if (!HAS_SPRITE || !Graph.scene) return;
+  const scene = Graph.scene();
+  for (let t = TMIN; t <= TMAX; t++) {
+    const lab = new SpriteText("t=" + t);
+    lab.color = "#6b7682"; lab.textHeight = 6;
+    lab.position.set((t - TMIN) * XSTEP, -150, 0);
+    lab.visible = false;
+    scene.add(lab); AXIS.push(lab);
+  }
 }
 
 function selectedSets(ci) {
-  const ns = new Set(), ls = new Set();
-  const c = DATA.chains[ci];
+  const ns = new Set(), ls = new Set(), c = DATA.chains[ci];
   c.nodes.forEach(n => ns.add(n.global));
   for (let i = 1; i < c.nodes.length; i++) ls.add(c.nodes[i].global + "->" + c.nodes[i - 1].global);
   return { ns, ls };
 }
+const lkey = l => (l.source.id ?? l.source) + "->" + (l.target.id ?? l.target);
 
-function render(ci) {
-  const { ns, ls } = selectedSets(ci);
-  let nodes, links;
-  if (showAll) {
-    nodes = NODES; links = LINKS;
-  } else {
-    nodes = NODES.filter(n => ns.has(n.global));
-    links = LINKS.filter(l =>
-      ls.has((l.source.id ?? l.source) + "->" + (l.target.id ?? l.target)));
-  }
-  Graph.graphData({ nodes, links });
-  Graph._selNs = ns; Graph._selLs = ls;
-  Graph.nodeThreeObject(makeLabel).linkColor(linkCol).linkWidth(linkWid);
-  Graph.linkDirectionalParticles(particles ? 2 : 0);
-  fillDetail(ci);
-  setTimeout(() => Graph.zoomToFit(500, 60), 120);
-}
-
+const nodeVal = n => { const b = 3 + Math.min(n.deg || 0, 10) * 1.2; return n.fraud ? b * 1.5 : b; };
+function nodeCol(n) { const sel = !Graph._selNs || Graph._selNs.has(n.global); return (showAll && !sel) ? DIM : nodeBase(n); }
+function linkCol(l) { const sel = !Graph._selLs || Graph._selLs.has(lkey(l)); if (showAll && !sel) return DIM; return (l.ce ?? 0) < 0 ? "#ff5470" : "#43d17a"; }
+function linkWid(l) { const sel = !Graph._selLs || Graph._selLs.has(lkey(l)); return (showAll && !sel) ? 0.3 : 2.0; }
 function makeLabel(n) {
-  const sel = Graph._selNs ? Graph._selNs.has(n.global) : true;
-  const icon = n.type === "transaction" ? "◆" : "●";
-  const s = new SpriteText(`${icon} ${short(n.real_id)}`);
-  s.color = (showAll && !sel) ? DIM : nodeBase(n);
-  s.textHeight = (showAll && !sel) ? 3 : 5;
+  const sel = !Graph._selNs || Graph._selNs.has(n.global);
+  if (!labels || (showAll && !sel)) return null;
+  const s = new SpriteText(`${n.type === "transaction" ? "◆" : "●"} ${short(n.real_id)}`);
+  s.color = nodeBase(n); s.textHeight = n.fraud ? 7 : 5.5;
+  s.backgroundColor = "rgba(8,12,17,0.7)"; s.padding = 1.5;
+  s.position.y = nodeVal(n) + 5;
   return s;
 }
-function linkCol(l) {
-  const k = (l.source.id ?? l.source) + "->" + (l.target.id ?? l.target);
-  const sel = Graph._selLs ? Graph._selLs.has(k) : true;
-  return (showAll && !sel) ? DIM : "#7a8794";
-}
-function linkWid(l) {
-  const k = (l.source.id ?? l.source) + "->" + (l.target.id ?? l.target);
-  const sel = Graph._selLs ? Graph._selLs.has(k) : true;
-  return (showAll && !sel) ? 0.3 : 1.4;
+
+function render(ci) {
+  if (!Graph) return;
+  const { ns, ls } = selectedSets(ci);
+  Graph._selNs = ns; Graph._selLs = ls;
+  let nodes, links;
+  if (showAll) { nodes = NODES; links = LINKS; }
+  else { nodes = NODES.filter(n => ns.has(n.global)); links = LINKS.filter(l => ls.has(lkey(l))); }
+  Graph.graphData({ nodes, links });
+  Graph.nodeColor(nodeCol).nodeVal(nodeVal).linkColor(linkCol).linkWidth(linkWid)
+    .linkDirectionalParticles(particles ? 3 : 0);
+  if (HAS_SPRITE) Graph.nodeThreeObject(makeLabel);
+  applyLayout();
+  fillDetail(ci);
+  status(`已顯示 <b>${nodes.length}</b> 節點 / <b>${links.length}</b> 邊 · ${timeMode ? "時序" : "結構"}佈局`
+    + (HAS_SPRITE ? "" : "(無標籤,改球體)"));
 }
 
 function fillDetail(ci) {
-  const c = DATA.chains[ci];
-  const seq = [...c.nodes].reverse();   // root → target
+  const c = DATA.chains[ci], seq = [...c.nodes].reverse();
   let rows = "";
   seq.forEach((n, j) => {
     const ty = n.type === "transaction" ? "tx" : "wallet";
@@ -169,7 +213,8 @@ function fillDetail(ci) {
     if (n.is_target) tags.push('<span class="badge b-tgt">target</span>');
     if (j === 0 && !n.is_target) tags.push('<span class="badge b-root">root</span>');
     if (n.fraud) tags.push('<span class="badge b-fraud">illicit</span>');
-    const ce = (j < seq.length - 1) ? `<span class="ar">▶ CE ${seq[j].ce >= 0 ? "+" : ""}${(seq[j].ce ?? 0).toFixed(3)}</span>` : "";
+    const ce = (j < seq.length - 1)
+      ? `<span style="color:${seq[j].ce < 0 ? '#ff5470' : '#43d17a'}">▶ CE ${seq[j].ce >= 0 ? "+" : ""}${(seq[j].ce ?? 0).toFixed(3)}</span>` : "";
     rows += `<div class="step"><span style="color:${nodeBase(n)}">${ty}</span>
       <span title="${n.real_id}">${short(n.real_id)}</span>
       <span class="muted">t=${n.time ?? "?"}</span> ${tags.join("")} ${ce}</div>`;
@@ -180,12 +225,18 @@ function fillDetail(ci) {
 }
 
 function boot(data) {
+  if (!data || !Array.isArray(data.chains)) {
+    status('這個 JSON 沒有 <code>chains</code> 欄位 —— 不是 crime_chains 格式;'
+      + '若是 <code>{nodes,links}</code> 請用 dag_timeline_3d.html。', true); return;
+  }
+  if (!data.chains.length) { status("chains 是空的。", true); return; }
   DATA = data;
   const m = data.meta || {};
   document.getElementById("meta").innerHTML =
-    `${m.dataset || "graph"} · ${data.chains.length} 條鏈` +
-    (m.n_true_positive != null ? ` · TP ${m.n_true_positive}` : "") +
-    (m.demo ? ' · <span style="color:#e0a000">⚠ 示範</span>' : "");
+    `${m.dataset || "graph"} · ${data.chains.length} 條鏈`
+    + (m.n_true_positive != null ? ` · TP ${m.n_true_positive}` : "")
+    + (m.demo ? ' · <span style="color:#e0a000">⚠ 示範</span>' : "");
+  AXIS = [];
   buildGlobal(data);
 
   const sel = document.getElementById("chainSel");
@@ -195,27 +246,44 @@ function boot(data) {
   sel.onchange = () => render(+sel.value);
 
   const el = document.getElementById("graph");
+  el.innerHTML = "";
   Graph = ForceGraph3D()(el)
-    .backgroundColor("#0e1117")
-    .nodeThreeObject(makeLabel)
-    .nodeLabel(n => `<div style="font-family:ui-monospace;font-size:12px">
-        <b>${n.real_id}</b><br>${n.type} · t=${n.time ?? "?"}${n.fraud ? '<br><span style="color:#f0506e">illicit</span>' : ""}</div>`)
-    .linkColor(linkCol).linkWidth(linkWid)
-    .linkOpacity(0.6)
-    .linkDirectionalArrowLength(3.5).linkDirectionalArrowRelPos(1)
-    .linkDirectionalParticleWidth(2);
-  Graph.d3Force("charge").strength(-90);
+    .backgroundColor("#0b0f14")
+    .nodeColor(nodeCol).nodeVal(nodeVal).nodeOpacity(0.95)
+    .nodeLabel(n => `<div style="font-family:ui-monospace;font-size:12px"><b>${n.real_id}</b><br>${n.type} · t=${n.time ?? "?"} · 度數 ${n.deg}${n.fraud ? '<br><span style="color:#ff5470">illicit</span>' : ""}</div>`)
+    .linkColor(linkCol).linkWidth(linkWid).linkOpacity(0.7).linkCurvature(0.18)
+    .linkDirectionalArrowLength(4).linkDirectionalArrowRelPos(1)
+    .linkDirectionalParticleWidth(2.6).linkDirectionalParticleSpeed(0.01);
+  if (HAS_SPRITE) Graph.nodeThreeObject(makeLabel).nodeThreeObjectExtend(true);
+  buildAxis();
 
+  document.getElementById("ckTime").onchange = e => { timeMode = e.target.checked; applyLayout(); };
   document.getElementById("ckAll").onchange = e => { showAll = e.target.checked; render(+sel.value); };
-  document.getElementById("ckParticles").onchange = e => { particles = e.target.checked; Graph.linkDirectionalParticles(particles ? 2 : 0); };
-
+  document.getElementById("ckLabels").onchange = e => { labels = e.target.checked; render(+sel.value); };
+  document.getElementById("ckParticles").onchange = e => { particles = e.target.checked; render(+sel.value); };
   render(0);
+  setTimeout(() => { try { Graph.cameraPosition({ x: 80, y: 90, z: 560 }); } catch (e) {} }, 200);
 }
 
-fetch("crime_chains.json", { cache: "no-store" })
-  .then(r => { if (!r.ok) throw 0; return r.json(); })
-  .then(d => boot(d))
-  .catch(() => { DEMO.meta.dataset += " · 找不到 crime_chains.json"; boot(DEMO); });
+document.getElementById("file").onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  status("讀取 " + f.name + " …");
+  const r = new FileReader();
+  r.onload = () => { try { boot(JSON.parse(r.result)); } catch (err) { status("JSON 解析失敗:" + err, true); } };
+  r.onerror = () => status("讀檔失敗", true);
+  r.readAsText(f);
+};
+
+if (!HAS_FG) {
+  status('⚠ 無法載入 3D 函式庫。請確認 <code>viz/lib/</code>(three / three-spritetext / 3d-force-graph)'
+    + '跟 HTML 放在一起。', true);
+  document.getElementById("meta").textContent = "3D 函式庫未載入";
+} else {
+  fetch("crime_chains.json", { cache: "no-store" })
+    .then(r => { if (!r.ok) throw 0; return r.json(); })
+    .then(d => boot(d))
+    .catch(() => { DEMO.meta.dataset += " · 用上方「載入資料」選檔"; boot(DEMO); });
+}
 </script>
 </body>
 </html>

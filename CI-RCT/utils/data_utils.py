@@ -303,10 +303,14 @@ def build_typed_causal_graph_from_hetero(
         # Diagnostic: prints once per call so user knows the filter fired.
         print(f"  [data_utils] Skipped {n_blocked:,} blocked edges "
               f"from causal graph (types={sorted(blocked_edge_types)}).")
-    if timestamps and n_temporal_reject > 0:
-        print(f"  [data_utils] Rejected {n_temporal_reject:,} edges violating "
-              f"temporal precedence (time-respecting DAG; "
-              f"{len(timestamps):,}/{len(included_nodes):,} nodes timed).")
+    if timestamps:
+        # Count timed nodes *within this subgraph* (not the global dict), so the
+        # ratio is meaningful — e.g. "480/500 timed" rather than the full-graph
+        # timestamp count over the subgraph size.
+        n_timed_sub = sum(1 for n in included_nodes if n in timestamps)
+        print(f"  [data_utils] Time-respecting DAG: "
+              f"{n_timed_sub:,}/{len(included_nodes):,} subgraph nodes timed, "
+              f"{n_temporal_reject:,} backward edges rejected.")
 
     return tcg
 

@@ -76,9 +76,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num_heads", type=int, default=4)
     p.add_argument("--type_emb_dim", type=int, default=16)
     p.add_argument("--ncm_baseline", type=str, default="zero",
-                   choices=["zero", "type_mean"],
-                   help="CE null-intervention baseline: 'zero' (legacy) or "
-                        "'type_mean' (recentres CE so sign is interpretable). "
+                   choices=["zero", "type_mean", "marginal"],
+                   help="CE null-intervention baseline: 'zero' (legacy), "
+                        "'type_mean' (recentres CE so sign is interpretable) or "
+                        "'marginal' (E[MLP(h)]; no Jensen gap, E[CE]=0 per type). "
                         "No retraining needed — recomputes CE from same weights.")
     p.add_argument("--device", default="cpu")
     p.add_argument("--serve", action="store_true")

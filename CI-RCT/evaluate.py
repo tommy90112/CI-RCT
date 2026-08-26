@@ -1045,6 +1045,7 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
                 )
                 print(f"[dump_phi] L3: causal feature attribution on pivots of "
                       f"{len(records)} chains …", flush=True)
+                attr_all = getattr(args, "feat_attr_all_nodes", False)
                 n_attr = 0
                 for ri, rec in enumerate(records):
                     nodes = rec.get("nodes", [])
@@ -1058,31 +1059,38 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
                     if causal_graph.node_type.get(nodes[0]["global"]) \
                             != phi_readout_type:
                         continue
-                    # pivot = node with peak |φ_asym| (None when chain unscored).
-                    pivot = None
-                    best = 0.0
-                    for nd in nodes:
-                        pa = nd.get("phi_asym")
-                        if pa is not None and abs(pa) > best:
-                            best = abs(pa)
-                            pivot = nd
-                    if pivot is None:
-                        continue
-                    attr = compute_causal_feature_attribution(
-                        model=model, data=data, causal_graph=causal_graph,
-                        target_node=nodes[0]["global"], pivot_node=pivot["global"],
-                        type_offsets=type_offsets, target_node_type=phi_readout_type,
-                        feature_names=feat_names, fraud_class=1,
-                        use_subgraph=getattr(args, "coalition_subgraph", True),
-                        num_layers=phi_num_layers, top_k=args.feat_attr_topk,
-                    )
-                    if attr["features"]:
-                        pivot["feature_attribution"] = attr["features"]
-                        pivot["feature_attribution_method"] = attr["method"]
-                        n_attr += 1
+                    # Nodes to attribute: every chain node when --feat_attr_all_nodes,
+                    # else just the φ_asym pivot (node with peak |φ_asym|). Nodes
+                    # outside the target's receptive field return empty features and
+                    # are left unattributed (they cannot reach the readout).
+                    if attr_all:
+                        candidates = nodes
+                    else:
+                        pivot = None
+                        best = 0.0
+                        for nd in nodes:
+                            pa = nd.get("phi_asym")
+                            if pa is not None and abs(pa) > best:
+                                best = abs(pa)
+                                pivot = nd
+                        candidates = [pivot] if pivot is not None else []
+                    for nd in candidates:
+                        attr = compute_causal_feature_attribution(
+                            model=model, data=data, causal_graph=causal_graph,
+                            target_node=nodes[0]["global"], pivot_node=nd["global"],
+                            type_offsets=type_offsets, target_node_type=phi_readout_type,
+                            feature_names=feat_names, fraud_class=1,
+                            use_subgraph=getattr(args, "coalition_subgraph", True),
+                            num_layers=phi_num_layers, top_k=args.feat_attr_topk,
+                        )
+                        if attr["features"]:
+                            nd["feature_attribution"] = attr["features"]
+                            nd["feature_attribution_method"] = attr["method"]
+                            n_attr += 1
                     if (ri + 1) % _phi_log_every == 0 or ri + 1 == len(records):
+                        _unit = "nodes" if attr_all else "pivots"
                         print(f"[dump_phi]   L3 {ri + 1}/{len(records)} "
-                              f"({n_attr} pivots attributed)", flush=True)
+                              f"({n_attr} {_unit} attributed)", flush=True)
         if getattr(args, "dump_chains", None):
             meta = {
                 "dataset": "elliptic++",

@@ -1,5 +1,7 @@
 # 資料集（太大，不上 GitHub）
 data/
+frontend_temp/node_modules/
+
 
 # 訓練產出
 checkpoints/

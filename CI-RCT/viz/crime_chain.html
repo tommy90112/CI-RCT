@@ -54,6 +54,8 @@
   <div id="side">
     <h1>犯罪鏈追蹤</h1>
     <div class="sub">真實 txId / 比特幣地址 · 左＝源頭、右＝被標記詐騙</div>
+    <div class="sec">載入資料</div>
+    <input type="file" id="file" accept="application/json" style="font-size:12px;max-width:210px" />
     <div class="sec">摘要</div>
     <div class="row"><span>資料集</span><span class="v" id="mDs">—</span></div>
     <div class="row"><span>checkpoint</span><span class="v" id="mCk">—</span></div>
@@ -162,10 +164,17 @@ function fill(data) {
     data.chains.map((c, i) => renderChain(c, i)).join("");
 }
 
+document.getElementById("file").onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = () => { try { fill(JSON.parse(r.result)); } catch (err) { alert("JSON 解析失敗: " + err); } };
+  r.readAsText(f);
+};
+
 fetch("crime_chains.json", { cache: "no-store" })
   .then(r => { if (!r.ok) throw 0; return r.json(); })
   .then(d => fill(d))
-  .catch(() => { DEMO.meta.dataset += " · 找不到 crime_chains.json"; fill(DEMO); });
+  .catch(() => { DEMO.meta.dataset += " · 找不到 crime_chains.json(可用上方「載入資料」選檔)"; fill(DEMO); });
 </script>
 </body>
 </html>
