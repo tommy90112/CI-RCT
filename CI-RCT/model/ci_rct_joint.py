@@ -50,6 +50,7 @@ class CI_RCT_Joint(CI_RCT):
         backbone_exclude_node_types: Optional[List[str]] = None,
         aux_node_types: Optional[List[str]] = None,
         aux_num_classes: Optional[Dict[str, int]] = None,
+        use_reconstruction: bool = False,
     ) -> None:
         super().__init__(
             config=config,
@@ -59,6 +60,7 @@ class CI_RCT_Joint(CI_RCT):
             use_gan=use_gan,
             num_classes=num_classes,
             backbone_exclude_node_types=backbone_exclude_node_types,
+            use_reconstruction=use_reconstruction,
         )
 
         self.aux_node_types: List[str] = sorted(aux_node_types or [])

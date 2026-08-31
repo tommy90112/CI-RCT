@@ -1,0 +1,24 @@
+# ── OS / editor ────────────────────────────────────────────────────────────
+.DS_Store
+*.swp
+
+# ── Python ─────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# ── 論文寫作素材（不隨程式碼公開）──────────────────────────────────────────
+# 章節草稿、docx 產出與建稿腳本留在本機，不進版控。
+*.docx
+CI-RCT_ch*.md
+ch3.md
+ch3_evalMetric.md
+ch3_loss.md
+training_command.md
+build_litreview_docx.py
+/scripts/
+
+# Claude Code 的 session 交接紀錄（含大量內部除錯脈絡）
+.claude/handoff/

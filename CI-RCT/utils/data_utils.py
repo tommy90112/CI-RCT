@@ -41,22 +41,14 @@ from model.typed_causal_graph import TypedCausalGraph
 
 def default_rare_edge_types(dataset: str) -> Set[str]:
     """
-    Default rare-edge-type set for each dataset. For MG24 (DD-11), all
-    edge types EXCEPT the abundant host_sources_flow are rare and must be
-    preserved through chained expansion or they get crowded out of the
-    BFS subgraph by the 1.2M+ host→flow edges.
+    Default rare-edge-type set for each dataset — edge types that must be
+    preserved through chained BFS expansion, or an abundant edge type would
+    crowd them out of the sampled subgraph.
 
-    Returns empty set for datasets where the rare-edge pass is not needed
-    (the BFS then runs identically to the legacy behaviour).
+    Returns an empty set for datasets where the rare-edge pass is not needed
+    (the BFS then runs identically to the plain behaviour). Elliptic++ needs
+    no such pass: its edge-type counts are within one order of magnitude.
     """
-    if dataset == "unsw_mg24":
-        return {
-            "host_node__to__host_node",         # DD-11 bridge
-            "process_node__to__host_node",       # process runs_on host
-            "process_node__to__process_node",    # process forks
-            "device_node__to__process_node",     # device hosts process
-            "device_node__to__measurement_node", # device reports measurement
-        }
     return set()
 
 
@@ -303,10 +295,14 @@ def build_typed_causal_graph_from_hetero(
         # Diagnostic: prints once per call so user knows the filter fired.
         print(f"  [data_utils] Skipped {n_blocked:,} blocked edges "
               f"from causal graph (types={sorted(blocked_edge_types)}).")
-    if timestamps and n_temporal_reject > 0:
-        print(f"  [data_utils] Rejected {n_temporal_reject:,} edges violating "
-              f"temporal precedence (time-respecting DAG; "
-              f"{len(timestamps):,}/{len(included_nodes):,} nodes timed).")
+    if timestamps:
+        # Count timed nodes *within this subgraph* (not the global dict), so the
+        # ratio is meaningful — e.g. "480/500 timed" rather than the full-graph
+        # timestamp count over the subgraph size.
+        n_timed_sub = sum(1 for n in included_nodes if n in timestamps)
+        print(f"  [data_utils] Time-respecting DAG: "
+              f"{n_timed_sub:,}/{len(included_nodes):,} subgraph nodes timed, "
+              f"{n_temporal_reject:,} backward edges rejected.")
 
     return tcg
 

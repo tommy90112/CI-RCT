@@ -13,13 +13,9 @@ Metric C ground-truth sources (automatically selected by dataset):
                   only) and "extended" (+ k-hop labeled illicit wallets
                   via AddrAddr) are run by default; control with
                   --lfpn_mode and --lfpn_k.
-  - unsw_nb15   : Granger causality on per-IP attack-flow time series,
-                  via utils/granger_utils.py.
   - other       : Metric C is skipped.
 
 Usage:
-  python evaluate.py --dataset dblp --checkpoint checkpoints/ci_rct_dblp_best.pt
-  python evaluate.py --dataset elliptic --checkpoint checkpoints/ci_rct_elliptic_best.pt
   python evaluate.py --dataset elliptic++ --checkpoint ... --lfpn_mode both --lfpn_k 2
 """
 import argparse
@@ -50,9 +46,8 @@ from utils.threshold_utils import sweep_best_threshold
  
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a trained CI-RCT model")
-    parser.add_argument("--dataset", type=str, default="dblp",
-                        choices=["dblp", "acm", "imdb", "elliptic", "elliptic++",
-                                 "unsw_nb15", "unsw_mg24"])
+    parser.add_argument("--dataset", type=str, default="elliptic++",
+                        choices=["elliptic++"])
     # Elliptic++ detection target: 'transaction' (default, unchanged), 'wallet',
     # or 'joint' (one model classifying both → single pooled F1 + dual-seed
     # tracing). wallet/joint require --dataset elliptic++.
@@ -78,6 +73,32 @@ def parse_args() -> argparse.Namespace:
     # node within d backward hops. 0 = disabled (legacy). Needs prefer_root_types.
     # Example: --prefer_root_types process_node --prefer_reachable_depth 3
     parser.add_argument("--prefer_reachable_depth", type=int, default=0)
+    # Tracer algorithm ablation. greedy = legacy byte-identical; the rest are
+    # comparison arms (model/tracer_strategies, tracer_ablation_plan.md). All
+    # arms share the SAME causal_effects + graph + threshold + max_hops, so only
+    # the search rule differs — that is the controlled variable of the ablation.
+    parser.add_argument(
+        "--tracer_algorithm", type=str, default="greedy",
+        choices=["greedy", "beam", "dag_dp", "dijkstra", "bfs", "dfs"],
+        help="Root-cause backward-search algorithm. greedy=legacy byte-identical; "
+             "dag_dp=recommended global-optimal DAG Viterbi.",
+    )
+    parser.add_argument(
+        "--tracer_objective", type=str, default="product",
+        choices=["product", "sum"],
+        help="Weighted-path objective for dag_dp/dijkstra: product (max-product, "
+             "cost=-log|CE|) or sum (max-sum |CE|).",
+    )
+    parser.add_argument(
+        "--ncm_baseline", type=str, default="zero",
+        choices=["zero", "type_mean", "marginal"],
+        help="CE null-intervention baseline. 'zero'=legacy do(h_u=0) (OOD, "
+             "saturates p_null → CE sign uninterpretable); 'type_mean'="
+             "do(h_u=E[h_type]) recentres CE so sign=promote(+)/suppress(−); "
+             "'marginal'=p_null=E[MLP(h)] over same-type sources (no Jensen "
+             "gap, E[CE] per type is exactly 0). "
+             "No retraining needed — same weights, different CE reference.",
+    )
     parser.add_argument("--top_k", type=int, default=3)
     parser.add_argument("--node_limit", type=int, default=5000)
     parser.add_argument("--hop_limit", type=int, default=2)
@@ -102,7 +123,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fraud_subgraph", type=lambda x: x.lower() == "true",
                         default=False)
     parser.add_argument("--fraud_subgraph_hops", type=int, default=2)
-    parser.add_argument("--max_flows", type=int, default=200_000)
     # ── Decision-threshold tuning (binary detection; no retrain needed) ──────
     # 'none' keeps the legacy argmax (==0.5) cut. 'val' sweeps a threshold on
     # the validation split to maximise --threshold_objective, then applies it
@@ -115,17 +135,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threshold", type=float, default=-1.0,
                         help="Manual class-1 probability cut in (0,1); "
                              "overrides --threshold_tuning when >= 0.")
-    # ── UNSW-MG24 specific (mirror train.py) ─────────────────────────────────
-    parser.add_argument("--mg24_subsample_ddos", type=float, default=1.0)
-    parser.add_argument("--mg24_min_host_flows", type=int, default=5)
-    parser.add_argument("--mg24_prune_external", type=lambda x: x.lower() == "true",
-                        default=True)
-    parser.add_argument("--mg24_split_mode", type=str, default="by_file",
-                        choices=("row", "by_file", "hybrid", "by_incident"))
-    parser.add_argument("--mg24_host_role", type=str, default="full",
-                        choices=("full", "no_mal_count", "zeroed",
-                                 "detection_excluded"))
-    parser.add_argument("--mg24_drop_features", type=str, default="")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--lfpn_mode", type=str, default="both",
                         choices=["strict", "extended", "both"])
@@ -138,6 +147,50 @@ def parse_args() -> argparse.Namespace:
     # reproduce the CXGNN metric.
     parser.add_argument("--gt_match_mode", type=str, default="subset",
                         choices=["exact", "subset"])
+    # ── Metric C explainer (ablation route A) ────────────────────────────────
+    # Which explainer produces the per-fraud-node explanatory set scored by
+    # Metric C. 'ce_only' (default) is the legacy raw-|CE| greedy trace — the
+    # φ machinery is bypassed, byte-identical to the prior Metric C. The φ
+    # variants rank each hop's parents by Causal Shapley computed from the
+    # backbone do-intervention coalition value (non-additive), so 'asym' vs
+    # 'sym' isolates the empirical value of temporal asymmetry. 'cxgnn_ncm' is
+    # the external CXGNN (ECCV 2024) per-target local-NCM baseline.
+    parser.add_argument("--explainer", type=str, default="ce_only",
+                        choices=["ce_only", "phi_asym", "phi_sym",
+                                 "saliency", "cxgnn_ncm"])
+    parser.add_argument("--shapley_permutations", type=int, default=64,
+                        help="Monte-Carlo permutations for symmetric Shapley "
+                             "(--explainer phi_sym). Exact enumeration is used "
+                             "when n_parents! <= this value.")
+    parser.add_argument("--shapley_topk", type=int, default=0,
+                        help="Cap each hop's parents to the top-k by |CE| before "
+                             "Causal Shapley (phi_asym/phi_sym). 0 = no cap "
+                             "(legacy). Each coalition is a full backbone forward, "
+                             "so high-in-degree nodes make phi intractable on "
+                             "Elliptic++; e.g. --shapley_topk 8 bounds the count.")
+    parser.add_argument("--coalition_subgraph",
+                        type=lambda x: x.lower() == "true", default=True,
+                        help="Forward only the readout's L-hop receptive-field "
+                             "subgraph per Causal Shapley coalition instead of the "
+                             "full graph (numerically identical for a local "
+                             "backbone; self-checks vs full forward and reverts on "
+                             "mismatch). Massive phi_asym/phi_sym speedup. "
+                             "true (default) / false.")
+    # Ranking signal for the MAIN root-cause tracer (Metric B / RCP), as opposed
+    # to --explainer which only changes Metric C. 'ce' is byte-identical legacy.
+    parser.add_argument("--tracer_score", type=str, default="ce",
+                        choices=["ce", "ce_signed", "phi_asym", "phi_sym"],
+                        help="Per-hop ranking signal for the MAIN root-cause "
+                             "tracer (Metric B). 'ce' (default) ranks by |CE| "
+                             "(byte-identical to legacy). 'phi_asym'/'phi_sym' "
+                             "rank by |φ| (asymmetric/symmetric Causal Shapley via "
+                             "the backbone do-intervention coalition value), making "
+                             "the title's Shapley-driven-tracing claim testable on "
+                             "RCP. Reuses --shapley_topk / --shapley_permutations / "
+                             "--coalition_subgraph. φ readout uses the primary head, "
+                             "so non-primary-type (joint) seeds fall back to |CE|. "
+                             "ce_signed=以原始有號 CE 排序,只追正向 promoter"
+                             "(配 type_mean baseline 使用)。")
     # Dump the exact set of traced root-cause chains (the same ones counted in
     # the depth histogram / num_traced) decoded to real Elliptic++ identities,
     # for the crime-chain viewer (viz/crime_chain*.html).
@@ -147,9 +200,54 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dump_chains_topn", type=int, default=0,
                         help="Keep only the top-N chains (0 = all), sorted "
                              "true-positive & fraud-root & deepest first.")
+    parser.add_argument("--dump_csv", type=str, default=None,
+                        help="CSV path to write the traced chains as a flat "
+                             "one-row-per-chain table (path / type / CE encoded "
+                             "with '|'); shares the same chains & top-N filter "
+                             "as --dump_chains.")
+    parser.add_argument("--dump_phi", action="store_true",
+                        help="Attach per-node Causal Shapley φ (causal "
+                             "responsibility) to the dumped chains: phi_add "
+                             "(additive CE/n) and phi_asym (true asymmetric "
+                             "Shapley via the backbone coalition value). "
+                             "phi_asym needs coalition forwards — slow on many "
+                             "chains; tune with --shapley_topk / --max_explain.")
+    parser.add_argument("--dump_feature_attribution", action="store_true",
+                        help="L3: attach causal feature attribution to each "
+                             "chain's φ_asym pivot node (per-feature "
+                             "do-intervention CFE; saliency fallback). Requires "
+                             "--dump_phi. Adds one forward/backward + a few "
+                             "do-passes per chain.")
+    parser.add_argument("--feat_attr_topk", type=int, default=12,
+                        help="L3: number of features to report per pivot node.")
+    parser.add_argument("--feat_attr_all_nodes", action="store_true",
+                        help="L3: attribute EVERY chain node, not only the φ_asym "
+                             "pivot. Nodes outside the target's num_layers-hop "
+                             "receptive field still return empty (cannot reach the "
+                             "readout). Trades compute for near-target coverage.")
     parser.add_argument("--debug", action="store_true",
                         help="Print tracer diagnostics: CE distribution by edge "
                              "type, chain length histogram, stuck-trace analysis.")
+    parser.add_argument("--stability_probe_only", action="store_true",
+                        help="Skip LFPN/tracing/Metric-C and run ONLY the φ "
+                             "perturbation-stability probe (a σ-sweep of input "
+                             "noise, K draws each). Fast comparison of L_stab's "
+                             "effect across checkpoints (Full vs no_stab).")
+    parser.add_argument("--phi_noise_sweep", type=str,
+                        default="0.01,0.05,0.1,0.2,0.5",
+                        help="Comma-separated σ values for --stability_probe_only: "
+                             "Gaussian noise std added to node embeddings before "
+                             "recomputing φ. Larger σ probes harder.")
+    parser.add_argument("--phi_noise_draws", type=int, default=5,
+                        help="Number of independent noise draws averaged per σ in "
+                             "--stability_probe_only (reduces estimator variance).")
+    parser.add_argument("--eval_split", type=str, default="test",
+                        choices=["test", "val"],
+                        help="Which split to compute Metric A/B/C/D on. "
+                             "Default 'test' (report numbers). Use 'val' for "
+                             "hyperparameter search so the held-out test set is "
+                             "never touched during tuning. Decision thresholds "
+                             "are always tuned on val regardless.")
     # ── B1: type-aware BFS sampling for rare/bridge edges ────────────────────
     parser.add_argument("--rare_edge_types", type=str, default="",
                         help="Comma-separated edge-type strings "
@@ -174,18 +272,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_dataset(name, root, **kwargs):
-    if name == "dblp":
-        from torch_geometric.datasets import DBLP
-        return DBLP(root=os.path.join(root, "dblp"))[0], "author"
-    if name == "acm":
-        from torch_geometric.datasets import ACM
-        return ACM(root=os.path.join(root, "acm"))[0], "paper"
-    if name == "imdb":
-        from torch_geometric.datasets import IMDB
-        return IMDB(root=os.path.join(root, "imdb"))[0], "movie"
-    if name == "elliptic":
-        from utils.elliptic_loader import load_elliptic_dataset
-        return load_elliptic_dataset(root)
     if name == "elliptic++":
         from utils.elliptic_plus_loader import load_elliptic_plus_dataset
         return load_elliptic_plus_dataset(
@@ -194,51 +280,6 @@ def load_dataset(name, root, **kwargs):
             fraud_subgraph=kwargs.get("fraud_subgraph", False),
             fraud_subgraph_hops=kwargs.get("fraud_subgraph_hops", 2),
         )
-    if name == "unsw_nb15":
-        from utils.unsw_loader import load_unsw_dataset
-        return load_unsw_dataset(
-            os.path.join(root, "unsw_nb15"),
-            max_flows=kwargs.get("max_flows", 200_000),
-        )
-    if name == "unsw_mg24":
-        # Mirrors train.py's load_dataset(unsw_mg24, ...) so that the
-        # HeteroData produced for evaluation has the SAME node/edge layout
-        # and SAME split masks as the training run.
-        from utils.mg24_loader import (
-            build_edges,
-            load_mg24_data,
-            to_pyg_hetero_data,
-        )
-        mg24 = load_mg24_data(
-            root=os.path.join(root, "unsw_mg24"),
-            subsample_ddos=kwargs.get("mg24_subsample_ddos", 1.0),
-            seed=kwargs.get("seed", 42),
-            prune_external_hosts=kwargs.get("mg24_prune_external", True),
-            min_host_flows=kwargs.get("mg24_min_host_flows", 5),
-            verbose=True,
-        )
-        edges = build_edges(mg24)
-        host_role = kwargs.get("mg24_host_role", "full")
-        host_features_mode = (
-            host_role if host_role in ("full", "no_mal_count", "zeroed")
-            else "full"
-        )
-        drop_raw = kwargs.get("mg24_drop_features", "") or ""
-        flow_features_exclude = [
-            c.strip() for c in drop_raw.split(",") if c.strip()
-        ]
-        hd = to_pyg_hetero_data(
-            mg24, edges,
-            seed=kwargs.get("seed", 42),
-            split_mode=kwargs.get("mg24_split_mode", "by_file"),
-            host_features_mode=host_features_mode,
-            flow_features_exclude=flow_features_exclude or None,
-        )
-        # DD-3 primary target: flow_node (same as train.py).
-        # DD-16: stash the raw MG24Data on hd so build_gt_list can derive
-        # kill-chain explanation ground truth from the original DataFrames.
-        hd._mg24 = mg24  # type: ignore[attr-defined]
-        return hd, "flow_node"
     raise ValueError(f"Unknown dataset: {name!r}")
  
  
@@ -266,6 +307,7 @@ def _load_illicit_wallet_globals(
     include_addr_addr: bool = False,
     fraud_subgraph: bool = False,
     fraud_subgraph_hops: int = 2,
+    wallet_per_address: bool = False,
 ) -> set:
     """
     Return the set of *global node IDs* of labeled illicit wallets
@@ -320,6 +362,7 @@ def _load_illicit_wallet_globals(
             fraud_subgraph=fraud_subgraph,
             fraud_subgraph_hops=fraud_subgraph_hops,
             verbose=False,
+            wallet_per_address=wallet_per_address,
         )
  
         illicit_addrs = wallets_cls.loc[
@@ -375,13 +418,6 @@ def _load_variant_dataset(args):
             include_addr_addr=args.include_addr_addr,
             fraud_subgraph=args.fraud_subgraph,
             fraud_subgraph_hops=args.fraud_subgraph_hops,
-            max_flows=args.max_flows,
-            mg24_subsample_ddos=args.mg24_subsample_ddos,
-            mg24_min_host_flows=args.mg24_min_host_flows,
-            mg24_prune_external=args.mg24_prune_external,
-            mg24_split_mode=args.mg24_split_mode,
-            mg24_host_role=args.mg24_host_role,
-            mg24_drop_features=args.mg24_drop_features,
             seed=args.seed,
         )
     if args.dataset != "elliptic++":
@@ -423,7 +459,8 @@ def _tune_head_threshold(probs, store, objective):
 
 
 @torch.no_grad()
-def eval_classification_pooled(model, data, threshold_objective=None):
+def eval_classification_pooled(model, data, threshold_objective=None,
+                              mask_attr="test_mask"):
     """Joint variant: ONE pooled F1 over every classified type's test nodes.
 
     Each type is scored by its OWN head (primary for transaction, aux head for
@@ -445,7 +482,7 @@ def eval_classification_pooled(model, data, threshold_objective=None):
     y_true, y_pred, scores = [], [], []
     per_type_n, per_type_info = {}, {}
     for ntype, logits in logits_by_type.items():
-        mask = getattr(data[ntype], "test_mask", None)
+        mask = getattr(data[ntype], mask_attr, None)
         if mask is None or not bool(mask.any()):
             continue
         probs = torch.softmax(logits, dim=-1)
@@ -473,6 +510,89 @@ def eval_classification_pooled(model, data, threshold_objective=None):
     metrics["fraud_f1"] = compute_fraud_f1(y_true, y_pred)
     metrics["pred_fraud_rate"] = float(y_pred.float().mean())
     return metrics, per_type_n, per_type_info
+
+
+def phi_stability_probe(model, data, causal_graph, args, device,
+                        type_offsets, target_type, extra_fraud_seeds=None):
+    """φ perturbation-stability probe (Metric D, strengthened).
+
+    The legacy Phi-Stability metric perturbs embeddings at a single small σ
+    (0.01) and averages |Δφ| over ALL parents — dominated by near-zero φ, it
+    saturates and cannot distinguish an L_stab-trained model from an ablated
+    one. This probe instead (i) sweeps σ so degradation shows as a curve,
+    (ii) averages K independent noise draws to cut estimator variance, and
+    (iii) reports drift at each chain's PIVOT (argmax|φ|) — the node that
+    actually carries the explanation — both absolute and relative to |φ|.
+
+    A model regularised by L_stab should keep pivot drift flatter as σ grows.
+    """
+    model.eval()
+    with torch.no_grad():
+        _logits, h_dict = model.forward(data)
+        flat_h = model._build_flat_h(h_dict)
+    causal_effects = model.compute_causal_effects(flat_h, causal_graph)
+
+    # Same predicted-fraud seed selection as the main Metric-B path.
+    offset = type_offsets[target_type]
+    logits, _ = model.all_logits(data)
+    tgt_logits = logits[target_type] if isinstance(logits, dict) else logits
+    pred = tgt_logits.argmax(dim=-1)
+    seeds = [
+        offset + idx for idx in range(pred.size(0))
+        if pred[idx].item() == 1 and (offset + idx) in causal_graph.set_v
+    ]
+    if extra_fraud_seeds:
+        seeds.extend(g for g in extra_fraud_seeds if g in causal_graph.set_v)
+    seeds = list(dict.fromkeys(seeds))[: args.max_explain]
+    if not seeds:
+        print("  [φ-probe] No fraud-predicted seeds in causal graph — skipping.")
+        return
+
+    # Original φ and its pivot (argmax|φ|) per seed.
+    phi_orig = {s: compute_asymmetric_causal_shapley(causal_effects, causal_graph, s)
+                for s in seeds}
+    pivots = {}
+    for s, phi in phi_orig.items():
+        if phi:
+            pivots[s] = max(phi.items(), key=lambda kv: abs(kv[1]))[0]
+
+    sweep = [float(x) for x in str(args.phi_noise_sweep).split(",") if x.strip()]
+    K = max(1, int(args.phi_noise_draws))
+    eps = 1e-8
+
+    print(f"\n[φ-stability probe] σ-sweep over {len(sweep)} levels, "
+          f"K={K} draws, N={len(seeds)} seeds, "
+          f"{len(pivots)} with a defined pivot")
+    print(f"  {'σ':>6s}  {'all-parent mean|Δφ|':>20s}  "
+          f"{'pivot mean|Δφ|':>16s}  {'pivot rel-drift':>16s}")
+
+    rows = []
+    for sigma in sweep:
+        all_diffs, pivot_abs, pivot_rel = [], [], []
+        for _ in range(K):
+            with torch.no_grad():
+                flat_h_pert = {
+                    gid: emb + torch.randn_like(emb) * sigma
+                    for gid, emb in flat_h.items()
+                }
+            ce_pert = model.compute_causal_effects(flat_h_pert, causal_graph)
+            for s in seeds:
+                phi_p = compute_asymmetric_causal_shapley(ce_pert, causal_graph, s)
+                phi_o = phi_orig[s]
+                for p in set(phi_o) & set(phi_p):
+                    all_diffs.append(abs(phi_o[p] - phi_p[p]))
+                piv = pivots.get(s)
+                if piv is not None and piv in phi_p:
+                    d = abs(phi_o[piv] - phi_p[piv])
+                    pivot_abs.append(d)
+                    pivot_rel.append(d / (abs(phi_o[piv]) + eps))
+        m_all = float(np.mean(all_diffs)) if all_diffs else 0.0
+        m_piv = float(np.mean(pivot_abs)) if pivot_abs else 0.0
+        m_rel = float(np.mean(pivot_rel)) if pivot_rel else 0.0
+        rows.append((sigma, m_all, m_piv, m_rel))
+        print(f"  {sigma:>6.3f}  {m_all:>20.6f}  {m_piv:>16.6f}  {m_rel:>16.6f}")
+
+    return rows
 
 
 def eval_root_cause_and_stability(model, data, labels, test_mask,
@@ -509,6 +629,8 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         threshold=args.ce_threshold,
         prefer_root_types=_parse_prefer_root_types(args.prefer_root_types),
         prefer_reachable_depth=args.prefer_reachable_depth,
+        tracer_algorithm=args.tracer_algorithm,
+        tracer_objective=args.tracer_objective,
     )
  
     offset = type_offsets[target_type]
@@ -532,7 +654,9 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         return {}, {}
  
     predicted_roots, causal_chains = [], []
-    _noise_sigma = 0.01
+    _noise_sigma = getattr(
+        getattr(model, "config", None), "phi_stability_noise_std", 0.01
+    )
     with torch.no_grad():
         flat_h_perturbed = {
             gid: emb + torch.randn_like(emb) * _noise_sigma
@@ -540,9 +664,66 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         }
     causal_effects_perturbed = model.compute_causal_effects(flat_h_perturbed, causal_graph)
     stability_diffs = []
- 
+
+    # ── Optional φ-driven ranking for the MAIN tracer (Metric B / RCP) ─────────
+    # --tracer_score ce (default) ⇒ |CE| ranking, byte-identical to legacy.
+    # ce_signed ⇒ rank each hop by the RAW signed CE (no abs), so max() picks the
+    # strongest positive promoter and negative (suppressor) parents are never
+    # followed — pair with a type_mean baseline so the sign is meaningful.
+    # phi_asym/phi_sym rank each hop by |φ| (asymmetric/symmetric Causal Shapley
+    # via the backbone do-intervention coalition value), making the thesis title's
+    # "asymmetric-Shapley-driven root-cause tracing" claim testable on RCP. We take
+    # |φ| (not signed φ) to keep the magnitude convention of the |CE| path, so
+    # suppressor parents (negative effect, large |φ|) are still followed and the
+    # trace does not stall at depth 0.
+    tracer_score = getattr(args, "tracer_score", "ce")
+    readout_type = model.backbone.target_node_type
+    _phi_layers = None
+    if tracer_score not in ("ce", "ce_signed") and getattr(args, "coalition_subgraph", True):
+        try:
+            _phi_layers = len(model.backbone.hgt_layers)
+        except AttributeError:
+            _phi_layers = getattr(
+                getattr(model, "config", None), "num_hgt_layers", None
+            )
+
+    def _phi_tracer_score_fn(seed_global):
+        # φ readout reuses the primary classifier head, so it is only valid for
+        # seeds of that type; non-primary (joint) seeds fall back to |CE| (None).
+        if tracer_score == "ce":
+            return None
+        if tracer_score == "ce_signed":
+            # Raw signed CE: max() over upstream picks the strongest positive
+            # promoter; negative (suppressor) parents are never selected. Valid
+            # for any node type, so it precedes the primary-head readout check.
+            def signed_ce_fn(current, upstream):
+                return {u: causal_effects.get((u, current), 0.0) for u in upstream}
+            return signed_ce_fn
+        if causal_graph.node_type.get(seed_global) != readout_type:
+            return None
+        from model.explainers import _make_phi_score_fn
+        base = _make_phi_score_fn(
+            model=model, data=data, causal_graph=causal_graph,
+            target_node=seed_global, type_offsets=type_offsets,
+            target_node_type=readout_type, fraud_class=1,
+            mode=("asym" if tracer_score == "phi_asym" else "sym"),
+            n_permutations=getattr(args, "shapley_permutations", 64),
+            causal_effects=causal_effects,
+            shapley_topk=(getattr(args, "shapley_topk", 0) or None),
+            use_subgraph=getattr(args, "coalition_subgraph", True),
+            num_layers=_phi_layers,
+        )
+
+        def abs_score_fn(current, upstream):
+            return {u: abs(v) for u, v in base(current, upstream).items()}
+
+        return abs_score_fn
+
     for global_id in fraud_predicted_global:
-        root, chain = tracer.trace_root_cause(global_id, causal_effects)
+        root, chain = tracer.trace_root_cause(
+            global_id, causal_effects,
+            upstream_score_fn=_phi_tracer_score_fn(global_id),
+        )
         predicted_roots.append(root)
         causal_chains.append(chain)
         phi_orig = compute_asymmetric_causal_shapley(causal_effects, causal_graph, global_id)
@@ -567,6 +748,7 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
             include_addr_addr=args.include_addr_addr,
             fraud_subgraph=args.fraud_subgraph,
             fraud_subgraph_hops=args.fraud_subgraph_hops,
+            wallet_per_address=args.variant in ("wallet", "joint"),
         )
         fraud_label_set |= illicit_wallet_globals
         # wallet/joint (dual-seed) traces can legitimately end at an upstream
@@ -584,30 +766,6 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
             print(f"\n[fraud_label_set] tx fraud nodes: "
                   f"{sum(1 for i in test_indices if labels[i].item() == 1)}, "
                   f"illicit wallets added: {len(illicit_wallet_globals):,}, "
-                  f"total fraud_label_set size: {len(fraud_label_set):,}")
-    elif args.dataset == "unsw_mg24":
-        # DAG is `device → process → host → flow`, so backward trace from a
-        # fraud flow_node walks through host_node / process_node / device_node.
-        # Add malicious node ids on every labelled type so reaching them counts.
-        n_flow_fraud = sum(1 for i in test_indices if labels[i].item() == 1)
-        per_type_added: dict = {}
-        for ntype in ("process_node", "measurement_node"):
-            if ntype not in data.node_types or not hasattr(data[ntype], "y"):
-                continue
-            ntype_offset = type_offsets.get(ntype, 0)
-            ntype_labels = data[ntype].y
-            added = {
-                ntype_offset + i for i in range(ntype_labels.size(0))
-                if int(ntype_labels[i].item()) == 1
-            }
-            per_type_added[ntype] = len(added)
-            fraud_label_set |= added
-        if args.debug:
-            extras = ", ".join(
-                f"{t}={n:,}" for t, n in per_type_added.items()
-            )
-            print(f"\n[fraud_label_set] flow fraud (test): {n_flow_fraud:,}; "
-                  f"added malicious nodes: {extras}; "
                   f"total fraud_label_set size: {len(fraud_label_set):,}")
  
     rct_metrics = compute_root_cause_metrics(
@@ -651,20 +809,61 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         )
         rct_metrics["num_true_pos_traced"] = len(tp_roots)
 
+    # ── RCP diagnostics: label-coverage ceiling & split-artifact check ─────
+    # (a) A root landing on an UNKNOWN-label node scores 0 no matter what the
+    #     tracer did — on Elliptic++ (mostly class-3 nodes) this caps RCP well
+    #     below 1. root_labeled_ratio IS that ceiling; rcp_labeled_only is RCP
+    #     restricted to chains whose root can actually be judged.
+    root_labels = [_label_of_global(r) for r in predicted_roots]
+    labeled_pairs = [
+        (r, y) for r, y in zip(predicted_roots, root_labels) if y in (0, 1)
+    ]
+    rct_metrics["root_labeled_ratio"] = len(labeled_pairs) / len(predicted_roots)
+    if labeled_pairs:
+        rct_metrics["root_cause_precision_labeled_only"] = float(
+            np.mean([
+                root_cause_precision(r, fraud_label_set)
+                for r, _ in labeled_pairs
+            ])
+        )
+    # (b) The headline fraud_label_set only credits TEST-split fraud txs on
+    #     the transaction variant (the 735 gate keeps it byte-identical), so a
+    #     chain that correctly traces back to a train/val-split fraud tx still
+    #     scores 0 — a split artifact: root-ness is a graph property, not a
+    #     split property. Report the all-labeled-fraud-tx RCP alongside
+    #     (idempotent on wallet/joint, where all fraud txs are already added).
+    if args.dataset == "elliptic++" and "transaction" in type_offsets \
+            and hasattr(data["transaction"], "y"):
+        _tx_off = type_offsets["transaction"]
+        _tx_y = data["transaction"].y
+        all_fraud_set = fraud_label_set | {
+            _tx_off + i for i in (_tx_y == 1).nonzero(as_tuple=True)[0].tolist()
+        }
+        rct_metrics["root_cause_precision_all_fraud_tx"] = float(
+            np.mean([root_cause_precision(r, all_fraud_set)
+                     for r in predicted_roots])
+        )
+
     # ── Optional: dump the traced chains with real Elliptic++ identities ────
     # These are the SAME chains summarised by the depth histogram — here we
     # decode every node's global id back to its real txId / wallet address and
-    # write them out for the crime-chain viewer.
-    if getattr(args, "dump_chains", None) and args.dataset == "elliptic++":
+    # write them out as JSON (crime-chain viewer) and/or a flat CSV table.
+    want_dump = (
+        (getattr(args, "dump_chains", None) or getattr(args, "dump_csv", None))
+        and args.dataset == "elliptic++"
+    )
+    if want_dump:
         import json as _json
         from utils.elliptic_identity import build_reverse_maps, chain_to_record
-        print(f"\n[dump_chains] decoding {len(causal_chains)} chains to real "
+        from utils.chain_export import write_chains_csv
+        print(f"\n[dump] decoding {len(causal_chains)} chains to real "
               f"txId / address …")
         idx_to_txid, idx_to_addr = build_reverse_maps(
             args.data_root,
             include_addr_addr=args.include_addr_addr,
             fraud_subgraph=args.fraud_subgraph,
             fraud_subgraph_hops=args.fraud_subgraph_hops,
+            wallet_per_address=args.variant in ("wallet", "joint"),
         )
         records = [
             chain_to_record(
@@ -680,19 +879,130 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
         )
         if args.dump_chains_topn > 0:
             records = records[: args.dump_chains_topn]
-        meta = {
-            "dataset": "elliptic++",
-            "checkpoint": os.path.basename(args.checkpoint or ""),
-            "n_chains": len(records),
-            "n_true_positive": sum(1 for c in records if c["is_true_positive"]),
-            "n_fraud_root": sum(1 for c in records if c["root_is_fraud"]),
-            "mean_depth": (round(float(np.mean([c["depth"] for c in records])), 2)
-                           if records else 0.0),
-        }
-        os.makedirs(os.path.dirname(os.path.abspath(args.dump_chains)), exist_ok=True)
-        with open(args.dump_chains, "w") as f:
-            _json.dump({"meta": meta, "chains": records}, f)
-        print(f"[dump_chains] wrote {len(records)} chains → {args.dump_chains}")
+        if getattr(args, "dump_phi", None):
+            from utils.chain_phi import attach_phi_to_records
+            from model.explainers import _make_phi_score_fn
+            phi_readout_type = model.backbone.target_node_type
+            try:
+                phi_num_layers = len(model.backbone.hgt_layers)
+            except AttributeError:
+                phi_num_layers = getattr(
+                    getattr(model, "config", None), "num_hgt_layers", None
+                )
+
+            def _asym_phi_fn(readout_global, intervene_global):
+                # Option A — per-hop rolling readout. chain_phi resolves the
+                # readout node (the intervene node itself, or its nearest
+                # downstream head node) and passes it here. v(S) then reads out
+                # fraud probability at `readout_global` while the coalition
+                # controls `intervene_global`'s parent edges, making φ_asym a
+                # per-hop LOCAL causal responsibility instead of a global
+                # attribution to the fixed seed — deep hops are no longer forced
+                # to φ≈0 by the backbone's receptive-field horizon.
+                base = _make_phi_score_fn(
+                    model=model, data=data, causal_graph=causal_graph,
+                    target_node=readout_global, type_offsets=type_offsets,
+                    target_node_type=phi_readout_type, fraud_class=1, mode="asym",
+                    n_permutations=getattr(args, "shapley_permutations", 64),
+                    causal_effects=causal_effects,
+                    shapley_topk=(getattr(args, "shapley_topk", 0) or None),
+                    use_subgraph=getattr(args, "coalition_subgraph", True),
+                    num_layers=phi_num_layers,
+                )
+                return base(intervene_global, None)
+
+            print(f"[dump_phi] computing per-node φ (phi_add + phi_asym) for "
+                  f"{len(records)} chains — asym uses coalition forwards, may be "
+                  f"slow …", flush=True)
+            _phi_log_every = max(1, len(records) // 40)
+
+            def _phi_progress(done, total):
+                if done % _phi_log_every == 0 or done == total:
+                    print(f"[dump_phi]   {done}/{total} chains", flush=True)
+
+            with torch.no_grad():
+                records = attach_phi_to_records(
+                    records, causal_graph=causal_graph,
+                    causal_effects=causal_effects,
+                    asym_phi_fn=_asym_phi_fn,
+                    readout_type=phi_readout_type,
+                    on_progress=_phi_progress,
+                )
+
+            # ── L3: causal feature attribution on each chain's φ_asym pivot ──
+            if getattr(args, "dump_feature_attribution", None):
+                from utils.feature_names import get_feature_names
+                from model.feature_attribution import compute_causal_feature_attribution
+
+                feat_names = get_feature_names(
+                    os.path.join(args.data_root, "Elliptic++"),
+                    wallet_per_address=args.variant in ("wallet", "joint"),
+                )
+                print(f"[dump_phi] L3: causal feature attribution on pivots of "
+                      f"{len(records)} chains …", flush=True)
+                attr_all = getattr(args, "feat_attr_all_nodes", False)
+                n_attr = 0
+                for ri, rec in enumerate(records):
+                    nodes = rec.get("nodes", [])
+                    if not nodes:
+                        continue
+                    # L3's readout reuses the PRIMARY classifier head, so it is
+                    # only defined for chains whose target IS that type. Joint
+                    # wallet-seeded chains must be skipped (mirrors the φ-tracer
+                    # readout-type guard) — their global id would otherwise be
+                    # misread as a transaction-local index (IndexError).
+                    if causal_graph.node_type.get(nodes[0]["global"]) \
+                            != phi_readout_type:
+                        continue
+                    # Nodes to attribute: every chain node when --feat_attr_all_nodes,
+                    # else just the φ_asym pivot (node with peak |φ_asym|). Nodes
+                    # outside the target's receptive field return empty features and
+                    # are left unattributed (they cannot reach the readout).
+                    if attr_all:
+                        candidates = nodes
+                    else:
+                        pivot = None
+                        best = 0.0
+                        for nd in nodes:
+                            pa = nd.get("phi_asym")
+                            if pa is not None and abs(pa) > best:
+                                best = abs(pa)
+                                pivot = nd
+                        candidates = [pivot] if pivot is not None else []
+                    for nd in candidates:
+                        attr = compute_causal_feature_attribution(
+                            model=model, data=data, causal_graph=causal_graph,
+                            target_node=nodes[0]["global"], pivot_node=nd["global"],
+                            type_offsets=type_offsets, target_node_type=phi_readout_type,
+                            feature_names=feat_names, fraud_class=1,
+                            use_subgraph=getattr(args, "coalition_subgraph", True),
+                            num_layers=phi_num_layers, top_k=args.feat_attr_topk,
+                        )
+                        if attr["features"]:
+                            nd["feature_attribution"] = attr["features"]
+                            nd["feature_attribution_method"] = attr["method"]
+                            n_attr += 1
+                    if (ri + 1) % _phi_log_every == 0 or ri + 1 == len(records):
+                        _unit = "nodes" if attr_all else "pivots"
+                        print(f"[dump_phi]   L3 {ri + 1}/{len(records)} "
+                              f"({n_attr} {_unit} attributed)", flush=True)
+        if getattr(args, "dump_chains", None):
+            meta = {
+                "dataset": "elliptic++",
+                "checkpoint": os.path.basename(args.checkpoint or ""),
+                "n_chains": len(records),
+                "n_true_positive": sum(1 for c in records if c["is_true_positive"]),
+                "n_fraud_root": sum(1 for c in records if c["root_is_fraud"]),
+                "mean_depth": (round(float(np.mean([c["depth"] for c in records])), 2)
+                               if records else 0.0),
+            }
+            os.makedirs(os.path.dirname(os.path.abspath(args.dump_chains)), exist_ok=True)
+            with open(args.dump_chains, "w") as f:
+                _json.dump({"meta": meta, "chains": records}, f)
+            print(f"[dump_chains] wrote {len(records)} chains → {args.dump_chains}")
+        if getattr(args, "dump_csv", None):
+            n_csv = write_chains_csv(records, args.dump_csv)
+            print(f"[dump_csv] wrote {n_csv} chains → {args.dump_csv}")
 
     # ── DIAGNOSTIC 4: root type breakdown ──────────────────────────────────
     if args.debug:
@@ -765,6 +1075,26 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
     return rct_metrics, stability_metrics
  
  
+def _subset_match_meaningful(preds_list, gts_list, min_feasible_frac=0.5):
+    """Whether a 'subset' gt-match is structurally meaningful for this GT.
+
+    Subset gt-match scores 1 only when the chain contains EVERY gt node
+    (gt ⊆ chain). That is achievable only if the GT can physically fit inside
+    the predicted chain (|gt| ≤ |chain|). Broad GT — e.g. LFPN k-hop
+    neighbourhoods with |GT| up to 1000+ — can never fit a depth-bounded chain,
+    so the score collapses to ~0 and MISLEADS (it reads as "0% accurate" when
+    the chain is in fact recovering the precise source; see Explanation Recall).
+
+    Returns (meaningful, feasible_frac) where feasible_frac is the fraction of
+    non-empty instances for which |gt| ≤ |chain| (subset is at least size-possible).
+    """
+    feasible = [len(g) <= len(p) for p, g in zip(preds_list, gts_list) if p and g]
+    if not feasible:
+        return False, 0.0
+    frac = sum(feasible) / len(feasible)
+    return frac >= min_feasible_frac, frac
+
+
 def eval_explanation_quality(model, data, labels, test_mask,
                               causal_graph, args, gt_causal_nodes=None):
     if not gt_causal_nodes:
@@ -788,51 +1118,53 @@ def eval_explanation_quality(model, data, labels, test_mask,
         max_hops=args.max_hops,
         threshold=0.0,
         prefer_root_types=_parse_prefer_root_types(args.prefer_root_types),
+        tracer_algorithm=args.tracer_algorithm,
+        tracer_objective=args.tracer_objective,
     )
+    from model.explainers import build_explainer
+    explainer_name = getattr(args, "explainer", "ce_only")
+    explainer = build_explainer(
+        explainer_name,
+        model=model,
+        data=data,
+        causal_graph=causal_graph,
+        tracer=tracer,
+        type_offsets=compute_type_offsets(data),
+        target_node_type=model.backbone.target_node_type,
+        n_permutations=getattr(args, "shapley_permutations", 64),
+        shapley_topk=(getattr(args, "shapley_topk", 0) or None),
+        coalition_subgraph=getattr(args, "coalition_subgraph", True),
+    )
+    print(f"  Explainer: {explainer_name}")
     preds_list, gts_list = [], []
     for node_id, gt_set in eligible.items():
-        root, chain = tracer.trace_root_cause(node_id, causal_effects)
-        preds_list.append(set(chain))
+        preds_list.append(explainer(node_id, causal_effects))
         gts_list.append(gt_set)
     from utils.metrics import compute_explanation_metrics
-    return compute_explanation_metrics(
+    metrics = compute_explanation_metrics(
         preds_list, gts_list, gt_match_mode=args.gt_match_mode
     )
+    # Suppress a structurally-degenerate subset gt-match (broad GT can never fit
+    # a bounded chain → ~0, which misreads as "totally inaccurate"). Report
+    # Explanation Recall as the coverage metric in that regime instead.
+    if args.gt_match_mode == "subset":
+        meaningful, frac = _subset_match_meaningful(preds_list, gts_list)
+        if not meaningful:
+            metrics.pop("gt_match_accuracy", None)
+            metrics.pop("gt_match_mode", None)
+            metrics["gt_match"] = (
+                f"n/a — GT broader than chain "
+                f"({frac:.0%} of cases size-feasible); see Recall"
+            )
+            print("  [note] subset gt-match suppressed: GT is broader than the "
+                  "bounded causal chain, so 'recover ALL gt nodes' is "
+                  "structurally ~0; Explanation Recall is the coverage metric.")
+    return metrics
  
  
 def build_gt_list(args, data, type_offsets):
     gt_list = []
-    if args.dataset == "unsw_nb15" and hasattr(data, "_df"):
-        print("Computing Granger ground-truth for Metric C (UNSW-NB15)...")
-        from utils.granger_utils import compute_granger_ground_truth
-        gt = compute_granger_ground_truth(
-            df=data._df,
-            ip_global_offset=type_offsets.get("ip_node", 0),
-            flow_global_offset=type_offsets.get("flow_node", 0),
-            window_size=60,
-            max_lag=3,
-            p_threshold=0.05,
-            verbose=True,
-        )
-        if gt:
-            gt_list.append(("Granger", gt))
-    elif args.dataset == "unsw_mg24" and hasattr(data, "_mg24"):
-        print("Computing kill-chain ground-truth for Metric C (UNSW-MG24)...")
-        from utils.mg24_kill_chain_gt import compute_mg24_kill_chain_gt
-        test_mask = (
-            data["flow_node"].test_mask.cpu().numpy()
-            if hasattr(data["flow_node"], "test_mask") else None
-        )
-        gt = compute_mg24_kill_chain_gt(
-            mg24_data=data._mg24,  # type: ignore[attr-defined]
-            type_offsets=type_offsets,
-            test_mask=test_mask,
-            include_devices=True,
-            verbose=True,
-        )
-        if gt:
-            gt_list.append(("KillChain", gt))
-    elif args.dataset == "elliptic++":
+    if args.dataset == "elliptic++":
         from utils.lfpn_utils import compute_lfpn_ground_truth
         modes = ["strict", "extended"] if args.lfpn_mode == "both" else [args.lfpn_mode]
         for m in modes:
@@ -847,6 +1179,7 @@ def build_gt_list(args, data, type_offsets):
                 fraud_subgraph=args.fraud_subgraph,
                 fraud_subgraph_hops=args.fraud_subgraph_hops,
                 verbose=True,
+                wallet_per_address=args.variant in ("wallet", "joint"),
             )
             if gt:
                 label = "LFPN-Strict" if m == "strict" \
@@ -887,8 +1220,18 @@ def main():
     data, target_type = _load_variant_dataset(args)
     data = data.to(device)
     labels    = data[target_type].y
-    test_mask = data[target_type].test_mask
- 
+    # --eval_split selects which split every metric (A/B/C/D) is computed on.
+    # 'test' for reported numbers; 'val' for hyperparameter search so test stays
+    # untouched. Variable name kept as test_mask to avoid threading a rename
+    # through every downstream eval helper.
+    mask_attr = "val_mask" if args.eval_split == "val" else "test_mask"
+    test_mask = getattr(data[target_type], mask_attr)
+    if test_mask is None:
+        raise ValueError(
+            f"--eval_split={args.eval_split} requested but "
+            f"data[{target_type!r}].{mask_attr} is missing."
+        )
+
     type_offsets = compute_type_offsets(data)
     offset = type_offsets[target_type]
     test_indices = test_mask.nonzero(as_tuple=True)[0].tolist()
@@ -905,7 +1248,9 @@ def main():
             for i in (data["wallet"].y == 1).nonzero(as_tuple=True)[0].tolist()
         ]
 
-    gt_list = build_gt_list(args, data, type_offsets)
+    # LFPN ground-truth (Metric C) is expensive and irrelevant to the φ probe.
+    gt_list = [] if args.stability_probe_only \
+        else build_gt_list(args, data, type_offsets)
 
     print("\nBuilding TypedCausalGraph...")
     gt_tx_ids = []
@@ -978,6 +1323,7 @@ def main():
         num_heads=arch_get("num_heads", args.num_heads),
         dropout=arch_get("dropout", args.dropout),
         node_type_emb_dim=arch_get("node_type_emb_dim", args.type_emb_dim),
+        ncm_baseline=args.ncm_baseline,
     )
     in_channels_dict = {
         nt: data[nt].x.size(-1)
@@ -1063,10 +1409,13 @@ def main():
             args.threshold_objective if args.threshold_tuning == "val" else None
         )
         cls_metrics, per_type_n, per_type_info = eval_classification_pooled(
-            model, data, threshold_objective=pooled_obj
+            model, data, threshold_objective=pooled_obj, mask_attr=mask_attr
         )
         n_str = " + ".join(f"{t} {n:,}" for t, n in per_type_n.items())
-        print_section(f"A. Classification (POOLED test N = {n_str})", cls_metrics)
+        print_section(
+            f"A. Classification (POOLED {args.eval_split} N = {n_str})",
+            cls_metrics,
+        )
         for t, info in per_type_info.items():
             print(f"    · {t:11s} fraud_f1={info['fraud_f1']:.4f}  "
                   f"pred_rate={info['pred_fraud_rate']:.4f}  "
@@ -1076,7 +1425,7 @@ def main():
         logits_by_type, _ = model.all_logits(data)
         if "wallet" in logits_by_type:
             w_off = type_offsets["wallet"]
-            w_mask = data["wallet"].test_mask
+            w_mask = getattr(data["wallet"], mask_attr)
             w_probs = torch.softmax(logits_by_type["wallet"], dim=-1)[:, 1]
             w_thr = per_type_info.get("wallet", {}).get("threshold", 0.5)
             w_idx = w_mask.nonzero(as_tuple=True)[0].tolist()
@@ -1089,6 +1438,15 @@ def main():
         )
         print_section("A. Classification Metrics", cls_metrics)
     print(f"  ▶ Headline F1-score (fraud class) = {cls_metrics['fraud_f1']:.4f}")
+
+    if args.stability_probe_only:
+        phi_stability_probe(
+            model, data, causal_graph, args, device,
+            type_offsets=type_offsets, target_type=target_type,
+            extra_fraud_seeds=extra_fraud_seeds,
+        )
+        print(f"\n{'─' * 55}\n  Stability probe complete.\n{'─' * 55}\n")
+        return
 
     rct_metrics, stab_metrics = eval_root_cause_and_stability(
         model, data, labels, test_mask, causal_graph, args, device,

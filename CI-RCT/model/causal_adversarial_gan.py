@@ -1,23 +1,29 @@
 """
 CausalAdversarialGAN — Module 4 of CI-RCT.
 
-Causal-constrained adversarial GAN for handling:
-  - Gap 2: Class imbalance (fraud nodes ≪ normal nodes)
-  - Gap 3: Camouflage behaviour (fraudsters mimic normal nodes)
+Adversarial GAN for handling:
+  - Gap 2: Class imbalance (fraud nodes ≪ normal nodes) — the generator
+    augments the scarce fraud side with hard, hard-to-classify fraud-like
+    samples near the real-fraud manifold.
 
 Architecture
 ────────────
 Generator:
-  Conditioned on real fraud node features + type embedding, generates
-  camouflaged fraud node features that resemble normal nodes.
-  Structural constraint: only connects to topologically-prior upstream
-  nodes (DAG topology constraint — preserves Granger temporal precedence).
+  Conditioned on real fraud node features + type embedding (+ small
+  Gaussian noise), generates hard fraud-like feature vectors that stay
+  near the real-fraud distribution.
+  NOTE: forward() also exposes an OPTIONAL edge generator restricted to
+  topologically-prior upstream nodes, but the training pipeline
+  (ci_rct.py) calls generate() WITHOUT upstream_features, so no
+  edge/topology conditioning is exercised — only feature synthesis is used
+  and the returned edge_probs are discarded.
 
-Discriminator (= HeteroGNN Backbone):
-  The same HeteroGNN used for fraud detection acts as discriminator,
-  learning to distinguish real normal nodes from Generator's camouflaged
-  fakes.  This reuse means adversarial training directly strengthens the
-  fraud detector.
+Discriminator (reuses detector heads, NOT the full backbone):
+  The WGAN score reuses only the backbone's input projection + classifier
+  head — the HGT message-passing layers are skipped — applied to raw
+  target-type features.  Adversarial training therefore strengthens the
+  projection and classification layers shared with the fraud detector,
+  not the full detector forward pass.
 
 Training (WGAN-GP):
   Wasserstein distance with gradient penalty (Arjovsky et al., ICML 2017).
@@ -41,17 +47,20 @@ from torch import Tensor
 
 class CausalAdversarialGenerator(nn.Module):
     """
-    Causal-constrained camouflage generator.
+    Hard fraud-like sample generator.
 
-    Feature generation:
-        Conditioned on real fraud node features + type embedding,
-        generates camouflaged features that resemble normal nodes.
+    Feature generation (the path actually used in training):
+        Conditioned on real fraud node features + type embedding + small
+        Gaussian noise, generates hard fraud-like feature vectors that
+        stay near the real-fraud distribution.
 
-    Structural constraint (DAG topology):
-        When deciding which upstream nodes to connect to, only nodes
-        that appear *before* the camouflage node in topological order
-        are considered.  This preserves temporal causal precedence
-        (causes precede effects) as required by Granger's principle.
+    Structural constraint (DAG topology) — OPTIONAL, not exercised:
+        forward() can also score connections to topologically-prior
+        upstream nodes (nodes appearing *before* the sample in topological
+        order), preserving temporal causal precedence.  This edge path
+        only runs when upstream_features is supplied; the training
+        pipeline never supplies it, so these edge_probs are placeholders
+        and are discarded by the caller.
 
     Args:
         node_feature_dim: Raw feature dimension of fraud nodes
@@ -198,12 +207,15 @@ class CausalAdversarialGAN(nn.Module):
     Full Causal Adversarial GAN wrapper.
 
     Manages the Generator and provides utilities for WGAN-GP training.
-    The Discriminator is the shared HeteroGNN backbone — this coupling
-    directly strengthens the fraud detector through adversarial play.
+    The discriminator score reuses the backbone's input projection +
+    classifier head (see discriminator_fn in ci_rct.py) — not the full
+    HGT backbone — so adversarial play strengthens the projection and
+    classification layers shared with the fraud detector.
 
     Semantic mapping:
         Real world:   Fraudster (attacker)   ← →  Detector (defender)
-        CI-RCT:       Generator              ← →  Discriminator (= HeteroGNN)
+        CI-RCT:       Generator              ← →  Discriminator (reuses
+                                                   detector proj + head)
 
     Args:
         node_feature_dim: Fraud node feature dimension
@@ -256,23 +268,26 @@ class CausalAdversarialGAN(nn.Module):
         """
         WGAN-GP discriminator (critic) loss.
 
-        L_D = E[D(fake)] − E[D(real)] + GP
+        L_D value = E[D(fake)] − E[D(real)] + GP
 
-        The discriminator minimises this (more negative = better discrimination).
+        NOTE on gradients: fake_scores is computed under torch.no_grad()
+        (and on fake_features.detach()), so the E[D(fake)] term is a
+        constant w.r.t. the critic parameters.  The critic update gradient
+        therefore comes ONLY from −E[D(real)] (raising real-fraud scores)
+        plus the gradient penalty — it does not push fake scores down.
+        The reported loss value still equals the two-sided expression above.
 
         Args:
             discriminator_fn: Callable features → scores (for GP computation)
-            real_scores:  D(real_features)  [B]
+            real_scores:  D(real_features)  [B]  (here real = real fraud features)
             fake_features: Generated features [B, D]
-            real_features: Real normal features [B, D]
+            real_features: Real fraud features [B, D]
             device: torch device
 
         Returns:
             Scalar critic loss
         """
-        with torch.no_grad():
-            fake_scores = discriminator_fn(fake_features.detach())
-
+        fake_scores = discriminator_fn(fake_features.detach())
         wasserstein_dist = fake_scores.mean() - real_scores.mean()
         gp = compute_gradient_penalty(
             discriminator_fn, real_features, fake_features.detach(), device, self.gp_weight

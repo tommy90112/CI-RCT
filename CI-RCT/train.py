@@ -2,8 +2,8 @@
 CI-RCT training entry point.
 
 Two training modes:
-  --use_gan false   Phase 1 — backbone + NCM only (good for DBLP/ACM/IMDB sanity check)
-  --use_gan true    Full training — backbone + NCM + CausalAdversarialGAN (for Elliptic++)
+  --use_gan false   Phase 1 — backbone + NCM only (sanity check / ablation)
+  --use_gan true    Full training — backbone + NCM + CausalAdversarialGAN
 
 GAN training follows the WGAN-GP schedule:
   For every Generator update, run n_critic Discriminator updates first.
@@ -12,13 +12,13 @@ Loss:
   L_total = L_detection + λ1 · L_adversarial + λ2 · L_stability
 
 Usage:
-  # Phase 1 — quick sanity check on DBLP
-  python train.py --dataset dblp --epochs 100 --use_gan false
+  # Phase 1 — backbone + NCM only
+  python train.py --dataset elliptic++ --epochs 100 --use_gan false
 
-  # Full training on Elliptic++
-  python train.py --dataset elliptic --epochs 200 --use_gan true --lambda_adversarial 0.1
+  # Phase 2 — full training
+  python train.py --dataset elliptic++ --epochs 200 --use_gan true --lambda_adversarial 0.1
 
-Supported datasets: dblp, acm, imdb, elliptic
+Supported dataset: elliptic++
 """
 import argparse
 import os
@@ -48,8 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train CI-RCT: Causal Intervention-Based Root Cause Tracing"
     )
-    parser.add_argument("--dataset", type=str, default="dblp",
-                        choices=["dblp", "acm", "imdb", "elliptic", "elliptic++", "crypto", "unsw_nb15", "unsw_mg24"])
+    parser.add_argument("--dataset", type=str, default="elliptic++",
+                        choices=["elliptic++"])
     # Elliptic++ detection target: 'transaction' (default, unchanged original
     # behaviour), 'wallet' (clean wallet labels), or 'joint' (one model that
     # classifies both, pooled F1). wallet/joint require --dataset elliptic++.
@@ -57,7 +57,17 @@ def parse_args() -> argparse.Namespace:
                         choices=["transaction", "wallet", "joint"])
     parser.add_argument("--lambda_aux_detection", type=float, default=0.3,
                         help="Weight of the auxiliary (wallet) detection loss "
-                             "in --variant joint.")
+                             "in --variant joint. Use ~1.0 with --symmetric_joint "
+                             "to make wallet a co-equal head.")
+    parser.add_argument("--symmetric_joint", type=lambda x: x.lower() == "true",
+                        default=False,
+                        help="Joint head-weighting symmetrisation. False (default) "
+                             "keeps the legacy ASYMMETRIC behaviour: a SEPARATE "
+                             "0.3-weighted wallet backward AFTER the primary step "
+                             "(wallet is a second-class head). True FUSES the wallet "
+                             "loss into the SAME backward as the primary loss (one "
+                             "optimiser step, gradients combined) so both heads "
+                             "co-shape the backbone — pair with --lambda_aux_detection 1.0.")
     parser.add_argument("--data_root", type=str, default="data")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -101,6 +111,17 @@ def parse_args() -> argparse.Namespace:
                         help="λ2: weight of Causal Shapley stability loss")
     parser.add_argument("--lambda_ncm", type=float, default=0.1,
                         help="λ3: weight of NCM supervision (BCE) loss")
+    parser.add_argument("--use_reconstruction", type=lambda x: x.lower() == "true",
+                        default=False,
+                        help="Enable GraphBEAN-style feature+edge reconstruction "
+                             "self-supervision over ALL nodes (Step 1). Trains the "
+                             "unlabeled majority; recommended for wallet/joint to "
+                             "close the gap to SAGE-FIN. OFF keeps transaction "
+                             "byte-identical.")
+    parser.add_argument("--lambda_recon", type=float, default=1.0,
+                        help="λ4: weight of reconstruction loss (only used when "
+                             "--use_reconstruction true; SAGE-FIN treats recon as "
+                             "a primary signal, so ~1.0 is a sensible start).")
     parser.add_argument("--ncm_edge_balance", type=str, default="none",
                         choices=("none", "uniform", "sqrt", "inverse"),
                         help="Per-edge-type NCM loss balancing (DD-17). "
@@ -108,6 +129,14 @@ def parse_args() -> argparse.Namespace:
                              "hetero-graphs (e.g. MG24 host→flow has 200× "
                              "more edges than process→host, leaving sparse "
                              "edges' NCM CE≈0.001 at eval time).")
+    parser.add_argument("--ncm_baseline", type=str, default="zero",
+                        choices=("zero", "type_mean", "marginal"),
+                        help="CE null-intervention baseline. 'zero' (legacy) "
+                             "do(h_u=0) is OOD and saturates p_null, making CE "
+                             "sign uninterpretable; 'type_mean' do(h_u=E[h_type]) "
+                             "recentres CE so sign = promote(+)/suppress(−); "
+                             "'marginal' p_null=E[MLP(h)] removes type_mean's "
+                             "Jensen gap so E[CE] over a type is exactly 0.")
     # GAN settings
     parser.add_argument("--use_gan", type=lambda x: x.lower() == "true",
                         default=False,
@@ -147,43 +176,6 @@ def parse_args() -> argparse.Namespace:
                              "labeled tx, with addr→addr edges within that wallet set.")
     parser.add_argument("--fraud_subgraph_hops", type=int, default=2,
                         help="Number of wallet hops from labeled tx (default 2).")
-    parser.add_argument("--max_flows", type=int, default=200_000,
-                        help="Max flow records for unsw_nb15 (0 = no limit).")
-    # UNSW-MG24 specific options (see DD-1 in unsw_mg24_plan.md)
-    parser.add_argument("--mg24_subsample_ddos", type=float, default=1.0,
-                        help="Fraction of ddos1 flows to retain for unsw_mg24. "
-                             "1.0 = full graph (DD-1 default); 0.1 = 10%% (OOM fallback).")
-    parser.add_argument("--mg24_min_host_flows", type=int, default=5,
-                        help="External-IP host pruning threshold for unsw_mg24.")
-    parser.add_argument("--mg24_prune_external", type=lambda x: x.lower() == "true",
-                        default=True,
-                        help="Whether to prune external-only IP hosts in unsw_mg24.")
-    parser.add_argument("--mg24_split_mode", type=str, default="by_file",
-                        choices=("row", "by_file", "hybrid", "by_incident"),
-                        help="Train/val/test split strategy for unsw_mg24 "
-                             "(DD-8/DD-13). 'row' = row-level random "
-                             "(data-leaky); 'by_file' = by-file stratified "
-                             "(default, honest cross-session generalisation); "
-                             "'hybrid' = benign row-level + malicious "
-                             "by-file (production deployment scenario); "
-                             "'by_incident' = attack_type aligned across "
-                             "flow/audit modalities (DD-13, cuts cross-modal "
-                             "label leakage).")
-    parser.add_argument("--mg24_host_role", type=str, default="full",
-                        choices=("full", "no_mal_count", "zeroed",
-                                 "detection_excluded"),
-                        help="DD-8 host-feature fairness ablation:\n"
-                             "  full               baseline (incl. mal_flow_count)\n"
-                             "  no_mal_count       Fix 1: drop label-derived count\n"
-                             "  zeroed             Fix 3: zero all host features\n"
-                             "  detection_excluded Fix 4: remove host_node from HGT\n"
-                             "host_node stays in the graph for RootCauseTracer "
-                             "in all modes.")
-    parser.add_argument("--mg24_drop_features", type=str, default="",
-                        help="DD-8 Fix 5: comma-separated CICFlowMeter "
-                             "feature columns to remove from flow_node. "
-                             "Example for ablating Active timing fingerprint: "
-                             "'Active Std,Active Max,Active Mean'.")
     return parser.parse_args()
 
 
@@ -191,19 +183,6 @@ def parse_args() -> argparse.Namespace:
 
 def load_dataset(name: str, root: str, **kwargs):
     """Return (HeteroData, target_node_type)."""
-    if name == "dblp":
-        from torch_geometric.datasets import DBLP
-        return DBLP(root=os.path.join(root, "dblp"))[0], "author"
-    if name == "acm":
-        from torch_geometric.datasets import ACM
-        return ACM(root=os.path.join(root, "acm"))[0], "paper"
-    if name == "imdb":
-        from torch_geometric.datasets import IMDB
-        return IMDB(root=os.path.join(root, "imdb"))[0], "movie"
-    if name == "elliptic":
-        # Elliptic++ requires manual download — see README for instructions
-        from utils.elliptic_loader import load_elliptic_dataset
-        return load_elliptic_dataset(root)
     if name == "elliptic++":
         from utils.elliptic_plus_loader import load_elliptic_plus_dataset
         return load_elliptic_plus_dataset(
@@ -213,64 +192,6 @@ def load_dataset(name: str, root: str, **kwargs):
             fraud_subgraph=kwargs.get("fraud_subgraph", False),
             fraud_subgraph_hops=kwargs.get("fraud_subgraph_hops", 2),
         )
-    if name == "crypto":
-        from utils.crypto_loader import load_crypto_dataset
-        return load_crypto_dataset(root)
-    if name == "unsw_nb15":
-        from utils.unsw_loader import load_unsw_dataset
-        return load_unsw_dataset(
-            os.path.join(root, "unsw_nb15"),
-            max_flows=kwargs.get("max_flows", 200_000),
-        )
-    if name == "unsw_mg24":
-        from utils.mg24_loader import (
-            build_edges,
-            load_mg24_data,
-            to_pyg_hetero_data,
-        )
-        mg24 = load_mg24_data(
-            root=os.path.join(root, "unsw_mg24"),
-            subsample_ddos=kwargs.get("mg24_subsample_ddos", 1.0),
-            seed=kwargs.get("seed", 42),
-            prune_external_hosts=kwargs.get("mg24_prune_external", True),
-            min_host_flows=kwargs.get("mg24_min_host_flows", 5),
-            verbose=True,
-        )
-        edges = build_edges(mg24)
-        split_mode = kwargs.get("mg24_split_mode", "by_file")
-        # DD-8 host_role → host_features_mode mapping:
-        #   "full"               → features="full"            (baseline)
-        #   "no_mal_count"       → features="no_mal_count"    (Fix 1)
-        #   "zeroed"             → features="zeroed"          (Fix 3)
-        #   "detection_excluded" → features="full" + backbone exclude (Fix 4;
-        #                          features value doesn't matter because the
-        #                          backbone drops the node type entirely).
-        host_role = kwargs.get("mg24_host_role", "full")
-        host_features_mode = (
-            host_role if host_role in ("full", "no_mal_count", "zeroed")
-            else "full"
-        )
-        drop_raw = kwargs.get("mg24_drop_features", "") or ""
-        flow_features_exclude = [
-            c.strip() for c in drop_raw.split(",") if c.strip()
-        ]
-        print(
-            f"  Split mode: {split_mode} (DD-8)\n"
-            f"  Host role:  {host_role}  "
-            f"(features={host_features_mode})"
-        )
-        if flow_features_exclude:
-            print(f"  Dropping flow features (DD-8 Fix 5): "
-                  f"{flow_features_exclude}")
-        hd = to_pyg_hetero_data(
-            mg24, edges,
-            seed=kwargs.get("seed", 42),
-            split_mode=split_mode,
-            host_features_mode=host_features_mode,
-            flow_features_exclude=flow_features_exclude or None,
-        )
-        # DD-3 primary target: flow_node (main detection task; baseline-comparable).
-        return hd, "flow_node"
     raise ValueError(f"Unknown dataset: {name!r}")
 
 
@@ -279,7 +200,9 @@ def load_dataset(name: str, root: str, **kwargs):
 def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
                       target_node, device, type_offsets, target_type,
                       class_weight=None, multi_task_labels=None,
-                      ncm_edge_balance="none"):
+                      ncm_edge_balance="none",
+                      aux_labels=None, aux_masks=None, aux_class_weights=None,
+                      lambda_aux=0.0):
     """
     Single training step without GAN (Phase 1).
     L_total = L_detection + λ2 · L_stability + λ3 · L_ncm
@@ -329,7 +252,7 @@ def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
     model._prev_phi = dict(phi_current)
 
     # L_ncm: supervise NCM to predict the destination node's binary label.
-    # For MG24 (DD-3), `multi_task_labels` lets every labelled dst type
+    # When provided, `multi_task_labels` lets every labelled dst type
     # (flow / process / measurement) provide BCE signal — without this, all
     # edges whose dst is not the primary target type would be silently
     # skipped and the NCM loss would plateau (observed in pilot run).
@@ -342,34 +265,63 @@ def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
         edge_balance=ncm_edge_balance,
     )
 
+    recon_loss = torch.zeros(1, device=device)
+    if getattr(model, "use_reconstruction", False):
+        recon_loss = model.reconstruction_loss(data, h_dict)
+
     total_loss = (
         detection_loss
         + model.config.lambda_stability * stability_loss
         + model.config.lambda_ncm * ncm_loss
+        + model.config.lambda_recon * recon_loss
     )
+
+    # Symmetric joint: fuse the wallet (aux) detection loss into the same backward.
+    aux_loss_val = 0.0
+    if aux_labels is not None:
+        aux_loss = model.aux_detection_loss(
+            data, aux_labels, aux_masks, aux_class_weights
+        )
+        total_loss = total_loss + lambda_aux * aux_loss
+        aux_loss_val = float(aux_loss.detach().item())
+
     total_loss.backward()
     optimizer.step()
 
-    return total_loss.item(), detection_loss.item(), stability_loss.item(), ncm_loss.item()
+    return (total_loss.item(), detection_loss.item(), stability_loss.item(),
+            ncm_loss.item(), aux_loss_val)
 
 
 def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
                         optimizer_generator, causal_graph, fraud_features,
                         topo_order, target_node, step_count, device,
-                        type_offsets, target_type, class_weight=None):
+                        type_offsets, target_type, class_weight=None,
+                        aux_labels=None, aux_masks=None, aux_class_weights=None,
+                        lambda_aux=0.0):
     """
     WGAN-GP training step (Phase 2):
       - Every step: update Discriminator (= backbone)
       - Every n_critic steps: also update Generator
+
+    When ``aux_labels`` is provided (symmetric joint), the auxiliary wallet
+    detection loss is FUSED into the discriminator step's total loss before the
+    single backward, so the primary and auxiliary heads co-shape the shared
+    backbone in one optimiser step (vs the legacy separate 0.3-weighted step).
     """
     n_critic = model.config.n_critic
+
+    import time as _time
+    _t_dbg = step_count <= 1
+    _t_last = _time.perf_counter()
+    if _t_dbg:
+        print(f"  [timing] step {step_count} begin", flush=True)
 
     # ── Discriminator step ──────────────────────────────────────────────────
     model.train()
     optimizer_backbone.zero_grad()
 
     target_type_offset = type_offsets[target_type]
-    total_loss, detection_loss, adv_loss, stability_loss, ncm_loss = model.compute_total_loss(
+    total_loss, detection_loss, adv_loss, stability_loss, ncm_loss, _recon_loss = model.compute_total_loss(
         data=data,
         labels=labels,
         train_mask=train_mask,
@@ -383,15 +335,34 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
         wallet_labels=data["wallet"].y if hasattr(data["wallet"], "y") else None,
         wallet_type_offset=type_offsets.get("wallet", 0),
     )
-    # Use full loss (detection + adversarial + NCM + stability) for discriminator update
+    if _t_dbg:
+        print(f"  [timing] critic forward+loss: {_time.perf_counter()-_t_last:.1f}s", flush=True); _t_last = _time.perf_counter()
+    # Symmetric joint: fuse the wallet (aux) detection loss into the SAME
+    # backward so primary + auxiliary co-shape the backbone in one step.
+    aux_loss_val = 0.0
+    if aux_labels is not None:
+        aux_loss = model.aux_detection_loss(
+            data, aux_labels, aux_masks, aux_class_weights
+        )
+        total_loss = total_loss + lambda_aux * aux_loss
+        aux_loss_val = float(aux_loss.detach().item())
+
+    # Use full loss (detection + adversarial + NCM + stability [+ aux]) for the
+    # discriminator/backbone update.
+    if _t_dbg:
+        print(f"  [timing] about to backward (critic) …", flush=True)
     total_loss.backward()
+    if _t_dbg:
+        print(f"  [timing] critic backward: {_time.perf_counter()-_t_last:.1f}s", flush=True); _t_last = _time.perf_counter()
     optimizer_backbone.step()
+    if _t_dbg:
+        print(f"  [timing] optimizer step: {_time.perf_counter()-_t_last:.1f}s", flush=True); _t_last = _time.perf_counter()
 
     # ── Generator step (every n_critic steps) ──────────────────────────────
     g_loss_val = 0.0
     if step_count % n_critic == 0:
         optimizer_generator.zero_grad()
-        _, _, g_adv_loss, _, _ = model.compute_total_loss(
+        _, _, g_adv_loss, _, _, _ = model.compute_total_loss(
             data=data,
             labels=labels,
             train_mask=train_mask,
@@ -409,8 +380,11 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
         g_loss.backward()
         optimizer_generator.step()
         g_loss_val = g_loss.item()
+        if _t_dbg:
+            print(f"  [timing] generator step: {_time.perf_counter()-_t_last:.1f}s", flush=True); _t_last = _time.perf_counter()
 
-    return total_loss.item(), detection_loss.item(), adv_loss.item(), g_loss_val, ncm_loss.item()
+    return (total_loss.item(), detection_loss.item(), adv_loss.item(),
+            g_loss_val, ncm_loss.item(), aux_loss_val)
 
 
 @torch.no_grad()
@@ -466,13 +440,6 @@ def _load_variant_dataset(args):
             labeled_only=args.labeled_only,
             fraud_subgraph=args.fraud_subgraph,
             fraud_subgraph_hops=args.fraud_subgraph_hops,
-            max_flows=args.max_flows,
-            mg24_subsample_ddos=args.mg24_subsample_ddos,
-            mg24_min_host_flows=args.mg24_min_host_flows,
-            mg24_prune_external=args.mg24_prune_external,
-            mg24_split_mode=args.mg24_split_mode,
-            mg24_host_role=args.mg24_host_role,
-            mg24_drop_features=args.mg24_drop_features,
             seed=args.seed,
         )
     if args.dataset != "elliptic++":
@@ -610,12 +577,14 @@ def main() -> None:
         num_heads=args.num_heads,
         dropout=args.dropout,
         node_type_emb_dim=args.type_emb_dim,
+        ncm_baseline=args.ncm_baseline,
         max_hops=args.max_hops,
         ce_threshold=args.ce_threshold,
         node_limit=args.node_limit,
         lambda_adversarial=args.lambda_adversarial,
         lambda_stability=args.lambda_stability,
         lambda_ncm=args.lambda_ncm,
+        lambda_recon=args.lambda_recon,
         n_critic=args.n_critic,
         gp_weight=args.gp_weight,
         noise_std=args.noise_std,
@@ -706,12 +675,9 @@ def main() -> None:
 
     # --- Model ---
     node_feature_dim = in_channels_dict.get(target_type)
-    # DD-8 Fix 4: when --mg24_host_role=detection_excluded, drop host_node
-    # from HGT message passing (graph stays intact for RootCauseTracer).
+    # Node types kept in the graph (so RootCauseTracer can still walk them)
+    # but dropped from HGT message passing. Empty for Elliptic++.
     backbone_exclude_node_types = []
-    if args.dataset == "unsw_mg24" and args.mg24_host_role == "detection_excluded":
-        backbone_exclude_node_types = ["host_node"]
-        print(f"  Detection graph excludes: {backbone_exclude_node_types} (DD-8 Fix 4)")
     if args.variant == "joint":
         from model.ci_rct_joint import CI_RCT_Joint
         aux_num_classes = {"wallet": int(data["wallet"].y.max().item()) + 1}
@@ -725,9 +691,13 @@ def main() -> None:
             backbone_exclude_node_types=backbone_exclude_node_types,
             aux_node_types=["wallet"],
             aux_num_classes=aux_num_classes,
+            use_reconstruction=args.use_reconstruction,
         ).to(device)
+        _joint_mode = ("SYMMETRIC (aux fused into primary backward, co-equal head)"
+                       if args.symmetric_joint
+                       else "asymmetric (separate down-weighted aux step, legacy)")
         print(f"  Joint heads: primary={target_type}  aux=['wallet']  "
-              f"(λ_aux={args.lambda_aux_detection})")
+              f"(λ_aux={args.lambda_aux_detection})  mode={_joint_mode}")
     else:
         model = CI_RCT(
             config=config,
@@ -737,6 +707,7 @@ def main() -> None:
             use_gan=args.use_gan,
             num_classes=num_classes,
             backbone_exclude_node_types=backbone_exclude_node_types,
+            use_reconstruction=args.use_reconstruction,
         ).to(device)
 
     # --- Optimisers ---
@@ -745,6 +716,15 @@ def main() -> None:
     )
     if args.variant == "joint":
         _backbone_params += list(model.aux_classifiers.parameters())
+    # Reconstruction decoders (Step 1) train on the same backbone optimiser so
+    # L_recon actually updates them (and back-propagates into the backbone).
+    if getattr(model, "use_reconstruction", False):
+        if model.feature_decoders is not None:
+            _backbone_params += list(model.feature_decoders.parameters())
+        if model.edge_decoder is not None:
+            _backbone_params += list(model.edge_decoder.parameters())
+        print(f"  Reconstruction self-supervision ON "
+              f"(λ_recon={config.lambda_recon}, edge={model._recon_edge_type})")
     optimizer_backbone = optim.Adam(
         _backbone_params,
         lr=config.learning_rate,
@@ -792,20 +772,11 @@ def main() -> None:
             # Fallback: use all training nodes
             fraud_features = data[target_type].x[train_mask].to(device)
 
-    # --- Multi-task labels for HeteroNCM supervision (DD-3, MG24-only) ---
-    # Every labelled node type with `y` attached contributes BCE supervision
-    # for its incoming causal edges. For datasets with only a single labelled
-    # type (Elliptic++, NB15, DBLP) this remains None and the legacy
-    # single-task / wallet→tx path in supervised_ncm_loss() is used.
+    # --- Multi-task labels for HeteroNCM supervision ---
+    # Reserved for datasets with several labelled node types. Elliptic++ has a
+    # single labelled type, so the single-task / wallet→tx path in
+    # supervised_ncm_loss() is used.
     multi_task_labels = None
-    if args.dataset == "unsw_mg24":
-        multi_task_labels = {
-            ntype: data[ntype].y
-            for ntype in data.node_types
-            if hasattr(data[ntype], "y") and data[ntype].y is not None
-        }
-        labelled_types = sorted(multi_task_labels.keys())
-        print(f"  Multi-task NCM supervision: {labelled_types}")
 
     # --- Training loop ---
     mode_str = "Phase 2 (GAN)" if args.use_gan else "Phase 1 (No GAN)"
@@ -827,37 +798,66 @@ def main() -> None:
     model.reset_phi_buffer()  # initialise once before training starts
     for epoch in range(1, args.epochs + 1):
 
+        # Symmetric joint FUSES the wallet aux loss into the primary backward
+        # (co-equal head); asymmetric (legacy) keeps it as a separate
+        # down-weighted step below.
+        _fuse_aux = args.variant == "joint" and args.symmetric_joint
+        _aux_kw = (
+            dict(aux_labels=aux_labels, aux_masks=aux_masks,
+                 aux_class_weights=aux_class_weights,
+                 lambda_aux=args.lambda_aux_detection)
+            if _fuse_aux else {}
+        )
+
         if not args.use_gan:
-            total_loss, det_loss, stab_loss, ncm_loss = train_step_no_gan(
+            total_loss, det_loss, stab_loss, ncm_loss, aux_val = train_step_no_gan(
                 model, data, labels, train_mask, optimizer_backbone,
                 causal_graph, target_node, device,
                 type_offsets, target_type, class_weight=class_weight,
                 multi_task_labels=multi_task_labels,
                 ncm_edge_balance=args.ncm_edge_balance,
+                **_aux_kw,
             )
             loss_str = (f"Loss {total_loss:.4f} "
                         f"(det={det_loss:.4f}, stab={stab_loss:.2e}, ncm={ncm_loss:.4f})")
         else:
-            total_loss, det_loss, adv_loss, g_loss, ncm_loss = train_step_with_gan(
+            total_loss, det_loss, adv_loss, g_loss, ncm_loss, aux_val = train_step_with_gan(
                 model, data, labels, train_mask,
                 optimizer_backbone, optimizer_generator,
                 causal_graph, fraud_features, topo_order, target_node,
                 step_count=epoch, device=device,
                 type_offsets=type_offsets, target_type=target_type,
-                class_weight=class_weight
+                class_weight=class_weight,
+                **_aux_kw,
             )
             loss_str = (f"Loss {total_loss:.4f} "
                         f"(det={det_loss:.4f}, adv={adv_loss:.4f}, G={g_loss:.4f}, ncm={ncm_loss:.4f})")
 
-        # Joint: extra wallet (auxiliary) step on the shared backbone.
-        if args.variant == "joint":
+        if epoch == 1 and model.hetero_ncm.last_supervision_counts:
+            # One-shot NCM supervision audit: an edge type with 0 labelled
+            # edges never trains its MLP, so its CE collapses to ~0 at eval
+            # and the tracer cannot follow those hops (tx→wallet RCP bug).
+            counts = model.hetero_ncm.last_supervision_counts
+            print("  [NCM supervision] labelled edges per edge type: "
+                  + ", ".join(f"{et}={n:,}" for et, n in sorted(counts.items())))
+            starved = [et for et, n in counts.items() if n == 0]
+            if starved:
+                print(f"  [NCM supervision] WARNING: no supervision for "
+                      f"{starved} — their CE will be ~0 at eval; check label "
+                      f"paths or --ncm_edge_balance.")
+
+        if _fuse_aux:
+            loss_str += f" aux={aux_val:.4f}(fused)"
+        elif args.variant == "joint":
+            # Legacy ASYMMETRIC: separate wallet (auxiliary) backward/step on the
+            # shared backbone, AFTER the primary update.
             optimizer_backbone.zero_grad()
             aux_loss = model.aux_detection_loss(
                 data, aux_labels, aux_masks, aux_class_weights
             )
             (args.lambda_aux_detection * aux_loss).backward()
             optimizer_backbone.step()
-            loss_str += f" aux={float(aux_loss.detach().item()):.4f}"
+            loss_str += f" aux={float(aux_loss.detach().item()):.4f}(separate)"
 
         if epoch % args.eval_every == 0:
             val_metrics = (

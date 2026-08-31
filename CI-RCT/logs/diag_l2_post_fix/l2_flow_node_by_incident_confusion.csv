@@ -1,8 +1,0 @@
-,backdoor,benign,credential,ddos,dos,recon,sql_injection
-backdoor,0,0,0,0,0,0,0
-benign,13,24670,5,1,2,9,26
-credential,4,3,0,0,0,0,3
-ddos,0,0,0,0,0,0,0
-dos,0,0,0,0,0,0,0
-recon,7,6,0,0,4,0,1
-sql_injection,0,0,0,0,0,0,0

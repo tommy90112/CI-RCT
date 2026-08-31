@@ -1,16 +1,45 @@
-# 資料集（太大，不上 GitHub）
+# ── 資料集（太大，且含非公開資料，一律不上 GitHub）────────────────────────
 data/
 
-# 訓練產出
+# ── 訓練產出 ───────────────────────────────────────────────────────────────
 checkpoints/
+checkpoints_abl/
 *.pt
 *.pth
 
-# Python 暫存
+# ── 前端（只保留原始碼，建置產物與相依套件不進版控）───────────────────────
+frontend_temp/node_modules/
+frontend_temp/dist/
+
+# ── Python 暫存 ────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
 .DS_Store
 
-# 論文草稿
+# ── 論文寫作素材（章節草稿、實驗紀錄、規格書）─────────────────────────────
 CI-RCT_Thesis_Plan.md
+TODO.md
+# ARCHITECTURE.md 寫的是已退場的 UNSW-MG24 架構，內容與現行程式碼不符
+ARCHITECTURE.md
+experiments.md
+experiments_log.md
+session_*.md
+dataset_chapter4.md
+results_*.md
+typology_report.md
+typology_verification.md
+ablation_plan.md
+tracer_ablation_plan.md
+tracer_ablation_writeup.md
+tracer_literature_review.md
+unsw_mg24_plan.md
+unsw_nb15_plan.md
+sfps_plan.md
+explainability_viz_spec.md
+frontend_viz_plan.md
+
+# ── 可重新產生的大型輸出（用 scripts/ 底下對應腳本重跑即可）─────────────────
+results/chain_neighbors.json
+results/typology_scan.csv

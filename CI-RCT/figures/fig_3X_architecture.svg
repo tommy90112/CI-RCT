@@ -1,0 +1,149 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1850" width="1200" height="1850" font-family="'Helvetica Neue', Arial, 'PingFang TC', 'Noto Sans TC', 'Microsoft JhengHei', sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#44546A"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="1850" fill="#FFFFFF"/>
+
+  <!-- ═══════════ Row 1: 原始資料 → 前處理 ═══════════ -->
+  <rect x="40" y="52" width="530" height="170" rx="8" fill="#EEF2F7" stroke="#5B7A99" stroke-width="1.6"/>
+  <text x="60" y="82" font-size="16" font-weight="bold" fill="#2F4A63">原始資料 — Elliptic++（8 個 CSV）</text>
+  <text x="60" y="110" font-size="12" fill="#333">txs_features.csv（182 特徵欄）、txs_classes.csv</text>
+  <text x="60" y="132" font-size="12" fill="#333">txs_edgelist.csv、AddrTx_edgelist.csv、TxAddr_edgelist.csv</text>
+  <text x="60" y="154" font-size="12" fill="#333">AddrAddr_edgelist.csv（約 287 萬條 wallet→wallet 邊）</text>
+  <text x="60" y="176" font-size="12" fill="#333">wallets_features.csv、wallets_classes.csv</text>
+  <text x="60" y="203" font-size="11" fill="#777">標籤：class 1 = illicit、2 = licit、3 = unknown</text>
+
+  <line x1="570" y1="137" x2="628" y2="137" stroke="#44546A" stroke-width="1.8" marker-end="url(#arrow)"/>
+
+  <rect x="630" y="52" width="530" height="170" rx="8" fill="#EEF2F7" stroke="#5B7A99" stroke-width="1.6"/>
+  <text x="650" y="82" font-size="16" font-weight="bold" fill="#2F4A63">前處理（utils/elliptic_plus_loader.py）</text>
+  <text x="650" y="110" font-size="12" fill="#333">特徵：丟棄 72 個 Aggregate 欄 → tx 110 維、wallet 55 維</text>
+  <text x="650" y="132" font-size="12" fill="#333">NaN / ±inf → 0；全資料集 z-score 標準化（std=0 → 1）</text>
+  <text x="650" y="154" font-size="12" fill="#333">標籤映射：1→詐欺(1)、2→合法(0)、3→未知（mask 排除）</text>
+  <text x="650" y="176" font-size="12" fill="#333">切分：有標籤 tx 分層隨機 70 / 15 / 15（rng=42，非時間切分）</text>
+  <text x="650" y="203" font-size="11" fill="#777">時間戳：tx = Time step 1..49；wallet = 最早入帳交易之時間步</text>
+
+  <polyline points="895,222 895,252 600,252 600,276" fill="none" stroke="#44546A" stroke-width="1.8" marker-end="url(#arrow)"/>
+
+  <!-- ═══════════ Row 2: HeteroData ═══════════ -->
+  <rect x="200" y="278" width="800" height="140" rx="8" fill="#F5F7FA" stroke="#44546A" stroke-width="1.8"/>
+  <text x="220" y="306" font-size="16" font-weight="bold" fill="#2B3A55">HeteroData 異質圖（PyG）</text>
+  <text x="220" y="332" font-size="12" fill="#333">節點：transaction [N_tx, 110]（+ y / train·val·test masks / time）；wallet [N_w, 55]（+ y / time）</text>
+  <text x="220" y="354" font-size="12" fill="#333">邊（有向、無反向邊）：(wallet, sends, tx)、(tx, pays, wallet)、(tx, flows_to, tx)</text>
+  <text x="220" y="376" font-size="12" fill="#333">(wallet, connects, wallet)†　† --include_addr_addr，預設關閉；最佳配置 Exp-05 開啟</text>
+  <text x="220" y="401" font-size="11" fill="#777">記憶體選項：--subsample_tx / --labeled_only / --fraud_subgraph</text>
+
+  <!-- HeteroData → Module 1（特徵） -->
+  <line x1="420" y1="418" x2="420" y2="468" stroke="#44546A" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <!-- HeteroData → Module 2 步驟①（圖拓撲 + 時間戳，繞右側外緣） -->
+  <polyline points="960,418 960,440 1178,440 1178,845 520,845 520,858" fill="none" stroke="#6B5B95" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <text x="598" y="838" font-size="11" fill="#6B5B95">圖拓撲＋時間戳（供步驟①建構因果 DAG）</text>
+
+  <!-- ═══════════ Module 1 — HGT Backbone ═══════════ -->
+  <rect x="40" y="470" width="660" height="330" rx="10" fill="#E8F0FB" stroke="#3B6EA5" stroke-width="2"/>
+  <text x="60" y="500" font-size="17" font-weight="bold" fill="#24507E">Module 1 — HGT Backbone（hetero_backbone.py）</text>
+
+  <rect x="60" y="514" width="620" height="60" rx="6" fill="#FFFFFF" stroke="#3B6EA5" stroke-width="1"/>
+  <text x="74" y="536" font-size="13" font-weight="bold" fill="#24507E">① 型別輸入投影</text>
+  <text x="74" y="558" font-size="12" fill="#333">PyG Linear(in_dim → 128，lazy init) + ELU；tx: 110→128、wallet: 55→128；無 dropout</text>
+
+  <rect x="60" y="584" width="620" height="90" rx="6" fill="#FFFFFF" stroke="#3B6EA5" stroke-width="1"/>
+  <text x="74" y="606" font-size="13" font-weight="bold" fill="#24507E">② HGTConv × 3（每種 relation 獨立 K/Q/V 注意力參數）</text>
+  <text x="74" y="628" font-size="12" fill="#333">128 → 128，heads = 4（每 head 32 維）；層間：ELU → Dropout(p=0.3)</text>
+  <text x="74" y="650" font-size="12" fill="#333">最後一層不加激活 / dropout；無顯式 LayerNorm、residual（HGT 內建 per-type skip）</text>
+
+  <rect x="60" y="684" width="620" height="60" rx="6" fill="#FFFFFF" stroke="#3B6EA5" stroke-width="1"/>
+  <text x="74" y="706" font-size="13" font-weight="bold" fill="#24507E">③ 分類頭</text>
+  <text x="74" y="728" font-size="12" fill="#333">nn.Linear(128 → 2)，raw logits，僅 target 型別（transaction）</text>
+
+  <text x="60" y="776" font-size="12.5" font-weight="bold" fill="#24507E">輸出：logits [N_tx, 2] → L_det（偵測詐欺節點 = 追溯起點）；h_dict {τ: [N_τ, 128]}</text>
+
+  <!-- Module 1 ↔ Module 4（共享 input_proj + classifier 作為 critic） -->
+  <line x1="700" y1="560" x2="738" y2="560" stroke="#A5566E" stroke-width="1.8" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+
+  <!-- Module 1 → Module 2（節點嵌入） -->
+  <line x1="370" y1="800" x2="370" y2="858" stroke="#44546A" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <text x="150" y="832" font-size="11.5" fill="#44546A">h_dict → flat_h {全域 ID: ℝ¹²⁸}</text>
+
+  <!-- ═══════════ Module 4 — GAN（訓練期，虛線） ═══════════ -->
+  <rect x="740" y="470" width="420" height="260" rx="10" fill="#F9ECEF" stroke="#A5566E" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="758" y="500" font-size="16" font-weight="bold" fill="#7E3A50">Module 4 — 因果對抗 GAN</text>
+  <text x="758" y="520" font-size="11" fill="#A5566E">僅訓練期（--use_gan true；causal_adversarial_gan.py）</text>
+  <text x="758" y="546" font-size="12" fill="#333">Generator：[x_fraud + N(0, 0.05²) ‖ e_τ(16)]</text>
+  <text x="758" y="568" font-size="12" fill="#333">→ Linear(D+16→128) → LeakyReLU(0.2)</text>
+  <text x="758" y="590" font-size="12" fill="#333">→ Linear(128→128) → LeakyReLU(0.2)</text>
+  <text x="758" y="612" font-size="12" fill="#333">→ Linear(128→D) → Tanh（偽裝詐欺特徵）</text>
+  <text x="758" y="640" font-size="12" fill="#333">Critic：重用 input_proj + classifier → fraud logit</text>
+  <text x="758" y="662" font-size="12" fill="#333">WGAN-GP：gp_weight = 10、n_critic = 5</text>
+  <text x="758" y="684" font-size="12" fill="#333">L_D = E[D(x̃)] − E[D(x)] + 10·GP；L_G = −E[D(x̃)]</text>
+  <text x="758" y="712" font-size="11" fill="#777">DAG 拓撲約束：上游候選 = 拓撲序前半（edge_gen 保留介面）</text>
+
+  <!-- ═══════════ Module 2 — 因果介入引擎 ═══════════ -->
+  <rect x="40" y="860" width="660" height="490" rx="10" fill="#EAF4EA" stroke="#4A7C59" stroke-width="2"/>
+  <text x="60" y="890" font-size="17" font-weight="bold" fill="#2F5A3C">Module 2 — 因果介入引擎 <tspan font-size="11" font-weight="normal" fill="#6B8A75">data_utils.py・hetero_ncm.py・causal_shapley.py</tspan></text>
+
+  <rect x="60" y="904" width="620" height="100" rx="6" fill="#FFFFFF" stroke="#4A7C59" stroke-width="1"/>
+  <text x="74" y="926" font-size="13" font-weight="bold" fill="#2F5A3C">① 因果圖建構 → TypedCausalGraph（無可學習參數，訓練前建構一次）</text>
+  <text x="74" y="948" font-size="12" fill="#333">多源 BFS：≤20 詐欺種子；hop_limit=2；node_limit=500（訓練）/ 5000（評估）</text>
+  <text x="74" y="970" font-size="12" fill="#333">僅取正向邊（金流上游＝因）；時間守衛：拒絕 ts(src) &gt; ts(dst)；封鎖 wallet↔wallet 邊</text>
+  <text x="74" y="992" font-size="12" fill="#333">Kahn 拓撲排序（快取）；全域節點 ID = 型別字母序累計 offset（tx=0、wallet=N_tx）</text>
+
+  <rect x="60" y="1014" width="620" height="86" rx="6" fill="#FFFFFF" stroke="#4A7C59" stroke-width="1"/>
+  <text x="74" y="1036" font-size="13" font-weight="bold" fill="#2F5A3C">② HeteroNCM — 每個邊型別一個 MLP</text>
+  <text x="74" y="1058" font-size="12" fill="#333">輸入 [h_src(128) ‖ type_emb(16)] = 144 維（對①因果圖中的每一條邊計算）</text>
+  <text x="74" y="1080" font-size="12" fill="#333">Linear(144→64) → ReLU → Linear(64→64) → ReLU → Linear(64→1) → Sigmoid；無 dropout</text>
+
+  <rect x="60" y="1110" width="620" height="86" rx="6" fill="#FFFFFF" stroke="#4A7C59" stroke-width="1"/>
+  <text x="74" y="1132" font-size="13" font-weight="bold" fill="#2F5A3C">③ do-介入 → 因果效應 CE</text>
+  <text x="74" y="1154" font-size="12" fill="#333">CE(u→v) = P(ŷ_v | do(h_u = h_actual)) − P(ŷ_v | do(h_u = h_base)) ∈ (−1, 1)</text>
+  <text x="74" y="1176" font-size="12" fill="#333">baseline：zero（預設）/ type_mean / marginal；L_ncm = BCE(p_actual, y_dst)</text>
+
+  <rect x="60" y="1206" width="620" height="86" rx="6" fill="#FFFFFF" stroke="#4A7C59" stroke-width="1"/>
+  <text x="74" y="1228" font-size="13" font-weight="bold" fill="#2F5A3C">④ 非對稱因果 Shapley（O(n) 拓撲前綴聯盟）</text>
+  <text x="74" y="1250" font-size="12" fill="#333">φ_k = [ v(S_k ∪ {u_k}) − v(S_k) ] / n，S_k = 拓撲序前 k 個父節點</text>
+  <text x="74" y="1272" font-size="12" fill="#333">加法 fallback：φ_k = CE(u_k→target)/n；評估擾動 σ = 0.01（φ-stability）</text>
+
+  <text x="60" y="1326" font-size="12.5" font-weight="bold" fill="#2F5A3C">輸出：TypedCausalGraph（DAG 骨架）、{(u,v): CE}、{parent: φ_asym} → L_stab、L_ncm</text>
+
+  <!-- Module 2 → Module 3 -->
+  <line x1="370" y1="1350" x2="370" y2="1408" stroke="#44546A" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <text x="386" y="1372" font-size="11.5" fill="#44546A">TypedCausalGraph（能往哪走）</text>
+  <text x="386" y="1392" font-size="11.5" fill="#44546A">＋ CE 分數字典（該往哪走）</text>
+
+  <!-- ═══════════ Module 3 — RootCauseTracer ═══════════ -->
+  <rect x="40" y="1410" width="660" height="170" rx="10" fill="#FCF3E4" stroke="#B07D3C" stroke-width="2"/>
+  <text x="60" y="1440" font-size="17" font-weight="bold" fill="#7E5A28">Module 3 — RootCauseTracer（root_cause_tracer.py）</text>
+  <text x="60" y="1470" font-size="12" fill="#333">貪婪反向追溯：由被偵測為詐欺的節點沿因果 DAG 逆行，每 hop 選 max |CE(u→current)|</text>
+  <text x="60" y="1494" font-size="11.5" fill="#333">停止條件：① 無上游父節點　② max|CE| &lt; ce_threshold (0.1)　③ 迴圈偵測 (visited)　④ 深度達 max_hops (5)</text>
+  <text x="60" y="1518" font-size="12" fill="#333">可選：beam search（top-k = 3）、φ 加權追溯（--tracer_score）、prefer_root_types + 可達性前瞻</text>
+  <text x="60" y="1548" font-size="11" fill="#8A6A38">對每個被預測為詐欺的節點逐一追溯 → 每個節點各產生一條詐騙鏈</text>
+
+  <!-- Module 3 → 最終輸出 -->
+  <line x1="700" y1="1480" x2="738" y2="1480" stroke="#44546A" stroke-width="2.2" marker-end="url(#arrow)"/>
+
+  <!-- ═══════════ 最終輸出 — 詐騙鏈 ═══════════ -->
+  <rect x="740" y="1410" width="420" height="140" rx="10" fill="#FDF0DC" stroke="#8C5A1F" stroke-width="2.5"/>
+  <text x="758" y="1438" font-size="16" font-weight="bold" fill="#6B4413">最終輸出 — 詐騙鏈（Fraud Chain）</text>
+  <text x="758" y="1464" font-size="12" fill="#333">因果鏈：[詐欺 tx → … → 根因]（tx↔wallet 交替金流路徑）</text>
+  <text x="758" y="1486" font-size="12" fill="#333">根因節點：鏈最上游的源頭錢包／交易</text>
+  <text x="758" y="1508" font-size="12" fill="#333">φ_asym：鏈上各節點的因果責任分數（解釋用）</text>
+
+  <!-- 詐騙鏈 → 四維評估（次要） -->
+  <line x1="950" y1="1550" x2="950" y2="1568" stroke="#999999" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+
+  <!-- ═══════════ 四維評估（次要，虛線） ═══════════ -->
+  <rect x="740" y="1570" width="420" height="120" rx="8" fill="#FAFAFA" stroke="#999999" stroke-width="1.4" stroke-dasharray="6 4"/>
+  <text x="758" y="1594" font-size="13" font-weight="bold" fill="#555">四維評估（evaluate.py）</text>
+  <text x="758" y="1618" font-size="12" fill="#555">A. 分類 F1 / AUC / Recall　　B. 根因 RCP / CCV / MTD</text>
+  <text x="758" y="1640" font-size="12" fill="#555">C. 解釋品質 EA / ER（LFPN k=2）　D. φ-Stability（σ=0.01）</text>
+  <text x="758" y="1662" font-size="11" fill="#888">Exp-05 最佳配置：F1 = 0.8110 / AUC = 0.9703</text>
+
+  <!-- ═══════════ 聯合損失與訓練設定 ═══════════ -->
+  <rect x="40" y="1720" width="1120" height="100" rx="8" fill="#FBFBFB" stroke="#888888" stroke-width="1.6"/>
+  <text x="60" y="1748" font-size="14" font-weight="bold" fill="#333">聯合損失與訓練設定</text>
+  <text x="60" y="1774" font-size="13" fill="#333">L_total = <tspan fill="#24507E" font-weight="bold">L_det</tspan> + λ₁·<tspan fill="#7E3A50" font-weight="bold">L_adv</tspan> + λ₂·<tspan fill="#2F5A3C" font-weight="bold">L_stab</tspan> + λ₃·<tspan fill="#2F5A3C" font-weight="bold">L_ncm</tspan>　（λ₁ = 0.1、λ₂ = 0.5、λ₃ = 0.1；L_det = 類別加權 CrossEntropy，weight = [1, neg/pos]）</text>
+  <text x="60" y="1800" font-size="12" fill="#555">Adam（lr = 1e-3、weight_decay = 1e-4）× 2（backbone+NCM / generator）・full-graph 每 epoch 1 步・200 epochs・seed = 42・無 LR scheduler / 梯度裁剪・每 10 epoch 驗證存最佳權重（macro-F1）</text>
+</svg>

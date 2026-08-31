@@ -66,6 +66,7 @@ def load_elliptic_plus_dataset(
     labeled_only: bool = False,
     fraud_subgraph: bool = False,
     fraud_subgraph_hops: int = 2,
+    wallet_per_address: bool = False,
 ) -> Tuple[HeteroData, str]:
     """
     Build and return (HeteroData, target_node_type).
@@ -83,6 +84,18 @@ def load_elliptic_plus_dataset(
                               from ~900K to tens of thousands while preserving
                               addr→addr structural signal near fraud nodes.
         fraud_subgraph_hops:  number of wallet hops from labeled tx (default 2).
+        wallet_per_address:   if True, collapse wallet nodes to ONE node per
+                              unique address (keeping the latest-`Time step`
+                              original row) instead of one node per
+                              (address, timestep) row, and KEEP `Time step` as a
+                              wallet feature (→56 dims, matching SAGE-FIN). This
+                              makes the wallet universe canonical (≈822,942
+                              addresses / 14,266 illicit) and lets the wallet
+                              train/val/test split be address-level (no
+                              cross-timestep entity leakage). Default False
+                              preserves the original per-row behaviour byte-for-
+                              byte for the transaction variant. Enabled by the
+                              wallet/joint variants only.
 
     Returns:
         data:             PyG HeteroData ready for CI-RCT training
@@ -174,13 +187,18 @@ def load_elliptic_plus_dataset(
                 | set(addr_addr["output_address"].dropna())
             )
     wallets_filt  = wallets[wallets["address"].isin(connected)].reset_index(drop=True)
+    if wallet_per_address:
+        # Collapse (address, timestep) rows → one node per unique address.
+        wallets_filt = _dedup_wallets_per_address(wallets_filt)
     all_wallet_ids = wallets_filt["address"].tolist()
     wallet_to_idx  = {addr: i for i, addr in enumerate(all_wallet_ids)}
     n_wallets      = len(all_wallet_ids)
 
-    # ── 6. Wallet features (54-dim) ───────────────────────────────────────────
+    # ── 6. Wallet features (55-dim per-row, or 56-dim per-address w/ Time step) ─
     print("  Building wallet features …")
-    wallet_feat = _build_wallet_features(wallets_filt)   # [n_wallets, 54]
+    wallet_feat = _build_wallet_features(
+        wallets_filt, keep_timestep=wallet_per_address
+    )   # [n_wallets, 55] or [n_wallets, 56]
 
     # ── 7. Build edges ────────────────────────────────────────────────────────
     print("  Building edges …")
@@ -229,7 +247,9 @@ def load_elliptic_plus_dataset(
     n_unknown = n_tx - n_illicit - n_licit
     print(f"  Transactions: {n_tx:,}  "
           f"(illicit={n_illicit:,}, licit={n_licit:,}, unknown={n_unknown:,})")
-    print(f"  Wallets (connected): {n_wallets:,}")
+    _wmode = " [per-address, deduped]" if wallet_per_address else " [per-(addr,timestep)]"
+    print(f"  Wallets (connected): {n_wallets:,}{_wmode}  "
+          f"(feat_dim={wallet_feat.size(1)})")
     print(f"  Edges:  wallet→tx={ei_wt.size(1):,}  "
           f"tx→wallet={ei_tw.size(1):,}  "
           f"tx→tx={ei_tt.size(1):,}  "
@@ -311,11 +331,51 @@ def _build_tx_features(txs_feat: pd.DataFrame) -> torch.Tensor:
     return torch.tensor(arr, dtype=torch.float32)
 
 
-def _build_wallet_features(wallets: pd.DataFrame) -> torch.Tensor:
+def _dedup_wallets_per_address(wallets_filt: pd.DataFrame) -> pd.DataFrame:
     """
-    All 54 wallet behavioural features (cols 2 onwards), standardised.
+    Collapse Elliptic++'s per-(address, timestep) wallet rows to ONE node per
+    unique address, keeping the row at the LATEST `Time step` — the most complete
+    cumulative snapshot for that address.
+
+    No aggregation or synthesis: every retained value is a real, original row
+    straight from wallets_features.csv. The dedup is deterministic (stable sort
+    by (address, Time step) then keep the last row per address), so the base
+    loader and the wallet/joint label replay select the identical row per
+    address and therefore the identical node ordering.
+
+    The resulting node ordering is alphabetical by address in BOTH branches, so
+    consumers that lack the 'Time step' column (lfpn_utils / elliptic_identity,
+    which read only the address column) reproduce the identical address→index
+    mapping — that consistency is what keeps Metric C / chain decoding aligned.
     """
-    feat_cols = [c for c in wallets.columns if c not in ("address", "Time step")]
+    if "Time step" not in wallets_filt.columns:
+        return (
+            wallets_filt
+            .sort_values("address", kind="stable")
+            .drop_duplicates("address", keep="last")
+            .reset_index(drop=True)
+        )
+    return (
+        wallets_filt
+        .sort_values(["address", "Time step"], kind="stable")
+        .drop_duplicates("address", keep="last")
+        .reset_index(drop=True)
+    )
+
+
+def _build_wallet_features(
+    wallets: pd.DataFrame, keep_timestep: bool = False
+) -> torch.Tensor:
+    """
+    Wallet behavioural features, standardised (zero-mean / unit-variance).
+
+    keep_timestep=False (default): drop both 'address' and 'Time step' → 55 dims
+        (original per-row behaviour, used by the transaction variant).
+    keep_timestep=True: drop only 'address', keep 'Time step' as a feature → 56
+        dims, matching SAGE-FIN's wallet encoding for the per-address variant.
+    """
+    drop_cols = ("address",) if keep_timestep else ("address", "Time step")
+    feat_cols = [c for c in wallets.columns if c not in drop_cols]
     arr = wallets[feat_cols].values.astype(np.float32)
     arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
 

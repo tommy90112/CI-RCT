@@ -1,0 +1,197 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1340" viewBox="0 0 1120 1340" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="dn" markerWidth="12" markerHeight="12" refX="5" refY="8.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M1,1 L5,8 L9,1" fill="none" stroke="#6a6a6a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="rt" markerWidth="11" markerHeight="11" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M1,1 L8,4 L1,7" fill="none" stroke="#8a8a8a" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <marker id="rtR" markerWidth="11" markerHeight="11" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M1,1 L8,4 L1,7" fill="none" stroke="#b5716c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1120" height="1340" fill="#fbfbfc"/>
+
+  <!-- ══════════ Title (top, SACF puts headline metrics on top) ══════════ -->
+  <text x="560" y="42" text-anchor="middle" font-size="23" font-weight="700" fill="#2c2c33">CI-RCT — Causal Intervention-Based Root Cause Tracing</text>
+  <!-- run-configuration band -->
+  <rect x="96" y="58" width="928" height="34" rx="17" fill="#eef0f4" stroke="#c7ccd6"/>
+  <text x="560" y="80" text-anchor="middle" font-size="13" fill="#4a4f5a">
+    <tspan font-weight="600" fill="#3a5a8a">hidden 128</tspan> &#183; <tspan font-weight="600" fill="#3a5a8a">HGT&#215;3</tspan> &#183; <tspan font-weight="600" fill="#3a5a8a">heads 4</tspan> &#183; dropout 0.3 &#160;|&#160; <tspan font-weight="600" fill="#8a4a45">GAN WGAN-GP</tspan> &#160;|&#160; <tspan font-weight="600" fill="#3a6030">&#955;_adv 0.1 &#183; &#955;_stab 0.5 &#183; &#955;_ncm 0.3</tspan> &#160;|&#160; epochs 400 &#183; Adam lr 1e-3</text>
+
+  <!-- ══════════ (i) Input ══════════ -->
+  <text x="34" y="150" font-size="17" font-weight="700" fill="#8a8a8a">(i)</text>
+  <g>
+    <rect x="70" y="112" width="980" height="112" rx="12" fill="#faf4e6" stroke="#d8c79c" stroke-width="1.3"/>
+    <text x="88" y="136" font-size="15" font-weight="700" fill="#8a6f2e">Heterogeneous Temporal Graph Input &#160;<tspan font-size="12" font-style="italic" font-weight="400" fill="#a89258">Elliptic++ · variant = wallet</tspan></text>
+
+    <rect x="90" y="148" width="290" height="62" rx="8" fill="#f4e7c6" stroke="#cdb673"/>
+    <text x="235" y="172" text-anchor="middle" font-size="13" font-weight="600" fill="#7a6423">Nodes</text>
+    <text x="235" y="192" text-anchor="middle" font-size="11.5" fill="#5f5326">transaction (tx features) &#183; wallet (56-d)</text>
+
+    <rect x="400" y="148" width="360" height="62" rx="8" fill="#f4e7c6" stroke="#cdb673"/>
+    <text x="580" y="172" text-anchor="middle" font-size="13" font-weight="600" fill="#7a6423">Typed edges (relations)</text>
+    <text x="580" y="192" text-anchor="middle" font-size="11.5" fill="#5f5326">Tx&#8594;Tx &#183; Addr&#8594;Tx &#183; Tx&#8594;Addr &#183; Addr&#8594;Addr</text>
+
+    <rect x="780" y="148" width="250" height="62" rx="8" fill="#f4e7c6" stroke="#cdb673"/>
+    <text x="905" y="172" text-anchor="middle" font-size="13" font-weight="600" fill="#7a6423">Temporal structure</text>
+    <text x="905" y="192" text-anchor="middle" font-size="11.5" fill="#5f5326">time-respecting DAG (follow-the-money)</text>
+  </g>
+  <path d="M560,224 L560,258" stroke="#6a6a6a" stroke-width="1.6" marker-end="url(#dn)"/>
+
+  <!-- ══════════ (ii) Shared HGT Backbone ══════════ -->
+  <text x="34" y="330" font-size="17" font-weight="700" fill="#8a8a8a">(ii)</text>
+  <g>
+    <rect x="70" y="262" width="980" height="150" rx="12" fill="#eaf0f9" stroke="#8ea9c6" stroke-width="1.3"/>
+    <text x="88" y="286" font-size="15" font-weight="700" fill="#2f4f78">Shared HGT Backbone &#160;<tspan font-size="12" font-style="italic" font-weight="400" fill="#7f93ad">HeteroGNNBackbone · Module&#160;1 (encoder)</tspan></text>
+
+    <rect x="90" y="300" width="210" height="94" rx="8" fill="#dde8f5" stroke="#7f9cc0"/>
+    <text x="195" y="324" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2f4f78">Per-type Projection</text>
+    <text x="195" y="345" text-anchor="middle" font-size="11.5" fill="#3d5570">Linear(&#8594;128) &#8594; ELU</text>
+    <text x="195" y="366" text-anchor="middle" font-size="11" font-style="italic" fill="#6a7c94">transaction, wallet</text>
+
+    <rect x="320" y="300" width="330" height="94" rx="8" fill="#dde8f5" stroke="#7f9cc0"/>
+    <text x="485" y="324" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2f4f78">Heterogeneous Graph Transformer &#215; 3</text>
+    <text x="485" y="345" text-anchor="middle" font-size="11.5" fill="#3d5570">per-relation multi-head attention</text>
+    <text x="485" y="366" text-anchor="middle" font-size="11" font-style="italic" fill="#6a7c94">heads = 4 · hidden = 128 · dropout = 0.3</text>
+
+    <rect x="670" y="300" width="160" height="94" rx="8" fill="#cfdcee" stroke="#5f83ab"/>
+    <text x="750" y="324" text-anchor="middle" font-size="12.5" font-weight="600" fill="#2f4f78">Outputs</text>
+    <text x="750" y="345" text-anchor="middle" font-size="11.5" fill="#3d5570">h_dict [N,128]</text>
+    <text x="750" y="366" text-anchor="middle" font-size="11.5" fill="#3d5570">Classifier &#8594; logits</text>
+
+    <!-- Module 4 GAN — training-only companion -->
+    <rect x="850" y="300" width="180" height="94" rx="8" fill="#f3e0df" stroke="#b5716c" stroke-width="1.2" stroke-dasharray="6 4"/>
+    <text x="940" y="322" text-anchor="middle" font-size="12" font-weight="700" fill="#8a4a45">&#9315; Adversarial GAN</text>
+    <text x="940" y="341" text-anchor="middle" font-size="10.5" fill="#7a4a46">WGAN-GP · gp&#955;=10 · n_critic=5</text>
+    <text x="940" y="358" text-anchor="middle" font-size="10.5" fill="#7a4a46">camouflage fraud &#8594; L_adv (&#955;&#8321;=0.1)</text>
+    <text x="940" y="378" text-anchor="middle" font-size="10" font-style="italic" fill="#a86a6a">training only · reuses detector heads</text>
+    <path d="M850,352 L832,352" stroke="#b5716c" stroke-width="1.4" stroke-dasharray="5 3" marker-end="url(#rtR)"/>
+  </g>
+  <path d="M560,412 L560,446" stroke="#6a6a6a" stroke-width="1.6" marker-end="url(#dn)"/>
+  <text x="574" y="434" font-size="11" font-style="italic" fill="#666">h_dict</text>
+
+  <!-- ══════════ (iii) Causal Intervention Core — parallel-stage cards ══════════ -->
+  <text x="34" y="560" font-size="17" font-weight="700" fill="#8a8a8a">(iii)</text>
+  <g>
+    <rect x="70" y="450" width="980" height="228" rx="12" fill="#eaf3e6" stroke="#89b380" stroke-width="1.3"/>
+    <text x="88" y="474" font-size="15" font-weight="700" fill="#3a6030">Causal Intervention Core &#160;<tspan font-size="12" font-style="italic" font-weight="400" fill="#7fa273">Module&#160;2 — do-calculus over the typed causal graph</tspan></text>
+
+    <!-- Stage 1 -->
+    <rect x="90" y="490" width="290" height="172" rx="9" fill="#f0f7ec" stroke="#a9caa0"/>
+    <text x="235" y="512" text-anchor="middle" font-size="12.5" font-weight="700" fill="#3a6030">Stage 1 · Structure</text>
+    <rect x="106" y="524" width="258" height="52" rx="6" fill="#dcecd5" stroke="#9dc194"/>
+    <text x="235" y="545" text-anchor="middle" font-size="12" font-weight="600" fill="#3a6030">Typed Causal Graph</text>
+    <text x="235" y="564" text-anchor="middle" font-size="10.8" fill="#4a6540">Pearl SCM DAG · pa/ch dicts</text>
+    <rect x="106" y="584" width="258" height="60" rx="6" fill="#dcecd5" stroke="#9dc194"/>
+    <text x="235" y="606" text-anchor="middle" font-size="11.5" fill="#4a6540">Kahn topological order</text>
+    <text x="235" y="625" text-anchor="middle" font-size="10.8" fill="#4a6540">upstream &#8594; downstream</text>
+
+    <!-- Stage 2 -->
+    <rect x="415" y="490" width="290" height="172" rx="9" fill="#f0f7ec" stroke="#a9caa0"/>
+    <text x="560" y="512" text-anchor="middle" font-size="12.5" font-weight="700" fill="#3a6030">Stage 2 · Intervention</text>
+    <rect x="431" y="524" width="258" height="52" rx="6" fill="#dcecd5" stroke="#9dc194"/>
+    <text x="560" y="545" text-anchor="middle" font-size="12" font-weight="600" fill="#3a6030">HeteroNCM (per-edge MLP)</text>
+    <text x="560" y="564" text-anchor="middle" font-size="10.8" fill="#4a6540">type-emb 16-d · h = 64&#215;2</text>
+    <rect x="431" y="584" width="258" height="60" rx="6" fill="#dcecd5" stroke="#9dc194"/>
+    <text x="560" y="605" text-anchor="middle" font-size="11" fill="#4a6540">CE = P(&#375;|do h_actual) &#8722; P(&#375;|do base)</text>
+    <text x="560" y="623" text-anchor="middle" font-size="10.5" fill="#4a6540">base: type_mean / marginal · bal &#8730;</text>
+
+    <!-- Stage 3 -->
+    <rect x="740" y="490" width="290" height="172" rx="9" fill="#f0f7ec" stroke="#a9caa0"/>
+    <text x="885" y="512" text-anchor="middle" font-size="12.5" font-weight="700" fill="#3a6030">Stage 3 · Attribution</text>
+    <rect x="756" y="524" width="258" height="52" rx="6" fill="#d3e7cb" stroke="#82ab77"/>
+    <text x="885" y="545" text-anchor="middle" font-size="12" font-weight="600" fill="#3a6030">Asymmetric Causal Shapley</text>
+    <text x="885" y="564" text-anchor="middle" font-size="10.8" fill="#4a6540">topo-prefix coalitions · O(n)</text>
+    <rect x="756" y="584" width="258" height="60" rx="6" fill="#d3e7cb" stroke="#82ab77"/>
+    <text x="885" y="606" text-anchor="middle" font-size="11.5" fill="#4a6540">outputs &#8594; CE scores · &#966; / parent</text>
+    <text x="885" y="625" text-anchor="middle" font-size="10.8" font-style="italic" fill="#5a7550">local causal responsibility</text>
+
+    <!-- inter-stage arrows -->
+    <path d="M380,576 L413,576" stroke="#8a8a8a" stroke-width="1.5" marker-end="url(#rt)"/>
+    <path d="M705,576 L738,576" stroke="#8a8a8a" stroke-width="1.5" marker-end="url(#rt)"/>
+  </g>
+  <path d="M560,678 L560,712" stroke="#6a6a6a" stroke-width="1.6" marker-end="url(#dn)"/>
+  <text x="574" y="700" font-size="11" font-style="italic" fill="#666">CE / &#966;</text>
+
+  <!-- ══════════ (iv) Root Cause Tracing & Inference ══════════ -->
+  <text x="34" y="790" font-size="17" font-weight="700" fill="#8a8a8a">(iv)</text>
+  <g>
+    <rect x="70" y="716" width="980" height="150" rx="12" fill="#f0ecf8" stroke="#a693c6" stroke-width="1.3"/>
+    <text x="88" y="740" font-size="15" font-weight="700" fill="#54407e">Root Cause Tracing &amp; Inference &#160;<tspan font-size="12" font-style="italic" font-weight="400" fill="#8f7ab0">Module&#160;3 — backward search on the causal graph</tspan></text>
+
+    <rect x="90" y="754" width="300" height="94" rx="8" fill="#e6def2" stroke="#a693c6"/>
+    <text x="240" y="778" text-anchor="middle" font-size="12.5" font-weight="600" fill="#54407e">Backward search</text>
+    <text x="240" y="799" text-anchor="middle" font-size="11.5" fill="#4d4066">&#966;-weighted |CE| ranking</text>
+    <text x="240" y="820" text-anchor="middle" font-size="11" font-style="italic" fill="#77689a">greedy + ablation: DAG-DP·Dijkstra·BFS·DFS·Beam</text>
+
+    <rect x="410" y="754" width="300" height="94" rx="8" fill="#e6def2" stroke="#a693c6"/>
+    <text x="560" y="778" text-anchor="middle" font-size="12.5" font-weight="600" fill="#54407e">Four stop conditions</text>
+    <text x="560" y="799" text-anchor="middle" font-size="11" fill="#4d4066">no upstream · |CE|&lt;&#964; · cycle · max_hops</text>
+    <text x="560" y="820" text-anchor="middle" font-size="11" font-style="italic" fill="#77689a">max_hops=20 · ce_thr=1e-4 · score=ce_signed</text>
+
+    <rect x="730" y="754" width="300" height="94" rx="8" fill="#ddd2ef" stroke="#8f7ab0"/>
+    <text x="880" y="778" text-anchor="middle" font-size="12.5" font-weight="600" fill="#54407e">Output</text>
+    <text x="880" y="799" text-anchor="middle" font-size="11.5" fill="#4d4066">root-cause node + causal chain</text>
+    <text x="880" y="820" text-anchor="middle" font-size="11" font-style="italic" fill="#77689a">prefer wallet root · reachable depth 3</text>
+
+    <path d="M390,801 L408,801" stroke="#8a8a8a" stroke-width="1.5" marker-end="url(#rt)"/>
+    <path d="M710,801 L728,801" stroke="#8a8a8a" stroke-width="1.5" marker-end="url(#rt)"/>
+  </g>
+  <path d="M560,866 L560,900" stroke="#6a6a6a" stroke-width="1.6" marker-end="url(#dn)"/>
+
+  <!-- ══════════ Joint objective (aggregation band) ══════════ -->
+  <g>
+    <rect x="70" y="904" width="980" height="150" rx="12" fill="#f6ecea" stroke="#c99a95" stroke-width="1.3"/>
+    <text x="88" y="928" font-size="15" font-weight="700" fill="#8a4a45">Joint Training Objective &#160;<tspan font-size="12" font-style="italic" font-weight="400" fill="#b5847f">back-propagates into the shared backbone</tspan></text>
+    <text x="560" y="956" text-anchor="middle" font-size="15" fill="#3a3a3a">L_total = L_detection + &#955;&#8321;&#183;L_adversarial + &#955;&#8322;&#183;L_stability + &#955;&#8323;&#183;L_ncm <tspan fill="#a79a99">(+ &#955;&#8324;&#183;L_recon)</tspan></text>
+
+    <g font-size="11">
+      <rect x="90" y="972" width="220" height="60" rx="7" fill="#dde8f5" stroke="#7f9cc0"/>
+      <text x="200" y="994" text-anchor="middle" font-weight="600" fill="#2f4f78">L_detection</text>
+      <text x="200" y="1013" text-anchor="middle" fill="#3d3d3d">class-weighted CE · wallet head</text>
+
+      <rect x="322" y="972" width="170" height="60" rx="7" fill="#f3e0df" stroke="#b5716c"/>
+      <text x="407" y="994" text-anchor="middle" font-weight="600" fill="#8a4a45">L_adversarial</text>
+      <text x="407" y="1013" text-anchor="middle" fill="#3d3d3d">WGAN-GP · &#955;&#8321;=0.1</text>
+
+      <rect x="504" y="972" width="200" height="60" rx="7" fill="#e6f0e2" stroke="#89b380"/>
+      <text x="604" y="994" text-anchor="middle" font-weight="600" fill="#3a6030">L_stability</text>
+      <text x="604" y="1013" text-anchor="middle" fill="#3d3d3d">&#8214;&#966;&#8348;&#8722;&#966;&#8348;&#8331;&#8321;&#8214;&#178; · &#955;&#8322;=0.5</text>
+
+      <rect x="716" y="972" width="200" height="60" rx="7" fill="#e6f0e2" stroke="#89b380"/>
+      <text x="816" y="994" text-anchor="middle" font-weight="600" fill="#3a6030">L_ncm</text>
+      <text x="816" y="1013" text-anchor="middle" fill="#3d3d3d">NCM supervision BCE · &#955;&#8323;=0.3</text>
+
+      <rect x="928" y="972" width="102" height="60" rx="7" fill="#eeeeee" stroke="#9a9a9a"/>
+      <text x="979" y="990" text-anchor="middle" font-weight="600" fill="#555">L_recon</text>
+      <text x="979" y="1007" text-anchor="middle" fill="#777">&#955;&#8324;=0</text>
+      <text x="979" y="1023" text-anchor="middle" font-size="9.5" font-style="italic" fill="#999">recon off</text>
+    </g>
+  </g>
+  <path d="M560,1054 L560,1088" stroke="#6a6a6a" stroke-width="1.6" marker-end="url(#dn)"/>
+
+  <!-- ══════════ Final output ══════════ -->
+  <g>
+    <rect x="240" y="1092" width="640" height="70" rx="12" fill="#dfe9f6" stroke="#5f83ab" stroke-width="1.5"/>
+    <text x="560" y="1122" text-anchor="middle" font-size="15" font-weight="700" fill="#2f4f78">Explained fraud decision</text>
+    <text x="560" y="1146" text-anchor="middle" font-size="12.5" fill="#3d5570">wallet fraud F1 / AUC &#160;+&#160; root-cause chain &#160;+&#160; per-parent &#966; attribution</text>
+  </g>
+
+  <!-- ══════════ Legend ══════════ -->
+  <g font-size="12" fill="#4a4a4a">
+    <text x="70" y="1216" font-size="12.5" font-weight="600" fill="#555">Module role</text>
+    <rect x="160" y="1206" width="15" height="15" rx="3" fill="#f4e7c6" stroke="#cdb673"/><text x="182" y="1218">Graph I/O</text>
+    <rect x="262" y="1206" width="15" height="15" rx="3" fill="#dde8f5" stroke="#7f9cc0"/><text x="284" y="1218">HGT Backbone</text>
+    <rect x="400" y="1206" width="15" height="15" rx="3" fill="#dcecd5" stroke="#9dc194"/><text x="422" y="1218">Causal Engine</text>
+    <rect x="536" y="1206" width="15" height="15" rx="3" fill="#f3e0df" stroke="#b5716c" stroke-dasharray="3 2"/><text x="558" y="1218">Adversarial (train only)</text>
+    <rect x="720" y="1206" width="15" height="15" rx="3" fill="#e6def2" stroke="#a693c6"/><text x="742" y="1218">Tracer / Inference</text>
+    <rect x="866" y="1206" width="15" height="15" rx="3" fill="#eeeeee" stroke="#9a9a9a"/><text x="888" y="1218">disabled</text>
+  </g>
+  <line x1="70" y1="1244" x2="1050" y2="1244" stroke="#e0e0e0" stroke-width="1"/>
+
+  <!-- ══════════ Bottom title (SACF style) ══════════ -->
+  <text x="560" y="1290" text-anchor="middle" font-size="19" font-weight="700" fill="#2c2c33">CI-RCT 整體架構（四模組橫向區塊）</text>
+  <text x="560" y="1314" text-anchor="middle" font-size="12" font-style="italic" fill="#8a8a8a">虛線區塊僅於訓練階段作用；實線為推論／解釋路徑。頂部為本次訓練所用之超參數設定。</text>
+</svg>

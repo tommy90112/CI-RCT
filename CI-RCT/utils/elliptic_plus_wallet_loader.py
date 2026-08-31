@@ -30,13 +30,16 @@ with ``data["wallet"]`` under identical flags.  **Train and eval must therefore
 pass the same ``include_addr_addr`` / ``fraud_subgraph`` /
 ``fraud_subgraph_hops`` flags.**
 
-Caveat (wallet-timestep nodes): Elliptic++'s ``wallets_features.csv`` has one
-row per (wallet, timestep), so the same address appears as multiple nodes.  Like
-the base loader, this loader treats every such row as its own node and labels it
-by the wallet's class.  Different-timestep rows of one wallet can therefore land
-in different splits — a wallet-level leakage that the base transaction pipeline
-shares.  Acceptable for a like-for-like baseline comparison; revisit (dedup to
-one node per address) if SAGE-FIN uses a wallet-level split.
+Node granularity (per-address): Elliptic++'s ``wallets_features.csv`` has one
+row per (wallet, timestep), so the same address appears on multiple rows.  This
+loader collapses them to ONE node per unique address (``wallet_per_address=True``
+→ ``_dedup_wallets_per_address``, keeping the latest-``Time step`` original row
+and ``Time step`` as a feature, 56 dims).  The node universe is therefore
+canonical — ≈822,942 addresses / 14,266 illicit, matching SAGE-FIN Table 1 — and
+the 70/15/15 split is address-level, so no address (and no illicit address) can
+straddle train/val/test.  This removes the cross-timestep entity leakage of the
+earlier per-row design; every retained feature value is a real original row (no
+aggregation/synthesis).
 """
 from __future__ import annotations
 
@@ -48,6 +51,7 @@ import torch
 from torch_geometric.data import HeteroData
 
 from utils.elliptic_plus_loader import (
+    _dedup_wallets_per_address,
     _fraud_subgraph_wallets,
     _stratified_masks,
     load_elliptic_plus_dataset,
@@ -88,20 +92,24 @@ def load_elliptic_plus_wallet_dataset(
     root = Path(data_root)
     _validate_data_root(root)
 
-    # 1. Build the full graph via the unchanged base loader.
+    # 1. Build the full graph via the base loader, with wallet nodes collapsed
+    #    to one-per-address (canonical universe, leak-free address-level split).
     data, _ = load_elliptic_plus_dataset(
         str(root),
         include_addr_addr=include_addr_addr,
         fraud_subgraph=fraud_subgraph,
         fraud_subgraph_hops=fraud_subgraph_hops,
+        wallet_per_address=True,
     )
 
-    # 2. Reproduce the base loader's per-node wallet ordering + clean labels.
+    # 2. Reproduce the base loader's per-node wallet ordering + clean labels
+    #    (same per-address dedup → row-order aligned with data["wallet"]).
     all_wallet_ids, y_cls, labeled_idx = _build_clean_wallet_labels(
         root,
         include_addr_addr=include_addr_addr,
         fraud_subgraph=fraud_subgraph,
         fraud_subgraph_hops=fraud_subgraph_hops,
+        wallet_per_address=True,
     )
 
     n_wallets = int(data["wallet"].num_nodes)
@@ -149,28 +157,30 @@ def _build_clean_wallet_labels(
     include_addr_addr: bool,
     fraud_subgraph: bool,
     fraud_subgraph_hops: int,
+    wallet_per_address: bool = False,
 ) -> Tuple[List, torch.Tensor, List[int]]:
     """
     Return ``(all_wallet_ids, y_cls, labeled_idx)``:
 
         all_wallet_ids : per-node wallet address, in the SAME row order the base
-                         loader assigns to ``data["wallet"]`` (length = n_wallets;
-                         the same address may repeat across timestep rows).
+                         loader assigns to ``data["wallet"]`` (length = n_wallets).
         y_cls          : LongTensor[n_wallets] — 1 for illicit, 0 otherwise.
         labeled_idx    : node indices with a real label (class 1 or 2);
                          class-3 (unknown) nodes are excluded.
 
     The ``connected`` / ``wallets_filt`` filtering replays
     ``elliptic_plus_loader.load_elliptic_plus_dataset`` verbatim (reusing its own
-    ``_fraud_subgraph_wallets``) so the ordering is guaranteed identical — no
-    dedup, no ``astype`` coercion that could drift from the base loader.
+    ``_fraud_subgraph_wallets``) so the ordering is guaranteed identical. When
+    ``wallet_per_address`` is True the identical ``_dedup_wallets_per_address``
+    is applied, so each address maps to exactly one node and the split is
+    address-level (no cross-timestep leakage).
     """
     wallets_cls = pd.read_csv(root / "wallets_classes.csv")
     wallets_cls.columns = [c.strip() for c in wallets_cls.columns]
 
-    # First column of wallets_features.csv is the wallet address (in file order).
-    wallets = pd.read_csv(root / "wallets_features.csv", usecols=[0])
-    wallets.columns = ["address"]
+    # Cols 0/1 of wallets_features.csv are 'address' / 'Time step' (file order).
+    wallets = pd.read_csv(root / "wallets_features.csv", usecols=[0, 1])
+    wallets.columns = ["address", "Time step"]
     txs_feat = pd.read_csv(root / "txs_features.csv", usecols=[0])
     txs_feat.columns = ["txId"]
     txs_cls_df = pd.read_csv(root / "txs_classes.csv")
@@ -202,6 +212,8 @@ def _build_clean_wallet_labels(
             )
 
     wallets_filt = wallets[wallets["address"].isin(connected)].reset_index(drop=True)
+    if wallet_per_address:
+        wallets_filt = _dedup_wallets_per_address(wallets_filt)
     all_wallet_ids = wallets_filt["address"].tolist()
 
     # Address → class (native dtype, matching the base loader's cls_map lookup).
