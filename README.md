@@ -1,107 +1,165 @@
 # CI-RCT
 
-**Causal Intervention-based Root Cause Tracing on heterogeneous graphs.**
+**Root cause tracing on heterogeneous graphs, by causal intervention.**
 
 繁體中文版：[README.zh-TW.md](README.zh-TW.md)
 
-Given a transaction flagged as suspicious, CI-RCT walks *backwards* along a
-time-respecting money-flow DAG — crossing between transaction and wallet node
-types — to the entity that actually controlled the funds, and returns an
-auditable causal chain rather than a single score.
+Graph neural networks are good at flagging anomalies. They are much weaker at the
+question that follows: *where did this start, and who caused it?*
 
----
+CI-RCT (Causal Intervention-based Root Cause Tracing) adds that second half. Given
+a node flagged as anomalous, it walks **backward** along a time-respecting directed
+graph — crossing freely between node types — until it reaches the entity the
+evidence points to, and attaches a causal justification to every hop. The result is
+a chain a human can audit, not a saliency heatmap.
 
-## Why
+![A causal chain traced by CI-RCT. From the flagged target on the left, the trace runs backward through alternating addresses and transactions to the traced source on the right, each selected edge labelled with its causal effect. Grey edges show the neighbouring nodes that were available at each hop but not selected.](CI-RCT/viz/fraud_chain.png)
 
-Graph neural networks detect fraud well. They are much weaker at answering the
-question an investigator actually asks next: **where did this start, how did it
-propagate, and who is responsible?** Three gaps motivate this work.
+*A traced chain. The labelled edges are what the tracer chose; the grey ones are the
+alternatives it rejected at each hop. This instance comes from the Bitcoin dataset
+used for validation — the method itself is defined over any typed, time-ordered
+heterogeneous graph.*
 
-| Gap | What is missing |
-|-----|-----------------|
-| **Heterogeneity** | Real networks mix node and edge types. Treating them as equivalent erases the type semantics that make a money trail readable. |
-| **Correlation, not causation** | Explainers such as GNNExplainer and PGExplainer surface the subgraph most *statistically associated* with a prediction. That is not the same as the subgraph that *caused* it. |
-| **No backward tracing** | Most pipelines stop at detection. Few can walk from an observed anomaly back up to its origin across layers of a system. |
+## How it works
 
-CI-RCT addresses all three: a type-aware directed graph, causal effects
-estimated by intervention (Pearl's do-calculus) rather than association, and a
-tracer that reconstructs the chain from effect back to cause.
+The core idea is to replace **correlation** with **intervention**. Where explainers
+such as GNNExplainer or PGExplainer ask *which subgraph is most associated with this
+prediction*, CI-RCT asks *what happens to the prediction if I cut this edge* —
+Pearl's do-calculus, applied per edge.
 
-## What makes it different
+Four modules. The GAN runs during training only and is inert at inference.
 
-- **Interventional, not associational.** Edge-level causal effects come from
-  cutting parent edges and re-running the model, not from gradient saliency or
-  learned edge masks.
-- **Cross-type root causes.** The traced chain alternates between wallets and
-  transactions, so a flagged transaction can be attributed to a controlling
-  wallet. A detector that only scores nodes cannot produce this in principle.
-- **Time-respecting by construction.** Edges are oriented by timestamp and the
-  causal graph rejects any edge that would let a cause follow its effect.
-- **Attribution that survives depth.** Per-hop local causal responsibility is
-  computed with a rolling readout, so nodes further from the target than the
-  backbone's receptive field still receive a measurable attribution.
+![CI-RCT architecture: a temporal hetero-graph feeds Module 1 (HeteroGNN backbone, HGTConv), whose embeddings drive Module 2 (Causal Intervention Engine — TypedCausalGraph, HeteroNCM producing CE, and asymmetric causal Shapley via coalition do-intervention); Module 3 (RootCauseTracer) walks backward over signed CE to emit the chain; Module 4 (CausalAdversarialGAN) adds WGAN-GP camouflaged samples during training only.](CI-RCT/viz/ch3_architecture_v3.svg)
 
-## Architecture
+| Module | Role |
+|--------|------|
+| **1 · HeteroGNN Backbone** | HGT with per-relation attention; produces node embeddings and detection logits |
+| **2 · Causal Intervention Engine** | Builds a typed, timestamped causal DAG; estimates per-edge causal effects by parent-edge cutoff; computes asymmetric causal Shapley attribution by coalition intervention |
+| **3 · RootCauseTracer** | Walks backward over causal effects to the root, with four stop conditions |
+| **4 · CausalAdversarialGAN** | Training only: generates camouflaged anomalies under DAG constraints to harden detection (WGAN-GP) |
 
-Four modules. The GAN participates in training only and is inert at inference.
+Module 2 emits two signals with different jobs. **CE** (edge-level causal effect)
+ranks upstream candidates and drives the trace. **φ** (asymmetric causal Shapley,
+computed by coalition intervention on the backbone) quantifies how much local causal
+responsibility each upstream node bears. In short: **CE traces, φ explains.**
 
-![CI-RCT architecture: a temporal hetero-graph feeds Module 1 (HeteroGNN backbone, HGTConv), whose embeddings drive Module 2 (Causal Intervention Engine — TypedCausalGraph, HeteroNCM producing CE, and asymmetric causal Shapley via coalition do-intervention); Module 3 (RootCauseTracer) walks backward over signed CE to emit the crime chain; Module 4 (CausalAdversarialGAN) adds WGAN-GP camouflaged samples during training only.](CI-RCT/viz/ch3_architecture_v3.svg)
+Two design choices make the chains hold up. Edges are oriented by timestamp and the
+causal graph **rejects any edge that would let a cause follow its effect**, so a
+chain cannot run backward through time. And attribution uses a rolling readout, so
+nodes further from the target than the backbone's receptive field still receive a
+measurable value instead of collapsing to zero.
 
-Module 2 produces two parallel signals with distinct jobs: **CE** (edge-level
-causal effect) ranks upstream candidates and drives the trace, while **φ**
-(asymmetric causal Shapley) quantifies how much local causal responsibility
-each upstream node bears for its immediate downstream transaction. CE traces;
-φ explains.
+## What the method needs from a graph
 
-## How it is evaluated
+CI-RCT is not tied to a domain. It operates on a PyG `HeteroData` object that
+satisfies five conditions:
 
-Four dimensions, all implemented in `evaluate.py`:
+1. **At least two node types** — cross-type tracing is the point; a homogeneous graph
+   reduces the method to ordinary backward search.
+2. **Directed edges with timestamps**, forming a time-respecting DAG.
+3. **Anomaly labels on the target node type.**
+4. **Node feature vectors** per type.
+5. **A root-cause criterion that can be operationalised** — some rule that decides
+   whether a traced endpoint counts as correct.
 
-| Dimension | Question | Ground truth |
-|-----------|----------|--------------|
-| **A — Classification** | Is detection competitive with comparable methods? | Dataset labels |
-| **B — Root cause tracing** | Does the trace terminate on a real fraud entity? | Labelled fraud entity set |
-| **C — Explanation quality** | Does the chain contain the true originating wallet? | LFPN (Labeled Fraud Propagation Neighborhood), strict and k-hop extended |
-| **D — Attribution robustness** | Does the attribution survive input perturbation? | Gaussian noise sweep over node embeddings |
+This repository ships the **Elliptic++ instantiation**. Porting to another domain
+means writing a loader that returns `HeteroData` plus a target type, and a
+ground-truth builder for condition 5. The four model modules, the tracer and the
+evaluation harness are unchanged.
 
-Dimension A is a precondition check, not the contribution: tracing and
-explanation only mean something if detection is not being traded away to get
-them.
+## Validation on Elliptic++
 
-Three supervision variants share one graph and one explanation mechanism and
-differ only in where the supervision signal is attached — `transaction`,
-`wallet`, and `joint` (transaction primary, wallet auxiliary). Comparing them
-side by side doubles as a test of how the supervision target affects each
-dimension.
+Bitcoin fraud is a demanding test for this method: the graph has two node types that
+genuinely alternate (transactions and wallet addresses), money flow gives edges an
+unambiguous direction and time order, and the entity that ultimately controls funds
+is usually several hops away from the transaction that gets flagged.
 
-> Quantitative results are reported in the thesis and are not reproduced here
-> yet. Everything needed to regenerate them is in this repository.
+The framework is evaluated across four dimensions — detection performance,
+root-cause tracing, explanation quality, and the stability of the attribution under
+input perturbation — over three supervision variants (`transaction`, `wallet`,
+`joint`) that share one graph and one explanation mechanism.
 
-## Getting started
+> Metric definitions, the ground-truth construction and the quantitative results are
+> reported in the thesis. Everything needed to reproduce them is in this repository.
 
-### Requirements
+### Do the traces mean anything?
+
+A backward walk will always produce *a* path. The question is whether it lands on a
+structure an investigator would recognise.
+
+Two things suggest it does. The tracer is **selecting, not drifting** — at every hop
+it ranks all available upstream neighbours by causal effect and takes the strongest;
+the grey branches in the figure at the top are the candidates it passed over. And the
+chains it produces line up with laundering patterns already documented in the
+literature.
+
+**Example — a peeling chain.** A peeling chain is a well-known Bitcoin laundering
+pattern: a large holding moves through a long series of transactions, each one
+"peeling" a small amount off to a service or exchange while the bulk moves on to a
+fresh change address. Repeated enough times, the trail becomes tedious to follow by
+hand.
+
+The trace below was produced with no knowledge of this pattern — the model only
+followed causal effect upstream. The result carries the peeling signature throughout:
+**strict alternation** between transactions and addresses over nine hops,
+**timestamps non-decreasing** along the direction of flow, and **amounts decreasing
+at every hop** (3.979 → 1.423 → 0.734 → 0.676 → 0.435 BTC).
+
+![A depth-9 traced chain shown as a money flow: from the detected fraudulent transaction at top right, the chain runs backward through alternating addresses and transactions, each edge labelled with its causal effect and the BTC amount transferred, ending at the traced source address at bottom left. The transferred amount decreases at every hop.](CI-RCT/figures/fig_case5_peeling_210646674.png)
+
+The chain reads as a scenario rather than a list of node IDs: funds leave the traced
+source, are split down across a series of hops, and arrive at the transaction that
+was ultimately flagged.
+
+> Elliptic++ carries no typology labels, so this is a **structural signature match** —
+> the chain is *consistent with* a peeling pattern, not confirmed to be one. The
+> matching criteria are implemented in `scripts/typology_scan.py`.
+
+## Roadmap
+
+- **Second-domain validation.** The natural next step is a domain with the same
+  shape but different semantics — manufacturing and process control are the current
+  candidates (Tennessee Eastman, PHM 2018 ion mill etch, Bosch production line),
+  where the target becomes a faulty part or tool rather than a transaction. Under
+  evaluation; nothing committed.
+- **Loader contributions.** Any dataset meeting the five conditions above can be
+  wired in without touching the model code.
+- **Viewer.** Broader coverage of the explanation layers and a hosted demo.
+
+## Requirements
+
+### Hardware
+
+Trained and evaluated on an **NVIDIA RTX PRO 6000 Blackwell (96 GB)**.
+
+The reported configuration keeps all 2.87M wallet→wallet edges resident, which is
+what drives the memory footprint. Training on CPU is not practical.
+
+### Software
 
 - Python 3.10+
 - PyTorch 2.0+ and PyTorch Geometric 2.4+
-- Node.js 18+ (only for the explainability viewer)
+- Node.js 18+ (only for the viewer)
 
-### Install
+## Installation
 
 ```bash
+git clone <repo-url>
+cd CI-RCT
 pip install -r CI-RCT/requirements.txt
 ```
 
-> **The PyG extras are the one real installation trap.** `torch-scatter` and
-> `torch-sparse` are compiled against an exact torch build. If they are
-> mismatched, `import torch_geometric` **segfaults** instead of raising, which
-> is confusing to debug. Install them following the
+> **Install the PyG extras first.** `torch-scatter` and `torch-sparse` are compiled
+> against an exact torch build. If they are mismatched, `import torch_geometric`
+> **segfaults** instead of raising an error. Follow the
 > [official PyG instructions](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html)
-> for your exact torch and CUDA version. `run_pipeline.py` checks this for you
-> before starting any long job.
+> for your torch and CUDA version. `run_pipeline.py` verifies this before starting
+> any long job.
 
 ### Dataset
 
-Elliptic++ is not redistributed here. Download it and place the tables as:
+Elliptic++ is not redistributed here. [Download it](https://github.com/git-disl/EllipticPlusPlus)
+and place the tables as:
 
 ```
 CI-RCT/data/Elliptic++/
@@ -110,85 +168,61 @@ CI-RCT/data/Elliptic++/
   AddrTx_edgelist.csv    TxAddr_edgelist.csv   AddrAddr_edgelist.csv
 ```
 
-## Running it
+## Usage
 
-The whole pipeline is one command. It chains training, evaluation, chain
-export and the viewer build, wiring each stage's output into the next.
+One command runs everything — training, evaluation, chain export and the viewer
+build — with the reported configuration already applied.
 
 ```bash
 cd CI-RCT
 
-python run_pipeline.py --dry-run        # show the plan and exact commands; changes nothing
-python run_pipeline.py --device cuda    # full run: all three variants, then build the viewer
+python run_pipeline.py --dry-run        # show the plan; changes nothing
+python run_pipeline.py --device cuda    # full run, all three variants
+```
+
+Stages whose output already exists are skipped, so re-running is cheap:
+
+```bash
 python run_pipeline.py --from evaluate  # reuse existing checkpoints
-python run_pipeline.py --force evaluate # redo a stage (and everything downstream of it)
+python run_pipeline.py --force evaluate # redo a stage and everything downstream
 python run_pipeline.py --only frontend  # rebuild just the viewer
 ```
 
-A stage is skipped when its outputs already exist, so re-running is cheap.
-Forcing a stage also re-runs everything downstream — an export built from a
-model you just retrained would otherwise be silently stale.
-
-Outputs land where the viewer already looks for them:
+### What you get
 
 ```
 checkpoints/ci_rct_elliptic++[_variant]_best.pt
-viz/crime_chains[_variant].json     traced chains + per-node φ + feature attribution
-results/crime_chains.csv            flat one-row-per-chain table
-results/chain_neighbors.json        real 1-hop neighbourhood overlay
+viz/crime_chains[_variant].json     traced chains, per-node φ, feature attribution
+results/crime_chains.csv            one row per chain
+results/chain_neighbors.json        1-hop neighbourhood overlay
 frontend_temp/dist/                 self-contained static viewer
 ```
 
-### Running stages individually
+### Running stages separately
 
 ```bash
-cd CI-RCT
-
-python train.py --dataset elliptic++ --variant joint --epochs 400 --use_gan true
-python evaluate.py --dataset elliptic++ --checkpoint <path> --lfpn_mode both
-python infer.py --dataset elliptic++ --checkpoint <path> --target_node <idx>
+python train.py    --dataset elliptic++ --variant joint --epochs 400 --use_gan true
+python evaluate.py --dataset elliptic++ --checkpoint <path>
+python infer.py    --dataset elliptic++ --checkpoint <path> --target_node <idx>
 ```
 
-> **Two flags differ from their CLI defaults on purpose, and from each other.**
-> `run_pipeline.py` sets them for you; if you invoke the scripts directly you
-> have to set them yourself.
->
-> | Flag | Training | Evaluation | Why |
-> |------|----------|------------|-----|
-> | `--ncm_baseline` | `type_mean` | `marginal` | `marginal` hangs during training (it fits a per-step MLP over ~800k wallets). It is an eval-time choice only. |
-> | `--tracer_score` | — | `ce_signed` | Matches the reported configuration; the argparse default is `ce`. |
-> | `--shapley_topk` | — | bounded (e.g. `8`) | Each coalition is a full backbone forward. Unbounded, the φ export does not terminate in practice. |
-
-### Memory-constrained options
-
-| Flag | Effect |
-|------|--------|
-| `--subsample_tx 20000` | Keep all fraud plus random licit transactions |
-| `--labeled_only true` | Labelled transactions and their 1-hop neighbours only |
-| `--fraud_subgraph true` | All transactions, wallets restricted to a BFS neighbourhood of labelled ones |
-| `--include_addr_addr true` | Include wallet→wallet edges (needed for the reported configuration; costs RAM) |
+`run_pipeline.py --dry-run` prints the exact commands it would run, including every
+flag — the easiest way to see the full configuration.
 
 ## Explainability viewer
 
-`frontend_temp/` is a React + Vite viewer for the exported chains, presenting
-three layers:
-
-- **L1** — the money chain as a graph, with causal responsibility shown per node
-- **L2** — per-node contribution bars across the chain
-- **L3** — per-feature causal attribution at the responsibility pivot
-
-It reads the exports directly from `viz/` and `results/` (see
-`frontend_temp/vite.config.ts`), so regenerating the data is picked up without
-copying files around.
+`frontend_temp/` is a React + Vite viewer for the exported chains, in three layers:
+the chain as a graph (L1), per-node contribution bars (L2), and per-feature causal
+attribution at the responsibility pivot (L3).
 
 ```bash
 cd CI-RCT/frontend_temp
 npm install
-npm run dev       # live, reads the exports as they are regenerated
+npm run dev       # live — picks up regenerated exports automatically
 npm run build     # static bundle in dist/, data included
 ```
 
-## Repository layout
+## Project structure
 
 ```
 CI-RCT/
@@ -197,55 +231,58 @@ CI-RCT/
   train.py             training (Phase 1 no-GAN / Phase 2 WGAN-GP)
   evaluate.py          four-dimension evaluation and chain export
   infer.py             single-graph inference
-  model/               the four modules; tracer_strategies/ holds tracer variants
-  utils/               Elliptic++ loaders, causal graph construction, metrics, LFPN
-  configs/config.py    frozen CI_RCT_Config dataclass — nothing is hardcoded in model files
+  model/               the four modules
+  utils/               loaders, causal graph construction, metrics
+  configs/config.py    frozen hyperparameters
   scripts/             ablation drivers, figure and export utilities
   tests/               pytest suite
   frontend_temp/       explainability viewer
 CXGNN/                 upstream reference implementation, used as a baseline
 ```
 
-### A note on global node IDs
-
-`TypedCausalGraph` and `RootCauseTracer` address nodes by **global IDs** that
-concatenate all node types in sorted order. `compute_type_offsets(data)`
-converts local indices to global ones. Passing a local index where a global
-one is expected is the most common source of confusing results.
-
 ## Tests
 
 ```bash
 cd CI-RCT
 pytest tests/
-pytest tests/ -v --cov=model --cov=utils --cov=pipeline
 ```
 
-## Related work and attribution
+## Related work
 
 `CXGNN/` vendors the reference implementation of **"Graph Neural Network Causal
 Explanation via Neural Causal Models"** (ECCV 2024,
 [arXiv:2407.09378](https://arxiv.org/pdf/2407.09378)), used here as a related-work
-baseline. It is MIT licensed and carries its own `LICENSE` file; it is not
-authored by this project.
+baseline. It is MIT licensed, carries its own `LICENSE`, and is not authored by this
+project.
 
 ## Citation
 
-<!-- TODO: fill in author, thesis title, institution and year before publishing. -->
+If you use this work in your research, please cite the thesis.
+
+**APA 7th**
+
+> Shih, Y. (2026). *CI-RCT: Explainable root cause tracing on heterogeneous
+> graphs based on causal intervention* [Master's thesis, Tamkang University].
+> Tamkang University Institutional Repository. <!-- TODO: thesis URL -->
+
+**BibTeX**
 
 ```bibtex
-@mastersthesis{circt,
-  title  = {{TODO: thesis title}},
-  author = {{TODO: author}},
-  school = {{TODO: institution}},
-  year   = {{TODO}}
+@mastersthesis{shih2026circt,
+  title   = {{CI-RCT: Explainable Root Cause Tracing on Heterogeneous Graphs Based on Causal Intervention}},
+  author  = {Shih, Yuhung},
+  school  = {Tamkang University},
+  type    = {Master's thesis},
+  address = {New Taipei City, Taiwan},
+  year    = {2026},
+  url     = {TODO}
 }
 ```
 
 ## License
 
-<!-- TODO: choose a license and add a LICENSE file at the repository root.
-     Without one, the default is "all rights reserved" and nobody may reuse
-     the code. Note that CXGNN/ is separately MIT licensed. -->
+Released under the [MIT License](LICENSE).
 
-TODO.
+`CXGNN/` is the work of other authors and is covered by its own MIT license
+(`CXGNN/LICENSE`), not by this one. The Elliptic++ dataset is not redistributed
+here and remains subject to its publishers' terms.
