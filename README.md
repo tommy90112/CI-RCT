@@ -282,7 +282,3 @@ If you use this work in your research, please cite the thesis.
 ## License
 
 Released under the [MIT License](LICENSE).
-
-`CXGNN/` is the work of other authors and is covered by its own MIT license
-(`CXGNN/LICENSE`), not by this one. The Elliptic++ dataset is not redistributed
-here and remains subject to its publishers' terms.
