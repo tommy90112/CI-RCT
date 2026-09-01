@@ -95,12 +95,12 @@ pip install -r CI-RCT/requirements.txt
 
 > **請先安裝 PyG 的擴充套件。**
 > `torch-scatter` 與 `torch-sparse` 是針對特定 torch 版本編譯的。若版本不匹配，`import torch_geometric` 會直接 **segfault 而不是拋出例外**。請依
-> [PyG 官方說明](https：//pytorch-geometric.readthedocs.io/en/latest/install/installation.html)
+> [PyG 官方說明](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html)
 > 安裝對應你 torch 與 CUDA 版本的套件。`run_pipeline.py` 會在啟動任何長時間工作前先驗證這一點。
 
 ### 資料集
 
-本專案不轉散布 Elliptic++。請[自行下載](https：//github.com/git-disl/EllipticPlusPlus)並依下列結構放置：
+本專案不轉散布 Elliptic++。請[自行下載](https://github.com/git-disl/EllipticPlusPlus)並依下列結構放置：
 
 ```
 CI-RCT/data/Elliptic++/
@@ -185,20 +185,20 @@ pytest tests/
 
 **APA 7th (English)**
 
-> Shih， Y. (2026). *CI-RCT： Explainable root cause tracing on heterogeneous
-> graphs based on causal intervention* [Master's thesis， Tamkang University].
-> Tamkang University Institutional Repository. <!-- TODO： thesis URL -->
+> Shih, Y. (2026). *CI-RCT: Explainable root cause tracing on heterogeneous
+> graphs based on causal intervention* [Master's thesis, Tamkang University].
+> Tamkang University Institutional Repository. <!-- TODO: thesis URL -->
 
 **BibTeX**
 
 ```bibtex
-@mastersthesis{shih2026circt，
-  title   = {{CI-RCT： Explainable Root Cause Tracing on Heterogeneous Graphs Based on Causal Intervention}}，
-  author  = {Shih， Yuhung}，
-  school  = {Tamkang University}，
-  type    = {Master's thesis}，
-  address = {New Taipei City， Taiwan}，
-  year    = {2026}，
+@mastersthesis{shih2026circt,
+  title   = {{CI-RCT: Explainable Root Cause Tracing on Heterogeneous Graphs Based on Causal Intervention}},
+  author  = {Shih, Yuhung},
+  school  = {Tamkang University},
+  type    = {Master's thesis},
+  address = {New Taipei City, Taiwan},
+  year    = {2026},
   url     = {TODO}
 }
 ```
