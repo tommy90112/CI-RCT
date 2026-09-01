@@ -40,5 +40,5 @@ explainability_viz_spec.md
 frontend_viz_plan.md
 
 # ── 結果輸出 ─────────────────────────────────
-results/chain_neighbors.json
+# results/chain_neighbors.json 進版控：GitHub Pages 建置需要它做一階鄰居疊圖
 results/typology_scan.csv

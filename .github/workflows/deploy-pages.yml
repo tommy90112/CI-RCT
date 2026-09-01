@@ -1,0 +1,61 @@
+# Build the explainability viewer (CI-RCT/frontend_temp) and publish it to
+# GitHub Pages at https://tommy90112.github.io/CI-RCT/
+#
+# The Vite build copies viz/crime_chains*.json and results/chain_neighbors.json
+# into dist/ (see frontend_temp/vite.config.ts writeBundle), so a fresh export
+# only needs a commit to redeploy.
+name: Deploy viewer to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "CI-RCT/frontend_temp/**"
+      - "CI-RCT/viz/crime_chains*.json"
+      - "CI-RCT/results/chain_neighbors.json"
+      - "CI-RCT/results/crime_chains.csv"
+      - ".github/workflows/deploy-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: CI-RCT/frontend_temp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: CI-RCT/frontend_temp/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Verify data files were bundled
+        run: |
+          for f in crime_chains.json crime_chains_transaction.json crime_chains_wallet.json chain_neighbors.json; do
+            test -s "dist/$f" || { echo "missing dist/$f"; exit 1; }
+          done
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: CI-RCT/frontend_temp/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
