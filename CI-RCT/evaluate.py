@@ -153,11 +153,10 @@ def parse_args() -> argparse.Namespace:
     # φ machinery is bypassed, byte-identical to the prior Metric C. The φ
     # variants rank each hop's parents by Causal Shapley computed from the
     # backbone do-intervention coalition value (non-additive), so 'asym' vs
-    # 'sym' isolates the empirical value of temporal asymmetry. 'cxgnn_ncm' is
-    # the external CXGNN (ECCV 2024) per-target local-NCM baseline.
+    # 'sym' isolates the empirical value of temporal asymmetry.
     parser.add_argument("--explainer", type=str, default="ce_only",
                         choices=["ce_only", "phi_asym", "phi_sym",
-                                 "saliency", "cxgnn_ncm"])
+                                 "saliency"])
     parser.add_argument("--shapley_permutations", type=int, default=64,
                         help="Monte-Carlo permutations for symmetric Shapley "
                              "(--explainer phi_sym). Exact enumeration is used "

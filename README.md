@@ -237,7 +237,6 @@ CI-RCT/
   scripts/             ablation drivers, figure and export utilities
   tests/               pytest suite
   frontend_temp/       explainability viewer
-CXGNN/                 upstream reference implementation, used as a baseline
 ```
 
 ## Tests
@@ -246,14 +245,6 @@ CXGNN/                 upstream reference implementation, used as a baseline
 cd CI-RCT
 pytest tests/
 ```
-
-## Related work
-
-`CXGNN/` vendors the reference implementation of **"Graph Neural Network Causal
-Explanation via Neural Causal Models"** (ECCV 2024,
-[arXiv:2407.09378](https://arxiv.org/pdf/2407.09378)), used here as a related-work
-baseline. It is MIT licensed, carries its own `LICENSE`, and is not authored by this
-project.
 
 ## Citation
 
@@ -281,4 +272,5 @@ If you use this work in your research, please cite the thesis.
 
 ## License
 
-Released under the [MIT License](LICENSE).
+Released under the [MIT License](LICENSE). Third-party components are covered
+by their own terms; see [NOTICE](NOTICE).

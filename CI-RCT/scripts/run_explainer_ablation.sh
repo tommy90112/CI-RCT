@@ -16,9 +16,7 @@
 #   phi_asym  — MAIN: asymmetric Causal Shapley (do-interv.)   → our method
 # The phi_asym − saliency gap is the headline "intervention beats correlation"
 # result; phi_asym − ce_only isolates Shapley; phi_asym − phi_sym isolates
-# temporal asymmetry. cxgnn_ncm is an EXTERNAL baseline (a comparison, not an
-# ablation of our own parts) — keep it in the comparison table, run it here only
-# for convenience since it shares the same eval harness.
+# temporal asymmetry.
 #
 # Usage (from CI-RCT/):
 #     bash scripts/run_explainer_ablation.sh
@@ -74,7 +72,6 @@ run() {  # $1 = explainer name; rest = extra overrides (e.g. --max_explain N)
 run saliency
 run ce_only
 run phi_asym
-run cxgnn_ncm
 # Symmetric ablation baseline LAST, on a small subset (expensive). NOTE: for the
 # phi_asym-vs-phi_sym comparison, re-run phi_asym at the same PHI_SYM_MAX so both
 # are scored on identical targets.

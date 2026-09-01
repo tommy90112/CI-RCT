@@ -2,8 +2,7 @@
 Smoke + behaviour tests for the explainer registry (model/explainers.py).
 
 Uses a small real HGT backbone so the φ explainers exercise the actual
-backbone do-intervention coalition value.  cxgnn_ncm is covered separately
-(test_cxgnn_ncm_adapter.py).
+backbone do-intervention coalition value.
 """
 import sys
 from pathlib import Path

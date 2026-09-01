@@ -176,7 +176,6 @@ CI-RCT/
   scripts/             消融實驗驅動、繪圖與匯出工具
   tests/               pytest 測試套件
   frontend_temp/       可解釋性檢視器
-CXGNN/                 上游參考實作,作為基線使用
 ```
 
 ## 測試
@@ -185,10 +184,6 @@ CXGNN/                 上游參考實作,作為基線使用
 cd CI-RCT
 pytest tests/
 ```
-
-## 相關工作
-
-`CXGNN/` 內含 **"Graph Neural Network Causal Explanation via Neural Causal Models"**(ECCV 2024,[arXiv:2407.09378](https://arxiv.org/pdf/2407.09378))的原作者參考實作,本專案將其作為相關工作基線。該目錄採 MIT 授權、附有自己的 `LICENSE`,**非本專案作者所撰寫**。
 
 ## 引用
 
@@ -220,4 +215,4 @@ pytest tests/
 
 ## 授權
 
-本專案採用 [MIT License](LICENSE) 釋出。
+本專案採用 [MIT License](LICENSE) 釋出。第三方組件適用其各自的條款,詳見 [NOTICE](NOTICE)。

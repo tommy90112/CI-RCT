@@ -25,9 +25,6 @@ Registered explainers (selected by ``--explainer``):
                    phi_asym − saliency is the empirical value of causal
                    intervention over plain correlation. See
                    model/saliency_explainer.py.
-  * ``cxgnn_ncm``— external SOTA baseline (CXGNN, ECCV 2024): per-target local
-                   NCM subgraph. Implemented in model/cxgnn_ncm_adapter.py and
-                   wired in here when available.
 
 The φ explainers read out the ORIGINAL target's fraud probability while
 intervening on each hop's parent edges (readout/intervene decoupling), so the
@@ -46,7 +43,7 @@ from model.coalition_value import make_backbone_coalition_value_fn
 # explain(target_node, causal_effects) -> set of explanatory node ids.
 ExplainFn = Callable[[int, Dict[Tuple[int, int], float]], Set[int]]
 
-EXPLAINER_CHOICES = ("ce_only", "phi_asym", "phi_sym", "saliency", "cxgnn_ncm")
+EXPLAINER_CHOICES = ("ce_only", "phi_asym", "phi_sym", "saliency")
 
 
 def _make_phi_score_fn(
@@ -113,7 +110,6 @@ def build_explainer(
     n_permutations: int = 64,
     shapley_topk: int = None,
     coalition_subgraph: bool = False,
-    cxgnn_kwargs: dict = None,
 ) -> ExplainFn:
     """Return an ``explain(target, causal_effects) -> set[int]`` for ``name``.
 
@@ -126,7 +122,6 @@ def build_explainer(
         target_node_type: The classifier's target node type (readout type).
         fraud_class:      Logit column of the fraud class (default 1).
         n_permutations:   Monte-Carlo permutations for symmetric Shapley.
-        cxgnn_kwargs:     Extra args forwarded to the CXGNN-NCM adapter.
     """
     if name not in EXPLAINER_CHOICES:
         raise ValueError(
@@ -189,13 +184,5 @@ def build_explainer(
             )
             return set(chain)
         return explain
-
-    if name == "cxgnn_ncm":
-        from model.cxgnn_ncm_adapter import build_cxgnn_ncm_explainer
-        return build_cxgnn_ncm_explainer(
-            model=model, data=data, causal_graph=causal_graph,
-            type_offsets=type_offsets, target_node_type=target_node_type,
-            **(cxgnn_kwargs or {}),
-        )
 
     raise AssertionError("unreachable")  # pragma: no cover

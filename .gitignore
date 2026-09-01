@@ -20,5 +20,6 @@ training_command.md
 build_litreview_docx.py
 /scripts/
 
-# Claude Code 的 session 交接紀錄（含大量內部除錯脈絡）
-.claude/handoff/
+# Claude Code 的本機設定與 session 交接紀錄（不隨程式碼公開）
+.claude/
+/CLAUDE.md

@@ -17,9 +17,7 @@ edge-cutting operation.
 Per-edge-type MLPs capture semantically distinct causal mechanisms.
 Node type embeddings distinguish node roles in the graph ontology.
 
-Standalone module — no CXGNN dependency.
-
-Reference: CI-RCT_Thesis_Plan.md § 5.3.2
+Standalone module — no external causal-modelling dependency.
 """
 from typing import Dict, List, Optional, Tuple
 

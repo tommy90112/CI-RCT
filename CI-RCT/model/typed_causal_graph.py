@@ -8,8 +8,7 @@ Implements Pearl SCM's directed DAG structure (pa / ch dicts) with:
   - Timestamps for temporal precedence verification
   - Kahn's algorithm topological ordering (upstream → downstream)
 
-Replaces the previous CXGNN-inheriting version.  No external causal
-module dependency.
+Self-contained — no external causal-modelling dependency.
 
 Reference: CI-RCT_Thesis_Plan.md § 5.3.1
 """

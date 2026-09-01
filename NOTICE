@@ -1,0 +1,14 @@
+CI-RCT
+Copyright (c) 2026 Shih, Yuhung
+
+The MIT License in the LICENSE file covers the CI-RCT source code authored for
+this project. It does not cover the following.
+
+--------------------------------------------------------------------------------
+Elliptic++ dataset
+--------------------------------------------------------------------------------
+
+Not redistributed in this repository. Users must obtain the dataset from its
+publishers and remain subject to their terms of use.
+
+https://github.com/git-disl/EllipticPlusPlus
