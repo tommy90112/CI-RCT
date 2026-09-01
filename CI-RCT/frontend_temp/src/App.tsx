@@ -1,10 +1,11 @@
 /**
  * Root component for the CI-RCT crime-chain explainability viewer.
  *
- * Layout: the whole viewport is a 3D node-link graph (GraphCanvas). A LEFT
- * drawer (hover/click) holds node-display controls; a BOTTOM drawer (click)
- * holds the L1/L2/L3 explainability panel. A slim glass header floats on top
- * with the title + dataset/chain meta chips + a φ-approximation badge.
+ * Layout: a fixed app bar (TopBar) on top; the rest of the viewport is a 3D
+ * node-link graph (GraphCanvas). A LEFT drawer (hover/click) holds the chain
+ * picker + node-display controls; a BOTTOM drawer (click) holds the L1/L2/L3
+ * explainability panel. The app bar carries the dataset variant, a stepper
+ * for the current chain, status chips and explicit drawer toggles.
  */
 import { useCallback, useMemo, useState } from 'react';
 import type { ChangeEvent } from 'react';
@@ -28,11 +29,12 @@ import {
 import { buildGraphView } from './lib/neighbors';
 import { useCrimeChains } from './hooks/useCrimeChains';
 import { useChainNeighbors } from './hooks/useChainNeighbors';
+import { useChainFilter } from './hooks/useChainFilter';
 import { Drawer } from './components/Drawer';
-import { PhiAsym } from './components/Phi';
 import { GraphCanvas } from './components/GraphCanvas';
 import { ControlPanel } from './components/ControlPanel';
 import { ExplainPanel } from './components/ExplainPanel';
+import { TopBar, TOP_BAR_HEIGHT } from './components/TopBar';
 
 const LEFT_DRAWER_WIDTH = 340;
 const BOTTOM_DRAWER_HEIGHT = 340;
@@ -74,25 +76,30 @@ export function App() {
   // stays on the current view with its drawers open and surfaces the error.
   if (loading && !data) {
     return (
-      <div className="w-screen h-screen flex items-center justify-center bg-slate-950 text-slate-300">
-        <div className="font-mono text-sm animate-pulse">載入犯罪鏈資料中…</div>
+      <div className="flex h-screen w-screen items-center justify-center bg-ink-950 text-ink-300">
+        <div className="flex items-center gap-3">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-brand/50" />
+            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-brand" />
+          </span>
+          <span className="font-mono text-[12px]">載入犯罪鏈資料中…</span>
+        </div>
       </div>
     );
   }
 
   if (!data) {
     return (
-      <div className="w-screen h-screen flex items-center justify-center bg-slate-950 px-6">
-        <div className="max-w-md w-full bg-slate-900/85 backdrop-blur-sm border border-slate-700/60 rounded-xl shadow-xl p-6 text-slate-300">
-          <h1 className="text-sky-400 text-lg font-semibold mb-2">
-            CI-RCT · 詐欺資金鏈可解釋視覺化
-          </h1>
-          <p className="text-xs text-slate-400 mb-4">
+      <div className="flex h-screen w-screen items-center justify-center bg-ink-950 px-6">
+        <div className="float w-full max-w-md p-6 text-ink-200 animate-slide-up">
+          <div className="eyebrow mb-2">CI-RCT</div>
+          <h1 className="text-lg font-semibold tracking-tight text-ink-100">詐欺資金鏈可解釋視覺化</h1>
+          <p className="mt-2 text-[12px] leading-relaxed text-ink-300">
             找不到資料。請選取
-            <span className="font-mono text-[11px] text-sky-300"> viz/crime_chains.json </span>
-            (或相容的 crime_chains.csv)。
+            <span className="mx-1 font-mono text-[11px] text-brand">viz/crime_chains.json</span>
+            （或相容的 crime_chains.csv）。
           </p>
-          <label className="inline-flex items-center gap-2 cursor-pointer rounded-lg bg-sky-600/90 hover:bg-sky-500 px-3 py-2 text-xs font-medium text-white transition-colors">
+          <label className="btn-primary mt-5 cursor-pointer">
             選取 crime_chains.json
             <input
               type="file"
@@ -102,7 +109,7 @@ export function App() {
             />
           </label>
           {error && (
-            <p className="mt-4 text-[11px] font-mono text-rose-400 break-words">{error}</p>
+            <p className="mt-4 break-words font-mono text-[11px] text-rose-300">{error}</p>
           )}
         </div>
       </div>
@@ -167,6 +174,13 @@ function Viewer({ data, source, variant, dataError, onLoadFile, onVariantChange 
     setConvergeRootId(null);
   }, []);
 
+  const maxIdx = data.chains.length - 1;
+  const safeIdx = clamp(selectedIdx, 0, maxIdx);
+  const selectedChain = data.chains[safeIdx];
+
+  // Search / φ-only filter shared by the app-bar stepper and the panel picker.
+  const filter = useChainFilter(data, safeIdx, handleSelectedIdxChange);
+
   // Enter/exit the macro convergence view; entering jumps to a representative chain.
   const handleConvergeChange = useCallback(
     (rootRealId: string | null) => {
@@ -192,10 +206,6 @@ function Viewer({ data, source, variant, dataError, onLoadFile, onVariantChange 
   }, []);
 
   const merged = useMemo(() => buildMergedGraph(data), [data]);
-
-  const maxIdx = data.chains.length - 1;
-  const safeIdx = clamp(selectedIdx, 0, maxIdx);
-  const selectedChain = data.chains[safeIdx];
 
   const rows = useMemo(() => buildResponsibilityRows(selectedChain), [selectedChain]);
   const pivotGlobal = useMemo(() => pivotGlobalOf(selectedChain), [selectedChain]);
@@ -242,48 +252,26 @@ function Viewer({ data, source, variant, dataError, onLoadFile, onVariantChange 
     selectedChain.nodes.find(n => n.global === resolvedGlobal) ?? null;
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-slate-950">
-      {/* Top header bar */}
-      <header className="absolute top-0 inset-x-0 z-30 flex items-center gap-3 px-4 h-12 bg-gradient-to-r from-slate-950/95 via-slate-900/90 to-slate-950/80 backdrop-blur-xl border-b border-slate-700/50 shadow-xl shadow-black/30">
-        <div className="flex items-center gap-2 whitespace-nowrap">
-          <span className="relative flex h-2.5 w-2.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400/60" />
-            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-sky-400" />
-          </span>
-          <h1 className="bg-gradient-to-r from-sky-300 to-indigo-300 bg-clip-text text-sm font-bold tracking-tight text-transparent">
-            CI-RCT
-          </h1>
-          <span className="text-sm font-medium text-slate-300">詐欺資金鏈可解釋視覺化</span>
-        </div>
-        {convergeRootId && (
-          <button
-            type="button"
-            onClick={() => handleConvergeChange(null)}
-            className="ml-2 inline-flex items-center gap-1.5 rounded-full border border-rose-500/40 bg-rose-500/10 px-2.5 py-0.5 text-[11px] font-medium text-rose-300 hover:bg-rose-500/20"
-            title="退出收斂視圖"
-          >
-            收斂視圖 · {convergeCount} 條 → 源頭 ✕
-          </button>
-        )}
-        <span className="ml-auto">
-          {!datasetHasPhi ? (
-            <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-0.5 text-[11px] font-medium text-amber-300">
-              此資料無 <PhiAsym />
-            </span>
-          ) : !chainHasPhi ? (
-            <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-0.5 text-[11px] font-medium text-amber-300">
-              此鏈為 wallet-target(無 <PhiAsym />,僅 CE)
-            </span>
-          ) : (
-            <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-medium text-emerald-300">
-              <PhiAsym /> ✓ pivot 已標示
-            </span>
-          )}
-        </span>
-      </header>
+    <div className="relative h-screen w-screen overflow-hidden bg-ink-950">
+      <TopBar
+        variant={variant}
+        onVariantChange={onVariantChange}
+        chain={selectedChain}
+        selectedIdx={safeIdx}
+        filter={filter}
+        totalChains={data.chains.length}
+        convergeCount={convergeCount}
+        onExitConverge={() => handleConvergeChange(null)}
+        datasetHasPhi={datasetHasPhi}
+        chainHasPhi={chainHasPhi}
+        leftOpen={leftOpen}
+        bottomOpen={bottomOpen}
+        onToggleLeft={() => setLeftOpen(o => !o)}
+        onToggleBottom={() => setBottomOpen(o => !o)}
+      />
 
-      {/* Full-screen node-link graph */}
-      <div className="absolute inset-0">
+      {/* Full-screen node-link graph, below the app bar */}
+      <main className="absolute inset-x-0 bottom-0" style={{ top: TOP_BAR_HEIGHT }}>
         <GraphCanvas
           merged={merged}
           display={display}
@@ -295,7 +283,7 @@ function Viewer({ data, source, variant, dataError, onLoadFile, onVariantChange 
           neighborIndex={neighborIndex}
           onSelectNode={handleSelectNode}
         />
-      </div>
+      </main>
 
       {/* Left control drawer (hover or click) */}
       <Drawer
@@ -305,6 +293,7 @@ function Viewer({ data, source, variant, dataError, onLoadFile, onVariantChange 
         hoverOpen
         tab="控制台"
         size={LEFT_DRAWER_WIDTH}
+        topOffset={TOP_BAR_HEIGHT}
       >
         <ControlPanel
           data={data}
@@ -312,11 +301,10 @@ function Viewer({ data, source, variant, dataError, onLoadFile, onVariantChange 
           onDisplayChange={setDisplay}
           selectedIdx={safeIdx}
           onSelectedIdxChange={handleSelectedIdxChange}
+          filter={filter}
           rootGroups={rootGroups}
           convergeRootId={convergeRootId}
           onConvergeChange={handleConvergeChange}
-          variant={variant}
-          onVariantChange={onVariantChange}
           dataError={dataError}
           visible={visible}
           neighborSource={view.neighborSource}

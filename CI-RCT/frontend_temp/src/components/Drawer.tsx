@@ -2,37 +2,44 @@ import { useState, type ReactNode } from 'react';
 
 // Reusable collapsible drawer primitive.
 //
-// Interaction: hovering the edge tab PEEKS the panel open; clicking the tab
+// Interaction: hovering the edge grip PEEKS the panel open; clicking the grip
 // PINS it open (stays open after the mouse leaves) — click again to unpin.
 // `open` is the controlled pinned state; transient hover is internal. The panel
-// and its tab live in one flex wrapper that translates as a unit, so collapsing
-// slides the panel off-screen while the tab stays pinned to the edge.
+// and its grip live in one wrapper that translates as a unit, so collapsing
+// slides the panel off-screen while the grip stays fixed to the edge.
 
 interface DrawerProps {
   side: 'left' | 'bottom';
   /** Pinned-open state (controlled). Hover peeking is handled internally. */
   open: boolean;
-  /** Tab click toggles the pin → onOpenChange(!open). */
+  /** Grip click toggles the pin → onOpenChange(!open). */
   onOpenChange: (open: boolean) => void;
-  tab: ReactNode; // label shown on the edge tab
+  tab: ReactNode; // label shown on the edge grip
   hoverOpen?: boolean; // peek open on hover
   size?: number; // open width(px) for left / height(px) for bottom
+  /** Distance from the top of the viewport reserved for the app bar (left side only). */
+  topOffset?: number;
   children: ReactNode;
   className?: string;
 }
 
 const LEFT_DEFAULT_SIZE = 320;
 const BOTTOM_DEFAULT_SIZE = 340;
-const LEFT_TAB_WIDTH = 34;
-const BOTTOM_TAB_HEIGHT = 32;
+const LEFT_GRIP_WIDTH = 22;
+const BOTTOM_GRIP_HEIGHT = 26;
 
-const PANEL_CLASS =
-  'bg-slate-900/92 backdrop-blur-xl border border-slate-700/50 shadow-2xl shadow-black/40';
+const GRIP_BASE =
+  'group relative flex items-center justify-center select-none bg-ink-900/90 backdrop-blur-xl ' +
+  'text-ink-400 ring-1 ring-white/[0.06] transition-colors duration-200 hover:bg-ink-800 hover:text-brand';
 
-const TAB_BASE =
-  'group relative flex items-center justify-center select-none transition-colors ' +
-  'bg-slate-900/92 backdrop-blur-xl border border-slate-700/50 ' +
-  'text-slate-400 hover:text-sky-300 hover:bg-slate-800/90';
+function Chevron({ dir }: { dir: 'left' | 'right' | 'up' | 'down' }) {
+  const rotate = { right: 0, down: 90, left: 180, up: 270 }[dir];
+  return (
+    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ transform: `rotate(${rotate}deg)` }} className="transition-transform duration-300">
+      <path d="M3.5 1.5 7 5 3.5 8.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
 export function Drawer({
   side,
@@ -41,6 +48,7 @@ export function Drawer({
   tab,
   hoverOpen = false,
   size,
+  topOffset = 0,
   children,
   className,
 }: DrawerProps) {
@@ -54,47 +62,52 @@ export function Drawer({
     : {};
   const toggle = () => onOpenChange(!open);
 
-  // Small pin dot: filled when pinned, ring when only peeking.
+  // Pin indicator: filled when pinned, hollow when only peeking.
   const pinDot = (
     <span
-      className={`inline-block h-1.5 w-1.5 rounded-full ${
-        open ? 'bg-sky-400' : 'border border-slate-500'
+      className={`inline-block h-1.5 w-1.5 rounded-full transition-colors ${
+        open ? 'bg-brand' : 'ring-1 ring-ink-400'
       }`}
+      aria-hidden
     />
   );
 
   if (isLeft) {
     return (
       <div
-        className="absolute left-0 top-0 z-20 flex h-full items-center transition-transform duration-300 ease-out"
-        style={{ transform: `translateX(${visible ? 0 : -openSize}px)` }}
+        className="absolute left-0 z-20 flex items-center transition-transform duration-300 ease-out"
+        style={{
+          top: topOffset,
+          height: `calc(100% - ${topOffset}px)`,
+          transform: `translateX(${visible ? 0 : -openSize}px)`,
+        }}
       >
-        <div
+        <aside
           {...handlers}
-          className={[PANEL_CLASS, 'rounded-r-2xl flex flex-col overflow-hidden', className ?? ''].join(' ')}
-          style={{ width: openSize, height: '100%' }}
+          aria-label={typeof tab === 'string' ? tab : undefined}
+          className={['panel hairline flex h-full flex-col overflow-hidden border-r', className ?? ''].join(' ')}
+          style={{ width: openSize }}
         >
-          <div className="flex-1 overflow-y-auto overflow-x-hidden px-3.5 pt-14 pb-4">{children}</div>
-        </div>
+          <div className="scroll-thin flex-1 overflow-y-auto overflow-x-hidden px-4 pb-6 pt-4">{children}</div>
+        </aside>
 
-        {/* Compact edge tab: text + arrow only, vertically centred (small hit area). */}
+        {/* Edge grip: vertical label + chevron, centred. */}
         <button
           {...handlers}
           type="button"
           onClick={toggle}
           aria-expanded={visible}
-          className={[TAB_BASE, 'self-center rounded-r-xl flex-col gap-1.5 py-2.5'].join(' ')}
-          style={{ width: LEFT_TAB_WIDTH }}
+          aria-label={`${open ? '收合' : '展開'}${typeof tab === 'string' ? tab : ''}`}
+          className={[GRIP_BASE, 'ml-[-1px] flex-col gap-2 rounded-r-lg py-3'].join(' ')}
+          style={{ width: LEFT_GRIP_WIDTH }}
         >
           <span
-            className="text-[11px] font-semibold tracking-[0.15em] text-sky-300/90"
+            className="text-[10px] font-semibold tracking-[0.2em] text-ink-300 group-hover:text-brand"
             style={{ writingMode: 'vertical-rl', textOrientation: 'upright' }}
           >
             {tab}
           </span>
-          <span className="text-slate-500 transition-transform group-hover:translate-x-0.5">
-            {visible ? '‹' : '›'}
-          </span>
+          <Chevron dir={visible ? 'left' : 'right'} />
           {pinDot}
         </button>
       </div>
@@ -107,27 +120,29 @@ export function Drawer({
       className="absolute bottom-0 left-0 z-20 flex w-full flex-col items-center transition-transform duration-300 ease-out"
       style={{ transform: `translateY(${visible ? 0 : openSize}px)` }}
     >
-      {/* Compact edge tab: text + arrow only, horizontally centred (small hit area). */}
+      {/* Edge grip: pill with label + chevron, centred. */}
       <button
         {...handlers}
         type="button"
         onClick={toggle}
         aria-expanded={visible}
-        className={[TAB_BASE, 'self-center rounded-t-xl border-b-0 gap-2 px-4'].join(' ')}
-        style={{ height: BOTTOM_TAB_HEIGHT }}
+        aria-label={`${open ? '收合' : '展開'}${typeof tab === 'string' ? tab : ''}`}
+        className={[GRIP_BASE, 'mb-[-1px] gap-2 rounded-t-lg px-4'].join(' ')}
+        style={{ height: BOTTOM_GRIP_HEIGHT }}
       >
-        <span className="text-slate-500">{visible ? '▾' : '▴'}</span>
-        <span className="text-[12px] font-semibold tracking-wider text-sky-300/90">{tab}</span>
+        <Chevron dir={visible ? 'down' : 'up'} />
+        <span className="text-[11px] font-semibold tracking-[0.12em] text-ink-300 group-hover:text-brand">{tab}</span>
         {pinDot}
       </button>
 
-      <div
+      <section
         {...handlers}
-        className={[PANEL_CLASS, 'flex w-full flex-col overflow-hidden border-t-0', className ?? ''].join(' ')}
+        aria-label={typeof tab === 'string' ? tab : undefined}
+        className={['panel hairline flex w-full flex-col overflow-hidden border-t', className ?? ''].join(' ')}
         style={{ height: openSize }}
       >
         <div className="flex-1 overflow-hidden">{children}</div>
-      </div>
+      </section>
     </div>
   );
 }

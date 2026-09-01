@@ -20,7 +20,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import * as THREE from 'three';
 import { chainSets, idOf, linkKey } from '../lib/graph';
 import { buildGraphView } from '../lib/neighbors';
-import { PhiAsym } from './Phi';
+import { GraphLegend } from './GraphLegend';
 import {
   COLOR,
   linkColorByCe,
@@ -372,7 +372,7 @@ export function GraphCanvas({
     width: dims.width,
     height: dims.height,
     graphData,
-    backgroundColor: '#0b0f14',
+    backgroundColor: '#0b0d11',
     nodeColor,
     nodeVal,
     nodeLabel,
@@ -394,32 +394,22 @@ export function GraphCanvas({
 
   return (
     <div ref={containerRef} className="absolute inset-0 overflow-hidden">
-      {/* Tiny legend — top right, offset below the floating header */}
-      <div className="absolute top-16 right-3 z-10 bg-slate-900/90 border border-slate-700/60 rounded-xl p-2.5 backdrop-blur-md shadow-xl text-[11px] leading-relaxed text-slate-200 space-y-1 pointer-events-none">
-        <div className="flex items-center gap-2"><span className="w-2.5 h-2.5" style={{ background: COLOR.tx }} />交易 transaction（方形）</div>
-        <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full" style={{ background: COLOR.wallet }} />錢包 wallet（圓形）</div>
-        <div className="flex items-center gap-2">
-          <span className="flex items-center gap-0.5">
-            <span className="w-2.5 h-2.5 rounded-full" style={{ background: COLOR.fraud }} />
-            <span className="w-2.5 h-2.5" style={{ background: COLOR.fraud }} />
-          </span>
-          非法 illicit（紅色·形狀依型別）
-        </div>
-        <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-full" style={{ background: COLOR.dim }} />一階鄰居（反灰）</div>
-        <div className="flex items-center gap-2 pt-1 border-t border-slate-700/60 mt-1"><span className="w-3.5 h-0.5" style={{ background: COLOR.ceNeg }} />CE 為負（邊寬 ∝ |CE|）</div>
-        <div className="flex items-center gap-2"><span className="w-3.5 h-0.5" style={{ background: COLOR.cePos }} />CE 為正</div>
-        <div className="flex items-center gap-2 pt-1 border-t border-slate-700/60 mt-1"><span className="w-2.5 h-2.5 rounded-full border-2" style={{ borderColor: COLOR.root, background: 'transparent' }} />根因 root（光暈）</div>
-        <div className="flex items-center gap-2"><span style={{ color: COLOR.pivot }}>★</span>元兇 pivot（大小 ∝ <PhiAsym />）</div>
+      {/* Visual-encoding key — top right of the canvas (single source of truth). */}
+      <GraphLegend />
+
+      {/* Zoom / reset controls — bottom right, lifted above the bottom drawer grip */}
+      <div className="float absolute bottom-12 right-3 z-10 flex flex-col overflow-hidden" role="group" aria-label="視角控制">
+        <ZoomButton onClick={() => zoomBy('in')} label="放大">+</ZoomButton>
+        <ZoomButton onClick={() => zoomBy('out')} label="縮小">−</ZoomButton>
+        <ZoomButton onClick={resetView} label="重設視角" last>
+          <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden>
+            <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            <path d="M13.5 2.5v3.2h-3.2" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </ZoomButton>
       </div>
 
-      {/* Zoom / reset controls — bottom right, lifted above the bottom drawer tab */}
-      <div className="absolute bottom-12 right-3 z-10 flex flex-col gap-1.5">
-        <button onClick={() => zoomBy('in')} aria-label="放大" className="w-9 h-9 font-bold bg-slate-800/90 border border-slate-600/70 rounded-lg text-slate-300 hover:bg-slate-700">+</button>
-        <button onClick={() => zoomBy('out')} aria-label="縮小" className="w-9 h-9 font-bold bg-slate-800/90 border border-slate-600/70 rounded-lg text-slate-300 hover:bg-slate-700">−</button>
-        <button onClick={resetView} aria-label="重設視角" className="w-9 h-9 font-bold bg-slate-800/90 border border-slate-600/70 rounded-lg text-slate-300 hover:bg-slate-700">↻</button>
-      </div>
-
-      <Suspense fallback={<div className="flex items-center justify-center h-full text-slate-400 text-sm">載入圖形引擎…</div>}>
+      <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-ink-400">載入圖形引擎…</div>}>
         {is3D ? (
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           <ForceGraph3D
@@ -445,6 +435,24 @@ export function GraphCanvas({
         )}
       </Suspense>
     </div>
+  );
+}
+
+function ZoomButton({
+  onClick, label, last, children,
+}: { onClick: () => void; label: string; last?: boolean; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className={`flex h-9 w-9 items-center justify-center text-[15px] font-semibold text-ink-300 transition-all duration-200 hover:bg-white/[0.06] hover:text-ink-100 active:scale-95 ${
+        last ? '' : 'hairline border-b'
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 

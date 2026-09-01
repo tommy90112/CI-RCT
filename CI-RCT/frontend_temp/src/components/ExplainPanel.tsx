@@ -3,13 +3,14 @@
  * narrative:
  *   L1 結構   = the node-link graph above (GraphCanvas): 金流鏈 + φ_asym 聚光燈
  *   L2 因果責任 = the CE vs φ_asym dual-column bars (追路徑 vs 釘元兇)
- *   L3 根因特徵 = per-node feature attribution (deferred export)
+ *   L3 根因特徵 = feature attribution of the chain's attributed node (its pivot);
+ *               the column is omitted entirely for chains without one
  * Pure presentational: all selection state is lifted to App via onSelectGlobal.
  */
 import type { CrimeChain, CrimeChainNode, ResponsibilityRow } from '../types';
 import { COLOR, phiColor, phiNorm, shortId, typeGlyph } from '../lib/render';
 import { ResponsibilityBars } from './ResponsibilityBars';
-import { FeatureAttribution } from './FeatureAttribution';
+import { FeatureAttribution, hasFeatureAttribution } from './FeatureAttribution';
 import { PhiAsym } from './Phi';
 
 interface ExplainPanelProps {
@@ -29,62 +30,108 @@ export function ExplainPanel({
 }: ExplainPanelProps) {
   const isTp = chain.is_true_positive;
   const verdict = isTp === undefined ? null : isTp ? 'true-positive' : 'false-positive';
-  const verdictColor = isTp === false ? COLOR.ceNeg : COLOR.cePos;
 
   const pivot = rows.find(r => r.is_pivot) ?? null;
   const phiMax = rows.reduce((m, r) => Math.max(m, r.phiAsym != null ? Math.abs(r.phiAsym) : 0), 0);
 
+  // L3 explains the node that actually carries an attribution: the selected
+  // node when it has one (dumps made with --feat_attr_all_nodes), otherwise the
+  // chain's attributed node (its φ_asym pivot). A chain with no attribution at
+  // all simply has no L3 column — L2 takes the full width.
+  const l3Node: CrimeChainNode | null = hasFeatureAttribution(selectedNode)
+    ? selectedNode
+    : chain.nodes.find(hasFeatureAttribution) ?? null;
+  const l3IsPivot = l3Node != null && pivot != null && l3Node.global === pivot.global;
+  const showL3 = l3Node != null;
+
   return (
-    <div className="flex h-full flex-col gap-3 overflow-hidden p-3 text-slate-200">
+    <div className="flex h-full flex-col overflow-hidden text-ink-200">
       {/* Header — narrative + chain summary */}
-      <header className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        <h2 className="text-sm font-semibold text-sky-400">可解釋性面板</h2>
-        <span className="text-[11px] text-slate-400">
-          L1 金流鏈(上方圖)→ L2 因果責任(CE 追路徑 / <PhiAsym /> 釘元兇)→ L3 根因特徵
-        </span>
-        <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-slate-400">
-          <span>
-            tx <span className="text-slate-200">{shortId(chain.target_txid)}</span>
-          </span>
-          <span>
-            深度 <span className="text-slate-200">{chain.depth}</span>
-          </span>
-          {verdict && <span style={{ color: verdictColor }}>{verdict}</span>}
-          {pivot && (
-            <span>
-              pivot{' '}
-              <span style={{ color: COLOR.pivot }}>
-                ★ {typeGlyph(pivot.type)} {shortId(pivot.real_id)} <PhiAsym /> = {pivot.phiAsym?.toFixed(3)}
-              </span>
-            </span>
+      <header className="hairline flex flex-wrap items-center gap-x-5 gap-y-2 border-b px-4 py-2">
+        <h2 className="text-[13px] font-semibold tracking-tight text-ink-100">可解釋性面板</h2>
+
+        <ol className="flex items-center gap-1 text-[10.5px]" aria-label="解釋層級">
+          <Step n="L1" label="金流鏈" hint="上方圖" />
+          <Arrow />
+          <Step n="L2" label="因果責任" hint={<>CE 追路徑 / <PhiAsym /> 釘元兇</>} />
+          {showL3 && (
+            <>
+              <Arrow />
+              <Step n="L3" label="根因特徵" />
+            </>
           )}
-        </div>
+        </ol>
+
+        <dl className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px]">
+          <Stat label="tx" value={shortId(chain.target_txid)} title={chain.target_txid} />
+          <Stat label="深度" value={String(chain.depth)} />
+          {verdict && (
+            <span className={`chip ${isTp ? 'chip-ok' : 'chip-alert'} font-mono`}>{verdict}</span>
+          )}
+          {pivot && (
+            <Stat
+              label="pivot"
+              value={
+                <span style={{ color: COLOR.pivot }}>
+                  ★ {typeGlyph(pivot.type)} {shortId(pivot.real_id)} · <PhiAsym /> = {pivot.phiAsym?.toFixed(3)}
+                </span>
+              }
+              title={pivot.real_id}
+            />
+          )}
+        </dl>
       </header>
 
       {/* Two-column: L2 dual-bars (wide) + L3 feature attribution */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-hidden lg:grid-cols-[3fr_2fr]">
-        <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/85 p-2 shadow-xl backdrop-blur-sm">
-          <div className="mb-1 flex items-baseline gap-2">
-            <span className="text-[11px] font-semibold text-indigo-300">
-              L2 · 因果責任(CE vs <PhiAsym />,逐節點)
-            </span>
-            <span className="font-mono text-[10px] text-slate-500">描述性,非守恆</span>
+      <div
+        className={`grid min-h-0 flex-1 grid-cols-1 gap-px overflow-hidden bg-white/[0.06] ${
+          showL3 ? 'lg:grid-cols-[3fr_2fr]' : ''
+        }`}
+      >
+        <section className="flex min-h-0 flex-col overflow-hidden bg-ink-900/90 px-4 py-2.5">
+          <div className="mb-2 flex items-baseline gap-2">
+            <span className="eyebrow text-brand">L2 · 因果責任</span>
+            <span className="text-[11px] text-ink-300">CE vs <PhiAsym />，逐節點</span>
+            <span className="ml-auto font-mono text-[10px] text-ink-500">描述性，非守恆</span>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto">
+
+          {/* Path breadcrumb: root → … → target ⚑ */}
+          <ChainStrip rows={rows} selectedGlobal={selectedGlobal} onSelect={onSelectGlobal} phiMax={phiMax} />
+
+          <div className="scroll-thin mt-2 min-h-0 flex-1 overflow-auto">
             <ResponsibilityBars rows={rows} selectedGlobal={selectedGlobal} onSelect={onSelectGlobal} />
           </div>
-
-          {/* Compact chain strip: root → … → target ⚑ */}
-          <ChainStrip rows={rows} selectedGlobal={selectedGlobal} onSelect={onSelectGlobal} phiMax={phiMax} />
         </section>
 
-        <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-700/60 bg-slate-900/85 p-2 shadow-xl backdrop-blur-sm">
-          <div className="mb-1 text-[11px] font-semibold text-indigo-300">L3 · 根因特徵</div>
-          <div className="min-h-0 flex-1 overflow-auto">
-            <FeatureAttribution node={selectedNode} />
-          </div>
-        </section>
+        {showL3 && (
+          <section className="scroll-thin flex min-h-0 flex-col overflow-auto bg-ink-900/90 px-4 py-2.5">
+            <FeatureAttribution node={l3Node} isPivot={l3IsPivot} />
+          </section>
+        )}
       </div>
+    </div>
+  );
+}
+
+function Step({ n, label, hint }: { n: string; label: string; hint?: React.ReactNode }) {
+  return (
+    <li className="flex items-center gap-1.5 rounded-md bg-ink-800/70 px-2 py-1 ring-1 ring-white/[0.05]">
+      <span className="font-mono font-semibold text-brand">{n}</span>
+      <span className="text-ink-200">{label}</span>
+      {hint && <span className="text-ink-400">· {hint}</span>}
+    </li>
+  );
+}
+
+function Arrow() {
+  return <li aria-hidden className="px-0.5 text-ink-500">→</li>;
+}
+
+function Stat({ label, value, title }: { label: string; value: React.ReactNode; title?: string }) {
+  return (
+    <div className="flex items-baseline gap-1.5" title={title}>
+      <dt className="text-ink-400">{label}</dt>
+      <dd className="text-ink-100">{value}</dd>
     </div>
   );
 }
@@ -102,7 +149,7 @@ interface ChainStripProps {
  */
 function ChainStrip({ rows, selectedGlobal, onSelect, phiMax }: ChainStripProps) {
   return (
-    <div className="mt-2 flex items-center gap-1 overflow-x-auto border-t border-slate-700/50 pt-2">
+    <div className="scroll-thin flex items-center gap-1 overflow-x-auto pb-1">
       {rows.map((row, i) => {
         const selected = row.global === selectedGlobal;
         const mag = row.phiAsym != null ? Math.abs(row.phiAsym) : 0;
@@ -116,15 +163,15 @@ function ChainStrip({ rows, selectedGlobal, onSelect, phiMax }: ChainStripProps)
               type="button"
               onClick={() => onSelect(row.global)}
               title={`${row.real_id} · CE=${row.ce?.toFixed(4) ?? '—'} · φ_asym=${row.phiAsym?.toFixed(4) ?? '—'}`}
-              className={`rounded-md border px-2 py-1 font-mono text-[10px] transition-colors ${
+              className={`rounded-md px-2 py-1 font-mono text-[10.5px] ring-1 transition-all duration-200 active:scale-[0.98] ${
                 selected
-                  ? 'border-sky-400 bg-sky-400/15 text-sky-200'
-                  : 'border-slate-700/60 bg-slate-800/60 text-slate-300 hover:border-slate-500'
+                  ? 'bg-brand/15 text-brand-soft ring-brand/60'
+                  : 'bg-ink-800/70 text-ink-200 ring-white/[0.06] hover:bg-ink-700 hover:ring-white/10'
               }`}
-              style={selected ? undefined : { borderLeft: `3px solid ${chipColor}` }}
+              style={selected ? undefined : { boxShadow: `inset 3px 0 0 ${chipColor}` }}
             >
               {row.is_pivot && <span className="mr-1" style={{ color: COLOR.pivot }}>★</span>}
-              {row.is_root && !row.is_pivot && <span className="mr-1 text-[9px] text-violet-300">根</span>}
+              {row.is_root && !row.is_pivot && <span className="mr-1 text-[9px]" style={{ color: COLOR.root }}>根</span>}
               {label}
             </button>
           </div>
@@ -136,5 +183,5 @@ function ChainStrip({ rows, selectedGlobal, onSelect, phiMax }: ChainStripProps)
 
 /** Directional connector (upstream→downstream) between two chain chips. */
 function Connector() {
-  return <span className="px-0.5 font-mono text-[9px] text-slate-600">→</span>;
+  return <span className="px-0.5 font-mono text-[9px] text-ink-500">→</span>;
 }
