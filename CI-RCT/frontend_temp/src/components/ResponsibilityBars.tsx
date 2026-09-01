@@ -20,6 +20,8 @@ interface ResponsibilityBarsProps {
   onSelect: (global: number) => void;
 }
 
+const PHI_NEG_COLOR = '#7c5cff';
+
 const fmt = (v: number | null): string =>
   v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(3)}`;
 
@@ -37,9 +39,9 @@ function DivergingBar({
 }) {
   if (value == null) {
     return (
-      <div className="relative h-3.5 flex-1">
-        <div className="absolute inset-y-0 left-1/2 w-px bg-slate-600/70" />
-        <div className="flex h-full items-center justify-center text-[9px] text-slate-600">n/a</div>
+      <div className="relative h-3 flex-1 rounded-sm bg-white/[0.03]">
+        <div className="absolute inset-y-0 left-1/2 w-px bg-ink-500/70" />
+        <div className="flex h-full items-center justify-center text-[9px] text-ink-500">n/a</div>
       </div>
     );
   }
@@ -47,14 +49,14 @@ function DivergingBar({
   const widthPct = (max > 0 ? Math.min(1, Math.abs(value) / max) : 0) * 50;
   const color = positive ? posColor : negColor;
   return (
-    <div className="relative h-3.5 flex-1">
-      <div className="absolute inset-y-0 left-1/2 w-px bg-slate-600/70" />
+    <div className="relative h-3 flex-1 rounded-sm bg-white/[0.03]">
+      <div className="absolute inset-y-0 left-1/2 w-px bg-ink-500/70" />
       <div
-        className="absolute top-0 bottom-0 rounded-sm"
+        className="absolute bottom-0 top-0 transition-[width] duration-300"
         style={
           positive
-            ? { left: '50%', width: `${widthPct}%`, backgroundColor: color }
-            : { right: '50%', width: `${widthPct}%`, backgroundColor: color }
+            ? { left: '50%', width: `${widthPct}%`, backgroundColor: color, borderRadius: '0 3px 3px 0' }
+            : { right: '50%', width: `${widthPct}%`, backgroundColor: color, borderRadius: '3px 0 0 3px' }
         }
       />
     </div>
@@ -63,7 +65,7 @@ function DivergingBar({
 
 export function ResponsibilityBars({ rows, selectedGlobal, onSelect }: ResponsibilityBarsProps) {
   if (rows.length === 0) {
-    return <div className="py-4 text-center font-mono text-[11px] text-slate-500">無責任鏈資料</div>;
+    return <div className="py-4 text-center font-mono text-[11px] text-ink-400">無責任鏈資料</div>;
   }
 
   const ceMax = rows.reduce((m, r) => Math.max(m, r.ce != null ? Math.abs(r.ce) : 0), 0);
@@ -81,34 +83,39 @@ export function ResponsibilityBars({ rows, selectedGlobal, onSelect }: Responsib
     <div className="w-full text-[11px]">
       {/* pivot 摘要 — 一眼看到元兇 */}
       {pivot && (
-        <div className="mb-1.5 flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px]">
-          <span style={{ color: COLOR.pivot }}>★ 元兇 pivot</span>
-          <span className="font-mono text-slate-200">{typeGlyph(pivot.type)} {shortId(pivot.real_id)}</span>
+        <div
+          className="mb-2 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[11px] ring-1 ring-amber-400/25"
+          style={{ background: 'linear-gradient(90deg, rgba(251,191,36,0.10), rgba(251,191,36,0.03))' }}
+        >
+          <span className="font-semibold" style={{ color: COLOR.pivot }}>★ 元兇 pivot</span>
+          <span className="font-mono text-ink-100">{typeGlyph(pivot.type)} {shortId(pivot.real_id)}</span>
           <span className="font-mono" style={{ color: COLOR.pivot }}><PhiAsym /> = {fmt(pivot.phiAsym)}</span>
-          <span className="ml-auto text-slate-400">佔 <span className="font-mono text-amber-300">{pivotShare}%</span> 責任</span>
+          <span className="ml-auto text-ink-300">
+            佔 <span className="font-mono font-semibold text-amber-200">{pivotShare}%</span> 責任
+          </span>
+        </div>
+      )}
+
+      {!hasAnyPhi && (
+        <div className="notice-warn mb-2">
+          此鏈為 wallet-target，<PhiAsym /> 不適用（僅顯示 CE）。
         </div>
       )}
 
       {/* column header */}
-      <div className="mb-1 flex items-center gap-2 px-1 text-[10px] font-medium text-slate-400">
-        <div className="w-32 shrink-0" />
+      <div className="mb-1 flex items-center gap-2 px-1.5 text-[10px] font-medium text-ink-400">
+        <div className="w-36 shrink-0">節點（上游 → 下游）</div>
         <div className="flex-1 text-center">
-          CE<span className="ml-1 text-slate-500">追路徑</span>
+          <span className="text-ink-200">CE</span><span className="ml-1">追路徑</span>
         </div>
         <div className="w-14 shrink-0" />
         <div className="flex-1 text-center">
-          <PhiAsym /><span className="ml-1 text-slate-500">釘元兇</span>
+          <span className="text-ink-200"><PhiAsym /></span><span className="ml-1">釘元兇</span>
         </div>
         <div className="w-14 shrink-0" />
       </div>
 
-      {!hasAnyPhi && (
-        <div className="mb-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-300">
-          此鏈為 wallet-target,<PhiAsym /> 不適用(僅顯示 CE)。
-        </div>
-      )}
-
-      <div className="flex flex-col gap-1">
+      <div className="flex flex-col gap-0.5">
         {rows.map(row => {
           const selected = row.global === selectedGlobal;
           const tags = [
@@ -119,35 +126,37 @@ export function ResponsibilityBars({ rows, selectedGlobal, onSelect }: Responsib
           return (
             <div
               key={row.global}
+              role="button"
+              tabIndex={0}
               onClick={() => onSelect(row.global)}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(row.global); } }}
               title={`${row.real_id}\nCE=${fmt(row.ce)} · φ_asym=${fmt(row.phiAsym)}（點擊聚焦上方圖）`}
-              className={`flex cursor-pointer items-center gap-2 rounded-md px-1 py-0.5 transition-colors ${
-                selected ? 'bg-sky-400/15 ring-1 ring-sky-400/60' : row.is_pivot ? 'bg-amber-400/5' : 'hover:bg-slate-800/60'
+              className={`flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 ring-1 transition-colors duration-150 ${
+                selected
+                  ? 'bg-brand/10 ring-brand/50'
+                  : row.is_pivot
+                    ? 'bg-amber-400/[0.04] ring-transparent hover:bg-white/[0.04]'
+                    : 'ring-transparent hover:bg-white/[0.04]'
               }`}
             >
               {/* label */}
-              <div className="flex w-32 shrink-0 items-center gap-1 truncate font-mono">
-                {row.is_pivot && <span className="text-amber-400" style={{ color: COLOR.pivot }}>★</span>}
+              <div className="flex w-36 shrink-0 items-center gap-1.5 truncate font-mono">
+                {row.is_pivot && <span style={{ color: COLOR.pivot }}>★</span>}
                 {row.is_root && !row.is_pivot && <span style={{ color: COLOR.root }}>◎</span>}
-                <span className="text-slate-300">{typeGlyph(row.type)}</span>
-                <span className="truncate text-slate-400">{shortId(row.real_id)}</span>
+                <span style={{ color: row.type === 'transaction' ? COLOR.tx : COLOR.wallet }}>{typeGlyph(row.type)}</span>
+                <span className={`truncate ${selected ? 'text-ink-100' : 'text-ink-300'}`}>{shortId(row.real_id)}</span>
                 {row.is_target && <span style={{ color: COLOR.fraud }}>⚑</span>}
               </div>
 
               {/* CE bar */}
               <DivergingBar value={row.ce} max={ceMax} posColor={COLOR.cePos} negColor={COLOR.ceNeg} />
-              <div className="w-14 shrink-0 text-right font-mono text-[10px] text-slate-400">{fmt(row.ce)}</div>
+              <div className="w-14 shrink-0 text-right font-mono text-[10.5px] text-ink-300">{fmt(row.ce)}</div>
 
               {/* φ_asym bar */}
-              <DivergingBar
-                value={row.phiAsym}
-                max={phiMax}
-                posColor={COLOR.pivot}
-                negColor="#7c5cff"
-              />
+              <DivergingBar value={row.phiAsym} max={phiMax} posColor={COLOR.pivot} negColor={PHI_NEG_COLOR} />
               <div
-                className="w-14 shrink-0 text-right font-mono text-[10px]"
-                style={{ color: row.is_pivot ? COLOR.pivot : '#94a3b8' }}
+                className="w-14 shrink-0 text-right font-mono text-[10.5px]"
+                style={{ color: row.is_pivot ? COLOR.pivot : '#98a1b3' }}
               >
                 {fmt(row.phiAsym)}
               </div>

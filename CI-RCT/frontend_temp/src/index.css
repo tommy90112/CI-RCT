@@ -2,85 +2,48 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ── Base ─────────────────────────────────────────────────── */
+/* ── Tokens ──────────────────────────────────────────────── */
+:root {
+  --bg: #0b0d11;
+  --text: #e7eaf0;
+  --brand: #4fd1c5;
+  --line: 148 163 184; /* rgb triplet — used with alpha */
+}
+
+/* ── Base ────────────────────────────────────────────────── */
 html, body {
-  background-color: #050a14;
+  background-color: var(--bg);
+  color: var(--text);
   margin: 0;
-  min-height: 100vh;
+  min-height: 100dvh;
+  font-family: theme('fontFamily.sans');
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* Allow vertical scroll on small viewports; layout shell handles desktop overflow. */
-body {
-  overflow-x: hidden;
-}
+body { overflow-x: hidden; }
+@media (min-width: 1280px) { body { overflow: hidden; } }
 
-@media (min-width: 1280px) {
-  body { overflow: hidden; }
-}
-
-/* ── Corner ambient glows ─────────────────────────────────── */
-body::before,
-body::after {
-  content: '';
-  position: fixed;
-  pointer-events: none;
-  border-radius: 50%;
-  z-index: 0;
-}
-
-/* Top-right — indigo/violet */
-body::before {
-  width: 55vw;
-  height: 55vw;
-  top: -22vw;
-  right: -18vw;
-  background: radial-gradient(circle, rgba(99,40,220,0.13) 0%, transparent 65%);
-  animation: driftA 22s ease-in-out infinite alternate;
-}
-
-/* Bottom-left — cyan */
-body::after {
-  width: 50vw;
-  height: 50vw;
-  bottom: -18vw;
-  left: -14vw;
-  background: radial-gradient(circle, rgba(6,182,212,0.10) 0%, transparent 65%);
-  animation: driftB 28s ease-in-out infinite alternate;
-}
-
-@keyframes driftA {
-  0%   { transform: translate(0, 0)    scale(1); }
-  100% { transform: translate(-4vw, 3vw) scale(1.08); }
-}
-@keyframes driftB {
-  0%   { transform: translate(0, 0)    scale(1); }
-  100% { transform: translate(3vw, -4vw) scale(1.06); }
-}
-
-/* ── Scanline overlay (desktop only, subtle) ─────────────── */
-@media (min-width: 1024px) {
-  #root::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 1;
-    background: repeating-linear-gradient(
-      to bottom,
-      transparent 0px,
-      transparent 3px,
-      rgba(0,0,0,0.04) 3px,
-      rgba(0,0,0,0.04) 4px
-    );
-  }
-}
-
-/* ── App shell sits above canvas (z-index 0) ─────────────── */
 #root {
   position: relative;
   z-index: 2;
-  min-height: 100vh;
+  min-height: 100dvh;
 }
+
+/* Fine grain over the whole frame — breaks digital flatness without a blend mode
+   (which would force whole-page compositing on top of the animating canvas). */
+#root::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 70;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Numbers align in columns everywhere. */
+.font-mono, code, kbd { font-variant-numeric: tabular-nums; }
 
 /* ── Reduced motion ──────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
@@ -93,30 +56,87 @@ body::after {
 
 /* ── Focus-visible default ──────────────────────────────── */
 :focus-visible {
-  outline: 2px solid rgb(56 189 248 / 0.75);
+  outline: 2px solid rgb(79 209 197 / 0.7);
   outline-offset: 2px;
 }
 
-/* ── Utility: card glass ────────────────────────────────── */
+/* ── Thin scrollbars inside panels ──────────────────────── */
+.scroll-thin { scrollbar-width: thin; scrollbar-color: rgb(var(--line) / 0.25) transparent; }
+.scroll-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: rgb(var(--line) / 0.22); border-radius: 999px; }
+.scroll-thin::-webkit-scrollbar-thumb:hover { background: rgb(var(--line) / 0.4); }
+
+/* ── Component vocabulary ───────────────────────────────── */
 @layer components {
-  .card-glass {
-    @apply bg-slate-800/50 backdrop-blur-sm ring-1 ring-slate-700/60 rounded-xl shadow-2xl;
+  /* Elevated glass surface: 1px inner highlight simulates edge refraction. */
+  .panel {
+    @apply bg-ink-900/90 backdrop-blur-2xl shadow-panel;
   }
-  .chip-dot {
-    @apply inline-block w-2 h-2 rounded-full;
+  .float {
+    @apply rounded-xl bg-ink-900/85 backdrop-blur-xl shadow-float ring-1 ring-white/[0.06];
   }
+  .hairline { border-color: rgb(var(--line) / 0.12); }
+
+  /* Small tracked label above a control group. */
+  .eyebrow {
+    @apply text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-400;
+  }
+
+  /* Segmented control. */
+  .seg {
+    @apply inline-flex items-stretch rounded-lg bg-ink-800/90 p-0.5 ring-1 ring-white/[0.05];
+  }
+  .seg-item {
+    @apply rounded-md px-2.5 py-1 text-[11px] font-medium text-ink-300 transition-all duration-200
+      hover:text-ink-100 active:scale-[0.97];
+  }
+  .seg-item-on {
+    @apply bg-ink-600 text-ink-100 shadow-sm shadow-black/50 hover:text-white;
+  }
+
+  /* Icon button. */
+  .btn-icon {
+    @apply inline-flex h-8 w-8 items-center justify-center rounded-lg bg-ink-800/90 text-ink-300 ring-1 ring-white/[0.06]
+      transition-all duration-200 hover:bg-ink-700 hover:text-ink-100 active:scale-95
+      disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-ink-800/90;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-ink-300 ring-1 ring-white/[0.06]
+      bg-ink-800/70 transition-all duration-200 hover:bg-ink-700 hover:text-ink-100 active:scale-[0.98];
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-[11.5px] font-semibold text-ink-950
+      transition-all duration-200 hover:bg-brand-soft active:scale-[0.98];
+  }
+
+  /* Text input / select. */
+  .field {
+    @apply w-full rounded-lg bg-ink-800/90 px-2.5 py-1.5 text-[11.5px] text-ink-100 ring-1 ring-white/[0.06]
+      outline-none transition placeholder:text-ink-500 focus:ring-brand/60 disabled:opacity-40;
+  }
+
+  /* Status chip. */
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] font-medium ring-1;
+  }
+  .chip-neutral { @apply bg-ink-800/80 text-ink-200 ring-white/[0.06]; }
+  .chip-ok      { @apply bg-emerald-400/10 text-emerald-300 ring-emerald-400/25; }
+  .chip-warn    { @apply bg-amber-400/10 text-amber-300 ring-amber-400/25; }
+  .chip-alert   { @apply bg-rose-400/10 text-rose-300 ring-rose-400/25; }
+
+  /* Inline notice. */
+  .notice-warn {
+    @apply rounded-lg border border-amber-400/20 bg-amber-400/[0.07] px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-200/90;
+  }
+
+  .card-glass { @apply float; }
+  .chip-dot { @apply inline-block h-2 w-2 rounded-full; }
 }
 
 /* ── Print-friendly mode (?print=true sets data-print-mode on <html>) ──── */
-html[data-print-mode="true"] body::before,
-html[data-print-mode="true"] body::after,
-html[data-print-mode="true"] #root::before {
-  display: none !important;
-}
+html[data-print-mode="true"] #root::after { display: none !important; }
 
-html[data-print-mode="true"] {
-  background: #ffffff !important;
-}
+html[data-print-mode="true"] { background: #ffffff !important; }
 
 html[data-print-mode="true"] body {
   background: #ffffff !important;
@@ -124,7 +144,10 @@ html[data-print-mode="true"] body {
   overflow: visible !important;
 }
 
+html[data-print-mode="true"] .panel,
+html[data-print-mode="true"] .float,
 html[data-print-mode="true"] .card-glass,
+html[data-print-mode="true"] [class*="bg-ink"],
 html[data-print-mode="true"] [class*="bg-slate"],
 html[data-print-mode="true"] [class*="bg-gradient"] {
   background: #ffffff !important;
@@ -134,6 +157,8 @@ html[data-print-mode="true"] [class*="bg-gradient"] {
 }
 
 html[data-print-mode="true"] [class*="text-white"],
+html[data-print-mode="true"] [class*="text-ink"],
+html[data-print-mode="true"] [class*="text-brand"],
 html[data-print-mode="true"] [class*="text-slate"],
 html[data-print-mode="true"] [class*="text-sky"],
 html[data-print-mode="true"] [class*="text-violet"],
@@ -149,9 +174,7 @@ html[data-print-mode="true"] [class*="text-rose"] {
   color: #111827 !important;
 }
 
-html[data-print-mode="true"] svg text {
-  fill: #111827 !important;
-}
+html[data-print-mode="true"] svg text { fill: #111827 !important; }
 
 html[data-print-mode="true"] [class*="text-red"] { color: #b91c1c !important; }
 html[data-print-mode="true"] [class*="text-orange"] { color: #c2410c !important; }

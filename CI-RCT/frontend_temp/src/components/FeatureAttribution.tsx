@@ -1,10 +1,12 @@
 import type { CrimeChainNode, FeatureContribution } from '../types';
-import { shortId, typeGlyph } from '../lib/render';
+import { COLOR, shortId, typeGlyph } from '../lib/render';
 
 // L3 — root-cause feature attribution (spec §5)
 
 interface FeatureAttributionProps {
   node: CrimeChainNode | null;
+  /** True when `node` is the chain's φ_asym pivot (the 元兇 the L3 drill-down explains). */
+  isPivot?: boolean;
 }
 
 const POS_COLOR = '#ff7849'; // warm — positive contribution
@@ -47,45 +49,23 @@ function sortByAbsDesc(items: FeatureContribution[]): FeatureContribution[] {
 const isAnonName = (name: string): boolean =>
   name.startsWith('Local_feature_') || name.startsWith('Aggregate_feature_');
 
-function Header({ node }: { node: CrimeChainNode }) {
+function Header({ node, isPivot }: { node: CrimeChainNode; isPivot: boolean }) {
   const causal = node.feature_attribution_method !== 'saliency_fallback';
   return (
-    <div className="flex items-center gap-2 mb-3">
-      <span className="text-sky-400 font-semibold text-xs">L3 · 根因特徵歸因</span>
-      <span className="text-slate-500 text-[11px]">|</span>
-      <span className="font-mono text-[11px] text-slate-300">
-        {typeGlyph(node.type)} {shortId(node.real_id)}
+    <div className="mb-2 flex flex-wrap items-center gap-2">
+      <span className="eyebrow text-brand">L3 · 根因特徵歸因</span>
+      <span className="font-mono text-[11px] text-ink-100">
+        {isPivot && <span className="mr-1" style={{ color: COLOR.pivot }}>★</span>}
+        <span style={{ color: node.type === 'transaction' ? COLOR.tx : COLOR.wallet }}>{typeGlyph(node.type)}</span>{' '}
+        {shortId(node.real_id)}
       </span>
-      <span className="text-[11px] text-slate-500">{node.type}</span>
+      <span className="text-[10.5px] text-ink-400">{isPivot ? `${node.type} · 元兇 pivot` : node.type}</span>
       <span
-        className={`ml-auto rounded-md border px-1.5 py-0.5 text-[10px] ${
-          causal
-            ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
-            : 'border-amber-500/50 bg-amber-500/10 text-amber-300'
-        }`}
-        title={causal ? '逐特徵 do-intervention 因果效應 (CFE)' : '因果效應過小,改用 saliency 相關性排序'}
+        className={`chip ml-auto ${causal ? 'chip-ok' : 'chip-warn'}`}
+        title={causal ? '逐特徵 do-intervention 因果效應 (CFE)' : '因果效應過小，改用 saliency 相關性排序'}
       >
         {causal ? '因果 do' : 'saliency 備案'}
       </span>
-    </div>
-  );
-}
-
-function Placeholder({ node }: { node: CrimeChainNode | null }) {
-  return (
-    <div className="rounded-xl border border-slate-700/60 bg-slate-900/85 p-4 shadow-xl backdrop-blur-sm">
-      {node ? (
-        <Header node={node} />
-      ) : (
-        <div className="mb-3 text-xs font-semibold text-sky-400">L3 · 根因特徵歸因</div>
-      )}
-      <p className="text-xs leading-relaxed text-slate-400">
-        此節點非 φ 樞紐(pivot)。L3 因果特徵歸因僅對每條鏈的 pivot 節點計算
-        (省算力),請點選標有 <span style={{ color: '#fbbf24' }}>★</span> 的 pivot 節點查看其特徵貢獻。
-      </p>
-      <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
-        註:L3 解釋「節點為何危險」(特徵層),與 φ(L1/L2 的節點責任分解)互補但不同。
-      </p>
     </div>
   );
 }
@@ -105,24 +85,24 @@ function BarRow({ item, maxAbs, scale }: { item: FeatureContribution; maxAbs: nu
       : `${item.name}（貢獻 ${exact}）`;
 
   return (
-    <div className="flex items-center gap-2" title={title}>
-      <div className="w-28 shrink-0 truncate text-right text-[11px] text-slate-300" title={item.name}>
+    <div className="flex items-center gap-2 rounded-md px-1 py-0.5 transition-colors hover:bg-white/[0.04]" title={title}>
+      <div className="w-32 shrink-0 truncate text-right font-mono text-[10.5px] text-ink-300" title={item.name}>
         {item.name}
       </div>
-      <div className="relative h-3.5 flex-1">
+      <div className="relative h-3 flex-1 rounded-sm bg-white/[0.03]">
         {/* zero axis */}
-        <div className="absolute inset-y-0 left-1/2 w-px bg-slate-600/70" />
+        <div className="absolute inset-y-0 left-1/2 w-px bg-ink-500/70" />
         {/* bar */}
         <div
-          className="absolute top-0 bottom-0 rounded-sm"
+          className="absolute bottom-0 top-0 transition-[width] duration-300"
           style={
             positive
-              ? { left: '50%', width: `${widthPct}%`, backgroundColor: color }
-              : { right: '50%', width: `${widthPct}%`, backgroundColor: color }
+              ? { left: '50%', width: `${widthPct}%`, backgroundColor: color, borderRadius: '0 3px 3px 0' }
+              : { right: '50%', width: `${widthPct}%`, backgroundColor: color, borderRadius: '3px 0 0 3px' }
           }
         />
       </div>
-      <div className="w-20 shrink-0 text-right font-mono text-[11px]" style={{ color }}>
+      <div className="w-16 shrink-0 text-right font-mono text-[10.5px]" style={{ color }}>
         {positive ? '+' : ''}
         {shown}
       </div>
@@ -130,12 +110,18 @@ function BarRow({ item, maxAbs, scale }: { item: FeatureContribution; maxAbs: nu
   );
 }
 
-export function FeatureAttribution({ node }: FeatureAttributionProps) {
-  const attribution = node?.feature_attribution;
+/** True iff the node carries an L3 attribution worth rendering. */
+export const hasFeatureAttribution = (node: CrimeChainNode | null | undefined): node is CrimeChainNode =>
+  !!node && Array.isArray(node.feature_attribution) && node.feature_attribution.length > 0;
 
-  if (!node || !attribution || attribution.length === 0) {
-    return <Placeholder node={node} />;
-  }
+/**
+ * Renders the per-feature causal bars for `node`. Returns null when the node
+ * carries no attribution — the caller decides what (if anything) to show
+ * instead; there is no in-panel placeholder.
+ */
+export function FeatureAttribution({ node, isPivot = false }: FeatureAttributionProps) {
+  if (!hasFeatureAttribution(node)) return null;
+  const attribution = node.feature_attribution as FeatureContribution[];
 
   const sorted = sortByAbsDesc(attribution).slice(0, MAX_ROWS);
   const maxAbs = sorted.reduce((acc, it) => Math.max(acc, Math.abs(it.value)), 0);
@@ -143,30 +129,30 @@ export function FeatureAttribution({ node }: FeatureAttributionProps) {
   const anyAnon = sorted.some((it) => isAnonName(it.name));
 
   return (
-    <div className="rounded-xl border border-slate-700/60 bg-slate-900/85 p-4 shadow-xl backdrop-blur-sm">
-      <Header node={node} />
+    <div className="flex flex-col">
+      <Header node={node} isPivot={isPivot} />
       {anyAnon && (
-        <p className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] leading-relaxed text-amber-300">
-          ⚠ 此節點部分特徵為匿名(Elliptic++ 交易 <span className="font-mono">Local_feature_*</span>),無語意;錢包特徵則具名可讀。
+        <p className="notice-warn mb-2 text-[10.5px]">
+          ⚠ 此節點部分特徵為匿名（Elliptic++ 交易 <span className="font-mono">Local_feature_*</span>），無語意；錢包特徵則具名可讀。
         </p>
       )}
-      <div className="mb-1.5 flex items-center justify-between text-[10px] text-slate-500">
-        <span>對詐欺機率的因果貢獻(do-intervention)</span>
+      <div className="mb-1.5 flex items-center justify-between text-[10px] text-ink-400">
+        <span>對詐欺機率的因果貢獻（do-intervention）</span>
         {scale.unit && <span className="font-mono">數值單位 {scale.unit}</span>}
       </div>
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-0.5">
         {sorted.map((item) => (
           <BarRow key={item.name} item={item} maxAbs={maxAbs} scale={scale} />
         ))}
       </div>
-      <div className="mt-3 flex items-center gap-4 text-[10px] text-slate-500">
-        <span className="flex items-center gap-1">
+      <div className="mt-2.5 flex items-center gap-4 text-[10px] text-ink-400">
+        <span className="flex items-center gap-1.5">
           <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: POS_COLOR }} />
-          正貢獻(提升詐欺責任)
+          正貢獻（提升詐欺責任）
         </span>
-        <span className="flex items-center gap-1">
+        <span className="flex items-center gap-1.5">
           <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: NEG_COLOR }} />
-          負貢獻(降低)
+          負貢獻（降低）
         </span>
       </div>
     </div>
