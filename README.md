@@ -1,15 +1,13 @@
-# CI-RCT
-
-**Root cause tracing on heterogeneous graphs, by causal intervention.**
+# CI-RCT：Explainable Root Cause Tracing on Heterogeneous Graphs Based on Causal Intervention
 
 繁體中文版：[README.zh-TW.md](README.zh-TW.md)
 
 Graph neural networks are good at flagging anomalies. They are much weaker at the
 question that follows: *where did this start, and who caused it?*
 
-CI-RCT (Causal Intervention-based Root Cause Tracing) adds that second half. Given
-a node flagged as anomalous, it walks **backward** along a time-respecting directed
-graph — crossing freely between node types — until it reaches the entity the
+CI-RCT (Causal Intervention-based Root Cause Tracing) is a **methodological
+framework** built to add that second half. Given a node flagged as anomalous, it
+walks **backward** along a time-respecting directed graph — crossing freely between node types — until it reaches the entity the
 evidence points to, and attaches a causal justification to every hop. The result is
 a chain a human can audit, not a saliency heatmap.
 
@@ -51,8 +49,11 @@ measurable value instead of collapsing to zero.
 
 ## What the method needs from a graph
 
-CI-RCT is not tied to a domain. It operates on a PyG `HeteroData` object that
-satisfies five conditions:
+CI-RCT is not tied to a domain. Any setting that needs to answer *where an anomaly
+began* — the origin of a fraudulent money flow, the entry point of lateral movement
+in a security incident, the source of a fault propagating through an industrial
+process — is within the framework's scope, provided the data can be expressed as a
+PyG `HeteroData` object satisfying five conditions:
 
 1. **At least two node types** — cross-type tracing is the point; a homogeneous graph
    reduces the method to ordinary backward search.
@@ -103,7 +104,7 @@ The trace below was produced with no knowledge of this pattern — the model onl
 followed causal effect upstream. The result carries the peeling signature throughout:
 **strict alternation** between transactions and addresses over nine hops,
 **timestamps non-decreasing** along the direction of flow, and **amounts decreasing
-at every hop** (3.979 → 1.423 → 0.734 → 0.676 → 0.435 BTC).
+at every hop**.
 
 ![A depth-9 traced chain shown as a money flow: from the detected fraudulent transaction at top right, the chain runs backward through alternating addresses and transactions, each edge labelled with its causal effect and the BTC amount transferred, ending at the traced source address at bottom left. The transferred amount decreases at every hop.](CI-RCT/figures/fig_case5_peeling_210646674.png)
 
@@ -118,10 +119,7 @@ was ultimately flagged.
 ## Roadmap
 
 - **Second-domain validation.** The natural next step is a domain with the same
-  shape but different semantics — manufacturing and process control are the current
-  candidates (Tennessee Eastman, PHM 2018 ion mill etch, Bosch production line),
-  where the target becomes a faulty part or tool rather than a transaction. Under
-  evaluation; nothing committed.
+  shape but different semantics.
 - **Loader contributions.** Any dataset meeting the five conditions above can be
   wired in without touching the model code.
 - **Viewer.** Broader coverage of the explanation layers and a hosted demo.
@@ -178,14 +176,6 @@ cd CI-RCT
 
 python run_pipeline.py --dry-run        # show the plan; changes nothing
 python run_pipeline.py --device cuda    # full run, all three variants
-```
-
-Stages whose output already exists are skipped, so re-running is cheap:
-
-```bash
-python run_pipeline.py --from evaluate  # reuse existing checkpoints
-python run_pipeline.py --force evaluate # redo a stage and everything downstream
-python run_pipeline.py --only frontend  # rebuild just the viewer
 ```
 
 ### What you get
