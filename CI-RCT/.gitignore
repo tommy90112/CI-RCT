@@ -1,4 +1,4 @@
-# ── 資料集（太大，且含非公開資料，一律不上 GitHub）────────────────────────
+# ── 資料集 ────────────────────────
 data/
 
 # ── 訓練產出 ───────────────────────────────────────────────────────────────
@@ -18,10 +18,9 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 
-# ── 論文寫作素材（章節草稿、實驗紀錄、規格書）─────────────────────────────
+# ── 計畫素材（草稿、實驗紀錄、規格書）─────────────────────────────
 CI-RCT_Thesis_Plan.md
 TODO.md
-# ARCHITECTURE.md 寫的是已退場的 UNSW-MG24 架構，內容與現行程式碼不符
 ARCHITECTURE.md
 experiments.md
 experiments_log.md
@@ -40,6 +39,6 @@ sfps_plan.md
 explainability_viz_spec.md
 frontend_viz_plan.md
 
-# ── 可重新產生的大型輸出（用 scripts/ 底下對應腳本重跑即可）─────────────────
+# ── 結果輸出 ─────────────────────────────────
 results/chain_neighbors.json
 results/typology_scan.csv
