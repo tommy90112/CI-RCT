@@ -50,7 +50,7 @@ export const nodeSize = (n: GraphNode, phiMax = 0): number => {
 
 export const linkColorByCe = (l: GraphLink): string => (l.ce < 0 ? COLOR.ceNeg : COLOR.cePos);
 
-/** Edge width by |CE| (spec §6.2): stronger causal effect = thicker. */
+/** Edge width by CE strength (spec §6.2): stronger causal effect = thicker. */
 export const linkWidthByCe = (ce: number, ceMax: number): number =>
   1 + (ceMax > 0 ? Math.min(1, Math.abs(ce) / ceMax) : 0) * 4;
 

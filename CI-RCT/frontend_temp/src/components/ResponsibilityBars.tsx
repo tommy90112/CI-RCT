@@ -41,7 +41,7 @@ function DivergingBar({
     return (
       <div className="relative h-3 flex-1 rounded-sm bg-white/[0.03]">
         <div className="absolute inset-y-0 left-1/2 w-px bg-ink-500/70" />
-        <div className="flex h-full items-center justify-center text-[9px] text-ink-500">n/a</div>
+        <div className="flex h-full items-center justify-center text-[10px] text-ink-500">n/a</div>
       </div>
     );
   }
@@ -65,7 +65,7 @@ function DivergingBar({
 
 export function ResponsibilityBars({ rows, selectedGlobal, onSelect }: ResponsibilityBarsProps) {
   if (rows.length === 0) {
-    return <div className="py-4 text-center font-mono text-[11px] text-ink-400">無責任鏈資料</div>;
+    return <div className="py-4 text-center font-mono text-[12px] text-ink-400">無責任鏈資料</div>;
   }
 
   const ceMax = rows.reduce((m, r) => Math.max(m, r.ce != null ? Math.abs(r.ce) : 0), 0);
@@ -80,11 +80,11 @@ export function ResponsibilityBars({ rows, selectedGlobal, onSelect }: Responsib
     : 0;
 
   return (
-    <div className="w-full text-[11px]">
+    <div className="w-full text-[12px]">
       {/* pivot 摘要 — 一眼看到元兇 */}
       {pivot && (
         <div
-          className="mb-2 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[11px] ring-1 ring-amber-400/25"
+          className="mb-2 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px] ring-1 ring-amber-400/25"
           style={{ background: 'linear-gradient(90deg, rgba(251,191,36,0.10), rgba(251,191,36,0.03))' }}
         >
           <span className="font-semibold" style={{ color: COLOR.pivot }}>★ 元兇 pivot</span>
@@ -103,7 +103,7 @@ export function ResponsibilityBars({ rows, selectedGlobal, onSelect }: Responsib
       )}
 
       {/* column header */}
-      <div className="mb-1 flex items-center gap-2 px-1.5 text-[10px] font-medium text-ink-400">
+      <div className="mb-1 flex items-center gap-2 px-1.5 text-[11px] font-medium text-ink-400">
         <div className="w-36 shrink-0">節點（上游 → 下游）</div>
         <div className="flex-1 text-center">
           <span className="text-ink-200">CE</span><span className="ml-1">追路徑</span>
@@ -150,12 +150,12 @@ export function ResponsibilityBars({ rows, selectedGlobal, onSelect }: Responsib
 
               {/* CE bar */}
               <DivergingBar value={row.ce} max={ceMax} posColor={COLOR.cePos} negColor={COLOR.ceNeg} />
-              <div className="w-14 shrink-0 text-right font-mono text-[10.5px] text-ink-300">{fmt(row.ce)}</div>
+              <div className="w-14 shrink-0 text-right font-mono text-[11.5px] text-ink-300">{fmt(row.ce)}</div>
 
               {/* φ_asym bar */}
               <DivergingBar value={row.phiAsym} max={phiMax} posColor={COLOR.pivot} negColor={PHI_NEG_COLOR} />
               <div
-                className="w-14 shrink-0 text-right font-mono text-[10.5px]"
+                className="w-14 shrink-0 text-right font-mono text-[11.5px]"
                 style={{ color: row.is_pivot ? COLOR.pivot : '#98a1b3' }}
               >
                 {fmt(row.phiAsym)}

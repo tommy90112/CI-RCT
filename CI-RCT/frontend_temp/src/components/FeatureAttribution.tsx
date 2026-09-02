@@ -54,12 +54,12 @@ function Header({ node, isPivot }: { node: CrimeChainNode; isPivot: boolean }) {
   return (
     <div className="mb-2 flex flex-wrap items-center gap-2">
       <span className="eyebrow text-brand">L3 · 根因特徵歸因</span>
-      <span className="font-mono text-[11px] text-ink-100">
+      <span className="font-mono text-[12px] text-ink-100">
         {isPivot && <span className="mr-1" style={{ color: COLOR.pivot }}>★</span>}
         <span style={{ color: node.type === 'transaction' ? COLOR.tx : COLOR.wallet }}>{typeGlyph(node.type)}</span>{' '}
         {shortId(node.real_id)}
       </span>
-      <span className="text-[10.5px] text-ink-400">{isPivot ? `${node.type} · 元兇 pivot` : node.type}</span>
+      <span className="text-[11.5px] text-ink-400">{isPivot ? `${node.type} · 元兇 pivot` : node.type}</span>
       <span
         className={`chip ml-auto ${causal ? 'chip-ok' : 'chip-warn'}`}
         title={causal ? '逐特徵 do-intervention 因果效應 (CFE)' : '因果效應過小，改用 saliency 相關性排序'}
@@ -86,7 +86,7 @@ function BarRow({ item, maxAbs, scale }: { item: FeatureContribution; maxAbs: nu
 
   return (
     <div className="flex items-center gap-2 rounded-md px-1 py-0.5 transition-colors hover:bg-white/[0.04]" title={title}>
-      <div className="w-32 shrink-0 truncate text-right font-mono text-[10.5px] text-ink-300" title={item.name}>
+      <div className="w-32 shrink-0 truncate text-right font-mono text-[11.5px] text-ink-300" title={item.name}>
         {item.name}
       </div>
       <div className="relative h-3 flex-1 rounded-sm bg-white/[0.03]">
@@ -102,7 +102,7 @@ function BarRow({ item, maxAbs, scale }: { item: FeatureContribution; maxAbs: nu
           }
         />
       </div>
-      <div className="w-16 shrink-0 text-right font-mono text-[10.5px]" style={{ color }}>
+      <div className="w-16 shrink-0 text-right font-mono text-[11.5px]" style={{ color }}>
         {positive ? '+' : ''}
         {shown}
       </div>
@@ -132,11 +132,11 @@ export function FeatureAttribution({ node, isPivot = false }: FeatureAttribution
     <div className="flex flex-col">
       <Header node={node} isPivot={isPivot} />
       {anyAnon && (
-        <p className="notice-warn mb-2 text-[10.5px]">
+        <p className="notice-warn mb-2 text-[11.5px]">
           ⚠ 此節點部分特徵為匿名（Elliptic++ 交易 <span className="font-mono">Local_feature_*</span>），無語意；錢包特徵則具名可讀。
         </p>
       )}
-      <div className="mb-1.5 flex items-center justify-between text-[10px] text-ink-400">
+      <div className="mb-1.5 flex items-center justify-between text-[11px] text-ink-400">
         <span>對詐欺機率的因果貢獻（do-intervention）</span>
         {scale.unit && <span className="font-mono">數值單位 {scale.unit}</span>}
       </div>
@@ -145,7 +145,7 @@ export function FeatureAttribution({ node, isPivot = false }: FeatureAttribution
           <BarRow key={item.name} item={item} maxAbs={maxAbs} scale={scale} />
         ))}
       </div>
-      <div className="mt-2.5 flex items-center gap-4 text-[10px] text-ink-400">
+      <div className="mt-2.5 flex items-center gap-4 text-[11px] text-ink-400">
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: POS_COLOR }} />
           正貢獻（提升詐欺責任）

@@ -48,9 +48,9 @@ export function ExplainPanel({
     <div className="flex h-full flex-col overflow-hidden text-ink-200">
       {/* Header — narrative + chain summary */}
       <header className="hairline flex flex-wrap items-center gap-x-5 gap-y-2 border-b px-4 py-2">
-        <h2 className="text-[13px] font-semibold tracking-tight text-ink-100">可解釋性面板</h2>
+        <h2 className="text-[15px] font-semibold tracking-tight text-ink-100">可解釋性面板</h2>
 
-        <ol className="flex items-center gap-1 text-[10.5px]" aria-label="解釋層級">
+        <ol className="flex items-center gap-1 text-[11.5px]" aria-label="解釋層級">
           <Step n="L1" label="金流鏈" hint="上方圖" />
           <Arrow />
           <Step n="L2" label="因果責任" hint={<>CE 追路徑 / <PhiAsym /> 釘元兇</>} />
@@ -62,7 +62,7 @@ export function ExplainPanel({
           )}
         </ol>
 
-        <dl className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px]">
+        <dl className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[12px]">
           <Stat label="tx" value={shortId(chain.target_txid)} title={chain.target_txid} />
           <Stat label="深度" value={String(chain.depth)} />
           {verdict && (
@@ -91,8 +91,8 @@ export function ExplainPanel({
         <section className="flex min-h-0 flex-col overflow-hidden bg-ink-900/90 px-4 py-2.5">
           <div className="mb-2 flex items-baseline gap-2">
             <span className="eyebrow text-brand">L2 · 因果責任</span>
-            <span className="text-[11px] text-ink-300">CE vs <PhiAsym />，逐節點</span>
-            <span className="ml-auto font-mono text-[10px] text-ink-500">描述性，非守恆</span>
+            <span className="text-[12px] text-ink-300">CE vs <PhiAsym />，逐節點</span>
+            <span className="ml-auto font-mono text-[11px] text-ink-500">描述性，非守恆</span>
           </div>
 
           {/* Path breadcrumb: root → … → target ⚑ */}
@@ -163,7 +163,7 @@ function ChainStrip({ rows, selectedGlobal, onSelect, phiMax }: ChainStripProps)
               type="button"
               onClick={() => onSelect(row.global)}
               title={`${row.real_id} · CE=${row.ce?.toFixed(4) ?? '—'} · φ_asym=${row.phiAsym?.toFixed(4) ?? '—'}`}
-              className={`rounded-md px-2 py-1 font-mono text-[10.5px] ring-1 transition-all duration-200 active:scale-[0.98] ${
+              className={`rounded-md px-2 py-1 font-mono text-[11.5px] ring-1 transition-all duration-200 active:scale-[0.98] ${
                 selected
                   ? 'bg-brand/15 text-brand-soft ring-brand/60'
                   : 'bg-ink-800/70 text-ink-200 ring-white/[0.06] hover:bg-ink-700 hover:ring-white/10'
@@ -171,7 +171,7 @@ function ChainStrip({ rows, selectedGlobal, onSelect, phiMax }: ChainStripProps)
               style={selected ? undefined : { boxShadow: `inset 3px 0 0 ${chipColor}` }}
             >
               {row.is_pivot && <span className="mr-1" style={{ color: COLOR.pivot }}>★</span>}
-              {row.is_root && !row.is_pivot && <span className="mr-1 text-[9px]" style={{ color: COLOR.root }}>根</span>}
+              {row.is_root && !row.is_pivot && <span className="mr-1 text-[10px]" style={{ color: COLOR.root }}>根</span>}
               {label}
             </button>
           </div>
@@ -183,5 +183,5 @@ function ChainStrip({ rows, selectedGlobal, onSelect, phiMax }: ChainStripProps)
 
 /** Directional connector (upstream→downstream) between two chain chips. */
 function Connector() {
-  return <span className="px-0.5 font-mono text-[9px] text-ink-500">→</span>;
+  return <span className="px-0.5 font-mono text-[10px] text-ink-500">→</span>;
 }

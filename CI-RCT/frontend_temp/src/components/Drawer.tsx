@@ -25,8 +25,8 @@ interface DrawerProps {
 
 const LEFT_DEFAULT_SIZE = 320;
 const BOTTOM_DEFAULT_SIZE = 340;
-const LEFT_GRIP_WIDTH = 22;
-const BOTTOM_GRIP_HEIGHT = 26;
+const LEFT_GRIP_WIDTH = 24;
+const BOTTOM_GRIP_HEIGHT = 28;
 
 const GRIP_BASE =
   'group relative flex items-center justify-center select-none bg-ink-900/90 backdrop-blur-xl ' +
@@ -102,7 +102,7 @@ export function Drawer({
           style={{ width: LEFT_GRIP_WIDTH }}
         >
           <span
-            className="text-[10px] font-semibold tracking-[0.2em] text-ink-300 group-hover:text-brand"
+            className="text-[11.5px] font-semibold tracking-[0.2em] text-ink-300 group-hover:text-brand"
             style={{ writingMode: 'vertical-rl', textOrientation: 'upright' }}
           >
             {tab}
@@ -131,7 +131,7 @@ export function Drawer({
         style={{ height: BOTTOM_GRIP_HEIGHT }}
       >
         <Chevron dir={visible ? 'down' : 'up'} />
-        <span className="text-[11px] font-semibold tracking-[0.12em] text-ink-300 group-hover:text-brand">{tab}</span>
+        <span className="text-[12.5px] font-semibold tracking-[0.12em] text-ink-300 group-hover:text-brand">{tab}</span>
         {pinDot}
       </button>
 

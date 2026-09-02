@@ -70,11 +70,11 @@ export function ControlPanel(props: ControlPanelProps) {
   }
 
   return (
-    <div className="flex flex-col gap-5 text-[12px] text-ink-200">
+    <div className="flex flex-col gap-5 text-[13px] text-ink-200">
       {/* Title */}
       <div>
-        <h2 className="text-[13px] font-semibold tracking-tight text-ink-100">控制台</h2>
-        <p className="mt-0.5 text-[11px] text-ink-400">選鏈、切換視圖、調整圖形呈現</p>
+        <h2 className="text-[15px] font-semibold tracking-tight text-ink-100">控制台</h2>
+        <p className="mt-0.5 text-[12.5px] text-ink-400">選鏈、切換視圖、調整圖形呈現</p>
       </div>
 
       {dataError && <p className="notice-warn">{dataError}</p>}
@@ -136,12 +136,12 @@ export function ControlPanel(props: ControlPanelProps) {
         </div>
 
         {matches.length > MAX_OPTIONS && (
-          <p className="text-[10.5px] leading-relaxed text-ink-400">
+          <p className="text-[11.5px] leading-relaxed text-ink-400">
             僅列出前 {MAX_OPTIONS} 筆，請用搜尋縮小範圍（上／下一條仍可走訪全部 {matches.length} 條）。
           </p>
         )}
         {matches.length === 0 && (
-          <p className="text-[10.5px] text-amber-300/90">查無符合的詐欺鏈。</p>
+          <p className="text-[11.5px] text-amber-300/90">查無符合的詐欺鏈。</p>
         )}
 
         {/* φ_asym 覆蓋率 + 只看有 φ 的鏈 */}
@@ -181,7 +181,7 @@ export function ControlPanel(props: ControlPanelProps) {
         }
       >
         {rootGroups.length === 0 ? (
-          <p className="text-[11px] text-ink-500">無多鏈共用的源頭。</p>
+          <p className="text-[12px] text-ink-500">無多鏈共用的源頭。</p>
         ) : (
           <div className="scroll-thin flex max-h-48 flex-col gap-1 overflow-y-auto pr-1">
             {rootGroups.map(g => {
@@ -197,12 +197,12 @@ export function ControlPanel(props: ControlPanelProps) {
                       : 'bg-ink-800/60 text-ink-200 ring-white/[0.05] hover:bg-ink-700 hover:ring-white/10'
                   }`}
                 >
-                  <span className="flex min-w-0 items-center gap-1.5 font-mono text-[11px]">
+                  <span className="flex min-w-0 items-center gap-1.5 font-mono text-[12px]">
                     <span style={{ color: g.rootType === 'transaction' ? COLOR.tx : COLOR.wallet }}>{typeGlyph(g.rootType)}</span>
                     <span className="truncate">{shortId(g.rootRealId)}</span>
                     {g.isFraud && <span className="shrink-0 text-rose-300">✓詐欺</span>}
                   </span>
-                  <span className={`shrink-0 rounded-md px-1.5 py-0.5 font-mono text-[10.5px] ${active ? 'bg-rose-400/20 text-rose-100' : 'bg-ink-700 text-amber-200'}`}>
+                  <span className={`shrink-0 rounded-md px-1.5 py-0.5 font-mono text-[11.5px] ${active ? 'bg-rose-400/20 text-rose-100' : 'bg-ink-700 text-amber-200'}`}>
                     {g.count} 條
                   </span>
                 </button>
@@ -268,7 +268,7 @@ export function ControlPanel(props: ControlPanelProps) {
                 role="checkbox"
                 aria-checked={on}
                 onClick={() => toggleType(f.value)}
-                className={`flex flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-[11px] ring-1 transition-all duration-200 active:scale-[0.98] ${
+                className={`flex flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px] ring-1 transition-all duration-200 active:scale-[0.98] ${
                   on ? 'bg-ink-600 text-ink-100 ring-white/10' : 'bg-ink-800/60 text-ink-300 ring-white/[0.05] hover:bg-ink-700'
                 }`}
               >
@@ -290,7 +290,7 @@ export function ControlPanel(props: ControlPanelProps) {
           載入 crime_chains.json / .csv
         </button>
         <input ref={fileRef} type="file" accept=".csv,application/json,.json" onChange={onFile} className="hidden" />
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-[10.5px] text-ink-400">
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-[11.5px] text-ink-400">
           <dt>來源</dt>
           <dd className="truncate text-ink-200" title={source}>{source}</dd>
           <dt>節點</dt>

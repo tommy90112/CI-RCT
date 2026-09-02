@@ -50,8 +50,8 @@ export default {
         },
       },
       boxShadow: {
-        panel: 'inset 0 1px 0 rgb(255 255 255 / 0.05), 0 30px 60px -30px rgb(0 0 0 / 0.85)',
-        float: 'inset 0 1px 0 rgb(255 255 255 / 0.05), 0 12px 32px -12px rgb(0 0 0 / 0.8)',
+        panel: 'inset 0 1px 0 rgb(255 255 255 / 0.05), 0 30px 60px -30px rgb(4 8 16 / 0.9)',
+        float: 'inset 0 1px 0 rgb(255 255 255 / 0.05), 0 12px 32px -12px rgb(4 8 16 / 0.85)',
       },
       keyframes: {
         'fade-in':   { '0%': { opacity: '0' }, '100%': { opacity: '1' } },

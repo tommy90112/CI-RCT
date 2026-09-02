@@ -9,7 +9,7 @@ import { PhiAsym } from './Phi';
 export function GraphLegend() {
   const [open, setOpen] = useState(true);
   return (
-    <div className="float pointer-events-auto absolute right-3 top-3 z-10 w-[232px] overflow-hidden text-[11px] text-ink-200">
+    <div className="float pointer-events-auto absolute right-3 top-3 z-10 w-[268px] overflow-hidden text-[12px] text-ink-200">
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
@@ -34,7 +34,7 @@ export function GraphLegend() {
           />
           <Row swatch={<Dot color={COLOR.dim} />} label="一階鄰居（反灰）" />
           <hr className="hairline my-1.5 border-t" />
-          <Row swatch={<Line color={COLOR.cePos} />} label="CE 為正（邊寬 ∝ |CE|）" />
+          <Row swatch={<Line color={COLOR.cePos} />} label="CE 為正（越強邊越寬）" />
           <Row swatch={<Line color={COLOR.ceNeg} />} label="CE 為負" />
           <hr className="hairline my-1.5 border-t" />
           <Row swatch={<Ring color={COLOR.root} />} label="根因 root（光暈）" />

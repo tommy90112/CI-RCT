@@ -79,7 +79,7 @@ body { overflow-x: hidden; }
 
   /* Small tracked label above a control group. */
   .eyebrow {
-    @apply text-[10.5px] font-semibold uppercase tracking-[0.14em] text-ink-400;
+    @apply text-[11.5px] font-semibold uppercase tracking-[0.14em] text-ink-400;
   }
 
   /* Segmented control. */
@@ -87,7 +87,7 @@ body { overflow-x: hidden; }
     @apply inline-flex items-stretch rounded-lg bg-ink-800/90 p-0.5 ring-1 ring-white/[0.05];
   }
   .seg-item {
-    @apply rounded-md px-2.5 py-1 text-[11px] font-medium text-ink-300 transition-all duration-200
+    @apply rounded-md px-3 py-1.5 text-[12.5px] font-medium text-ink-300 transition-all duration-200
       hover:text-ink-100 active:scale-[0.97];
   }
   .seg-item-on {
@@ -101,23 +101,23 @@ body { overflow-x: hidden; }
       disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-ink-800/90;
   }
   .btn-ghost {
-    @apply inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-ink-300 ring-1 ring-white/[0.06]
+    @apply inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12.5px] font-medium text-ink-300 ring-1 ring-white/[0.06]
       bg-ink-800/70 transition-all duration-200 hover:bg-ink-700 hover:text-ink-100 active:scale-[0.98];
   }
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-[11.5px] font-semibold text-ink-950
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg bg-brand px-3.5 py-2 text-[13px] font-semibold text-ink-950
       transition-all duration-200 hover:bg-brand-soft active:scale-[0.98];
   }
 
   /* Text input / select. */
   .field {
-    @apply w-full rounded-lg bg-ink-800/90 px-2.5 py-1.5 text-[11.5px] text-ink-100 ring-1 ring-white/[0.06]
+    @apply w-full rounded-lg bg-ink-800/90 px-2.5 py-2 text-[12.5px] text-ink-100 ring-1 ring-white/[0.06]
       outline-none transition placeholder:text-ink-500 focus:ring-brand/60 disabled:opacity-40;
   }
 
   /* Status chip. */
   .chip {
-    @apply inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[11px] font-medium ring-1;
+    @apply inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[12px] font-medium ring-1;
   }
   .chip-neutral { @apply bg-ink-800/80 text-ink-200 ring-white/[0.06]; }
   .chip-ok      { @apply bg-emerald-400/10 text-emerald-300 ring-emerald-400/25; }
@@ -126,7 +126,7 @@ body { overflow-x: hidden; }
 
   /* Inline notice. */
   .notice-warn {
-    @apply rounded-lg border border-amber-400/20 bg-amber-400/[0.07] px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-200/90;
+    @apply rounded-lg border border-amber-400/20 bg-amber-400/[0.07] px-2.5 py-1.5 text-[12px] leading-relaxed text-amber-200/90;
   }
 
   .card-glass { @apply float; }
@@ -188,3 +188,25 @@ html[data-print-mode="true"] * {
   animation: none !important;
   transition: none !important;
 }
+
+/* ── Idea page (route #/) ──────────────────────────────────── */
+/* Reveal on scroll: content settles in as it enters the viewport (once). */
+[data-reveal] { opacity: 0; transform: translateY(14px); transition: opacity 600ms ease-out, transform 600ms cubic-bezier(0.2, 0.7, 0.2, 1); }
+[data-reveal].in { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) { [data-reveal] { opacity: 1; transform: none; } }
+
+/* Keyboard users: first tab stop jumps past the fixed nav. */
+.skip-link { position: absolute; left: -999px; top: 8px; z-index: 100; }
+.skip-link:focus { left: 8px; @apply btn-primary; }
+
+/* Faint dot grid behind the hero — texture without a gradient. */
+.dot-grid {
+  background-image: radial-gradient(rgb(148 163 184 / 0.13) 1px, transparent 1px);
+  background-size: 22px 22px;
+  mask-image: radial-gradient(70% 70% at 60% 40%, #000 30%, transparent 100%);
+  -webkit-mask-image: radial-gradient(70% 70% at 60% 40%, #000 30%, transparent 100%);
+}
+html { scroll-behavior: smooth; }
+.site { overflow-x: hidden; }
+@media (min-width: 1280px) { body:has(.site) { overflow: auto; } }
+

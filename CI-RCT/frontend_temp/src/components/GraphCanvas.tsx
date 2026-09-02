@@ -14,7 +14,7 @@
  *  - node size  : nodeSize(n, sizeByPhi ? phiMax : 0)  → |φ_asym| or degree
  *  - root halo  : the chain's root cause gets a translucent violet ring
  *  - pivot      : the peak-|φ_asym| node gets an amber star/ring
- *  - edges      : chain edges coloured by CE (width ∝ |CE|), neighbours greyed
+ *  - edges      : chain edges coloured by signed CE (width scales with its strength), neighbours greyed
  */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
@@ -99,7 +99,7 @@ export function GraphCanvas({
   useEffect(() => { pivotRef.current = pivotGlobal; }, [pivotGlobal]);
   useEffect(() => { layoutRef.current = display.layout; }, [display.layout]);
 
-  // Max |CE| over the merged graph — edge-width scale (spec §6.2).
+  // Strongest CE over the merged graph — edge-width scale (spec §6.2).
   const ceMaxRef = useRef(1);
   useEffect(() => {
     ceMaxRef.current = merged.links.reduce((m, l) => Math.max(m, Math.abs(l.ce)), 0) || 1;

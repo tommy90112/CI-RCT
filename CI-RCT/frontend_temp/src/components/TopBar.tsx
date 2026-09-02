@@ -8,9 +8,10 @@ import type { CrimeChain, DataVariant } from '../types';
 import type { ChainFilter } from '../hooks/useChainFilter';
 import { COLOR, shortId, typeGlyph } from '../lib/render';
 import { Segmented } from './ui/Segmented';
+import { IDEA_HREF } from '../lib/route';
 import { PhiAsym } from './Phi';
 
-export const TOP_BAR_HEIGHT = 52;
+export const TOP_BAR_HEIGHT = 56;
 
 const VARIANTS: { value: DataVariant; label: string; title: string }[] = [
   { value: 'joint', label: 'joint', title: '主結果：交易 + 錢包聯合偵測頭' },
@@ -50,14 +51,18 @@ export function TopBar(props: TopBarProps) {
       className="panel hairline absolute inset-x-0 top-0 z-30 flex items-center gap-3 border-b px-4"
       style={{ height: TOP_BAR_HEIGHT }}
     >
-      {/* Brand */}
-      <div className="flex shrink-0 items-center gap-2.5">
+      {/* Brand — links back to the idea page */}
+      <a
+        href={IDEA_HREF}
+        title="詐欺資金鏈可解釋視覺化 · 回到想法頁"
+        className="group flex shrink-0 items-center gap-2.5 rounded-lg pr-1 transition-colors hover:bg-white/[0.04]"
+      >
         <Mark />
         <div className="leading-none">
-          <div className="text-[13px] font-bold tracking-tight text-ink-100">CI-RCT</div>
-          <div className="mt-1 text-[10px] font-medium tracking-[0.08em] text-ink-400">詐欺資金鏈可解釋視覺化</div>
+          <div className="text-[15px] font-bold tracking-tight text-ink-100">CI-RCT</div>
+          <div className="mt-1 text-[11.5px] font-medium tracking-[0.06em] text-ink-400 group-hover:text-brand">← 想法頁</div>
         </div>
-      </div>
+      </a>
 
       <span className="hairline h-6 border-l" aria-hidden />
 
@@ -84,7 +89,7 @@ export function TopBar(props: TopBarProps) {
             onClick={() => filter.step(-1)}
             disabled={filter.matches.length === 0}
             aria-label="上一條詐欺鏈"
-            className="btn-icon h-7 w-7 rounded-lg bg-transparent ring-0"
+            className="btn-icon h-8 w-8 rounded-lg bg-transparent text-[16px] ring-0"
           >
             ‹
           </button>
@@ -94,12 +99,12 @@ export function TopBar(props: TopBarProps) {
             onClick={() => filter.step(1)}
             disabled={filter.matches.length === 0}
             aria-label="下一條詐欺鏈"
-            className="btn-icon h-7 w-7 rounded-lg bg-transparent ring-0"
+            className="btn-icon h-8 w-8 rounded-lg bg-transparent text-[16px] ring-0"
           >
             ›
           </button>
           <span
-            className="hidden shrink-0 pl-1 pr-2 font-mono text-[10.5px] text-ink-400 lg:inline"
+            className="hidden shrink-0 pl-1 pr-2 font-mono text-[12px] text-ink-400 lg:inline"
             title={`目前位置 / 符合篩選的鏈數（資料共 ${totalChains} 條）`}
           >
             {positionLabel}
@@ -146,7 +151,7 @@ export function TopBar(props: TopBarProps) {
 /** Brand mark: wallet dot + transaction square joined by a causal edge. */
 function Mark() {
   return (
-    <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden className="shrink-0">
+    <svg width="30" height="30" viewBox="0 0 32 32" aria-hidden className="shrink-0">
       <rect width="32" height="32" rx="8" fill="#181c24" />
       <rect width="32" height="32" rx="8" fill="none" stroke="rgba(255,255,255,0.06)" />
       <circle cx="11" cy="21" r="4.5" fill={COLOR.wallet} />
@@ -161,28 +166,28 @@ function ChainSummary({ chain, idx }: { chain: CrimeChain; idx: number }) {
   const tp = chain.is_true_positive;
   return (
     <div
-      className="flex min-w-0 items-center gap-2 px-2 font-mono text-[11px] text-ink-200"
+      className="flex min-w-0 items-center gap-2 px-2 font-mono text-[12.5px] text-ink-200"
       title={`target ${chain.target_txid}\nroot ${chain.root_real_id}`}
     >
-      <span className="text-ink-400">#{idx}</span>
-      <span className="truncate">
+      <span className="shrink-0 text-ink-400">#{idx}</span>
+      <span className="shrink-0 whitespace-nowrap">
         <span className="text-ink-400">◆ </span>
         {shortId(chain.target_txid)}
       </span>
       <span className="text-ink-500">·</span>
-      <span>
+      <span className="whitespace-nowrap">
         <span className="text-ink-400">深度 </span>
         {chain.depth}
       </span>
-      <span className="text-ink-500">·</span>
-      <span className="truncate">
+      <span className="hidden text-ink-500 xl:inline">·</span>
+      <span className="hidden min-w-0 truncate whitespace-nowrap xl:inline">
         <span className="text-ink-400">root </span>
         {typeGlyph(chain.root_type)} {chain.root_type}
         {rootFraud && <span className="ml-1 text-rose-300">✓詐欺</span>}
       </span>
       {tp !== undefined && (
         <span
-          className={`rounded px-1 py-px text-[9.5px] font-semibold tracking-wider ${
+          className={`rounded px-1.5 py-px text-[11px] font-semibold tracking-wider ${
             tp ? 'bg-emerald-400/15 text-emerald-300' : 'bg-rose-400/15 text-rose-300'
           }`}
           title={tp ? 'true-positive：目標確為非法' : 'false-positive：目標實為合法'}

@@ -18,7 +18,7 @@ export function Switch({ checked, onChange, label, hint, disabled }: SwitchProps
         aria-checked={checked}
         disabled={disabled}
         onClick={() => onChange(!checked)}
-        className="group flex w-full items-center justify-between gap-3 rounded-lg px-2 py-1.5 text-left text-[12px] text-ink-200 transition-colors hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-40"
+        className="group flex w-full items-center justify-between gap-3 rounded-lg px-2 py-1.5 text-left text-[13px] text-ink-200 transition-colors hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-40"
       >
         <span className="min-w-0 flex-1 leading-snug">{label}</span>
         <span
@@ -33,7 +33,7 @@ export function Switch({ checked, onChange, label, hint, disabled }: SwitchProps
           />
         </span>
       </button>
-      {hint && <div className="px-2 text-[10.5px] leading-relaxed text-ink-400">{hint}</div>}
+      {hint && <div className="px-2 text-[11.5px] leading-relaxed text-ink-400">{hint}</div>}
     </div>
   );
 }
