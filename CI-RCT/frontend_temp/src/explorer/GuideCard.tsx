@@ -1,29 +1,12 @@
 /**
- * GuideCard — first-visit overlay in the explorer: the three questions the
- * viewer answers, each opening the matching view. Dismissal is remembered per
- * browser (localStorage) so it never nags.
+ * GuideCard — entry overlay in the explorer: the three questions the viewer
+ * answers, each opening the matching view, plus a "just explore" escape hatch.
+ * It is shown every time the explorer is opened without a preset (e.g. via
+ * 「開始探索」); deep links from the idea page's question cards skip it.
  */
 import { explorerHref } from '../lib/route';
 import type { ExplorerPreset } from '../lib/route';
 import { PhiAsym } from '../components/Phi';
-
-const KEY = 'ci-rct.guide-seen';
-
-export function guideSeen(): boolean {
-  try {
-    return window.localStorage.getItem(KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-export function markGuideSeen(): void {
-  try {
-    window.localStorage.setItem(KEY, '1');
-  } catch {
-    /* private mode / blocked storage — the guide simply shows again next time */
-  }
-}
 
 const QUESTIONS: { preset: ExplorerPreset; n: string; q: string; a: React.ReactNode }[] = [
   { preset: 'converge', n: '01', q: '這些可疑交易的共同源頭是誰？', a: '收斂視圖：多條鏈匯入同一個源頭。' },

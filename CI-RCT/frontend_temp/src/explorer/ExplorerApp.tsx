@@ -17,7 +17,7 @@ import type {
   DisplayOptions,
 } from '../types';
 import type { ExplorerPreset } from '../lib/route';
-import { GuideCard, guideSeen, markGuideSeen } from './GuideCard';
+import { GuideCard } from './GuideCard';
 import {
   buildMergedGraph,
   buildResponsibilityRows,
@@ -230,12 +230,10 @@ function Viewer({ data, source, variant, dataError, preset, onLoadFile, onVarian
     }
   }, [preset, rootGroups, handleConvergeChange]);
 
-  // First-visit guide: offered only when no preset was requested.
-  const [guideOpen, setGuideOpen] = useState<boolean>(() => !preset && !guideSeen());
-  const dismissGuide = useCallback(() => {
-    markGuideSeen();
-    setGuideOpen(false);
-  }, []);
+  // Entry guide: shown each time the explorer is opened without a preset
+  // (「開始探索」); question-card deep links carry a preset and skip it.
+  const [guideOpen, setGuideOpen] = useState<boolean>(() => !preset);
+  const dismissGuide = useCallback(() => setGuideOpen(false), []);
 
   const merged = useMemo(() => buildMergedGraph(data), [data]);
 
