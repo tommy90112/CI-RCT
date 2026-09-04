@@ -13,6 +13,9 @@ Metric C ground-truth sources (automatically selected by dataset):
                   only) and "extended" (+ k-hop labeled illicit wallets
                   via AddrAddr) are run by default; control with
                   --lfpn_mode and --lfpn_k.
+  - smt2020     : excursion injection tables, via utils/smt2020_loader.py
+                  ("strict" = tool_state that executed the first root-defect
+                  run; "extended" = all excursion windows + prior root runs).
   - other       : Metric C is skipped.
 
 Usage:
@@ -27,6 +30,7 @@ import torch
 from sklearn.metrics import recall_score
  
 from configs.config import CI_RCT_Config
+from utils.smt2020_cli import add_smt2020_args, smt2020_graph_config, smt2020_loader_kwargs
 from model.causal_shapley import compute_asymmetric_causal_shapley
 from model.ci_rct import CI_RCT
 from model.root_cause_tracer import RootCauseTracer
@@ -47,13 +51,14 @@ from utils.threshold_utils import sweep_best_threshold
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate a trained CI-RCT model")
     parser.add_argument("--dataset", type=str, default="elliptic++",
-                        choices=["elliptic++"])
+                        choices=["elliptic++", "smt2020"])
     # Elliptic++ detection target: 'transaction' (default, unchanged), 'wallet',
     # or 'joint' (one model classifying both → single pooled F1 + dual-seed
     # tracing). wallet/joint require --dataset elliptic++.
     parser.add_argument("--variant", type=str, default="transaction",
                         choices=["transaction", "wallet", "joint"])
     parser.add_argument("--data_root", type=str, default="data")
+    add_smt2020_args(parser)
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--max_hops", type=int, default=5)
     parser.add_argument("--ce_threshold", type=float, default=0.1)
@@ -279,6 +284,10 @@ def load_dataset(name, root, **kwargs):
             fraud_subgraph=kwargs.get("fraud_subgraph", False),
             fraud_subgraph_hops=kwargs.get("fraud_subgraph_hops", 2),
         )
+    if name == "smt2020":
+        from utils.smt2020_loader import load_smt2020_dataset
+        smt = kwargs.get("smt2020") or {}
+        return load_smt2020_dataset(**smt)
     raise ValueError(f"Unknown dataset: {name!r}")
  
  
@@ -418,6 +427,7 @@ def _load_variant_dataset(args):
             fraud_subgraph=args.fraud_subgraph,
             fraud_subgraph_hops=args.fraud_subgraph_hops,
             seed=args.seed,
+            smt2020=smt2020_loader_kwargs(args) if args.dataset == "smt2020" else None,
         )
     if args.dataset != "elliptic++":
         raise ValueError(
@@ -739,6 +749,16 @@ def eval_root_cause_and_stability(model, data, labels, test_mask,
     fraud_label_set = set(
         offset + i for i in test_indices if labels[i].item() == 1
     )
+    if args.dataset == "smt2020":
+        # Excursion tool_states ∪ root-defect runs ∪ observed anomaly runs:
+        # a chain that ends on the culprit tool_state is a successful trace.
+        from utils.smt2020_loader import load_smt2020_anomaly_entities
+        entities = load_smt2020_anomaly_entities(
+            args.smt2020_dir, args.smt2020_excursion, smt2020_graph_config(args), type_offsets)
+        fraud_label_set |= entities
+        if args.debug:
+            print(f"\n[fraud_label_set] smt2020 anomaly entities added: {len(entities):,}, "
+                  f"total: {len(fraud_label_set):,}")
     if args.dataset == "elliptic++":
         wallet_offset = type_offsets.get("wallet")
         illicit_wallet_globals = _load_illicit_wallet_globals(
@@ -1183,6 +1203,17 @@ def build_gt_list(args, data, type_offsets):
             if gt:
                 label = "LFPN-Strict" if m == "strict" \
                         else f"LFPN-Extended (k={args.lfpn_k})"
+                gt_list.append((label, gt))
+    if args.dataset == "smt2020":
+        from utils.smt2020_loader import load_smt2020_ground_truth
+        modes = ["strict", "extended"] if args.lfpn_mode == "both" else [args.lfpn_mode]
+        for m in modes:
+            print(f"\nComputing SMT2020 excursion ground-truth (mode={m}) for Metric C...")
+            gt = load_smt2020_ground_truth(
+                args.smt2020_dir, args.smt2020_excursion, smt2020_graph_config(args),
+                type_offsets, m)
+            if gt:
+                label = "Excursion-Strict" if m == "strict" else "Excursion-Extended"
                 gt_list.append((label, gt))
     return gt_list
  

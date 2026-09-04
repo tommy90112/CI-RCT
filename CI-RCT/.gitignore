@@ -11,6 +11,9 @@ checkpoints_abl/
 frontend_temp/node_modules/
 frontend_temp/dist/
 
+# ── 外部模擬器（PySCFabSim 等，只記錄 commit hash，不進版控）──────────
+third_party/
+
 # ── Python 暫存 ────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
@@ -38,6 +41,7 @@ unsw_nb15_plan.md
 sfps_plan.md
 explainability_viz_spec.md
 frontend_viz_plan.md
+smt2020_plan.md
 
 # ── 結果輸出 ─────────────────────────────────
 # results/chain_neighbors.json 進版控：GitHub Pages 建置需要它做一階鄰居疊圖

@@ -32,6 +32,7 @@ import torch.optim as optim
 from torch_geometric.data import HeteroData
 
 from configs.config import CI_RCT_Config
+from utils.smt2020_cli import add_smt2020_args, smt2020_loader_kwargs
 from model.ci_rct import CI_RCT
 from utils.data_utils import (
     build_typed_causal_graph_from_hetero,
@@ -49,7 +50,7 @@ def parse_args() -> argparse.Namespace:
         description="Train CI-RCT: Causal Intervention-Based Root Cause Tracing"
     )
     parser.add_argument("--dataset", type=str, default="elliptic++",
-                        choices=["elliptic++"])
+                        choices=["elliptic++", "smt2020"])
     # Elliptic++ detection target: 'transaction' (default, unchanged original
     # behaviour), 'wallet' (clean wallet labels), or 'joint' (one model that
     # classifies both, pooled F1). wallet/joint require --dataset elliptic++.
@@ -69,6 +70,7 @@ def parse_args() -> argparse.Namespace:
                              "optimiser step, gradients combined) so both heads "
                              "co-shape the backbone — pair with --lambda_aux_detection 1.0.")
     parser.add_argument("--data_root", type=str, default="data")
+    add_smt2020_args(parser)
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--hidden_dim", type=int, default=128)
@@ -181,6 +183,17 @@ def parse_args() -> argparse.Namespace:
 
 # ── Dataset loading ─────────────────────────────────────────────────────────────
 
+def _aux_wallet_labels(data):
+    """Wallet labels for the NCM auxiliary loss, or None.
+
+    Never index data["wallet"] blindly: on a HeteroData without that type PyG
+    silently creates an empty 'wallet' store (num_nodes=None), which later
+    breaks compute_type_offsets."""
+    if "wallet" not in data.node_types:
+        return None
+    return getattr(data["wallet"], "y", None)
+
+
 def load_dataset(name: str, root: str, **kwargs):
     """Return (HeteroData, target_node_type)."""
     if name == "elliptic++":
@@ -192,6 +205,10 @@ def load_dataset(name: str, root: str, **kwargs):
             fraud_subgraph=kwargs.get("fraud_subgraph", False),
             fraud_subgraph_hops=kwargs.get("fraud_subgraph_hops", 2),
         )
+    if name == "smt2020":
+        from utils.smt2020_loader import load_smt2020_dataset
+        smt = kwargs.get("smt2020") or {}
+        return load_smt2020_dataset(**smt)
     raise ValueError(f"Unknown dataset: {name!r}")
 
 
@@ -258,7 +275,7 @@ def train_step_no_gan(model, data, labels, train_mask, optimizer, causal_graph,
     # skipped and the NCM loss would plateau (observed in pilot run).
     ncm_loss = model.hetero_ncm.supervised_ncm_loss(
         flat_h, causal_graph, labels, type_offsets[target_type],
-        wallet_labels=data["wallet"].y if hasattr(data["wallet"], "y") else None,
+        wallet_labels=_aux_wallet_labels(data),
         wallet_type_offset=type_offsets.get("wallet", 0),
         multi_task_labels=multi_task_labels,
         type_offsets=type_offsets if multi_task_labels is not None else None,
@@ -332,7 +349,7 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
         is_critic_step=True,
         class_weight=class_weight,
         target_type_offset=target_type_offset,
-        wallet_labels=data["wallet"].y if hasattr(data["wallet"], "y") else None,
+        wallet_labels=_aux_wallet_labels(data),
         wallet_type_offset=type_offsets.get("wallet", 0),
     )
     if _t_dbg:
@@ -373,7 +390,7 @@ def train_step_with_gan(model, data, labels, train_mask, optimizer_backbone,
             is_critic_step=False,
             class_weight=class_weight,
             target_type_offset=target_type_offset,
-            wallet_labels=data["wallet"].y if hasattr(data["wallet"], "y") else None,
+            wallet_labels=_aux_wallet_labels(data),
             wallet_type_offset=type_offsets.get("wallet", 0),
         )
         g_loss = model.config.lambda_adversarial * g_adv_loss
@@ -441,6 +458,7 @@ def _load_variant_dataset(args):
             fraud_subgraph=args.fraud_subgraph,
             fraud_subgraph_hops=args.fraud_subgraph_hops,
             seed=args.seed,
+            smt2020=smt2020_loader_kwargs(args) if args.dataset == "smt2020" else None,
         )
     if args.dataset != "elliptic++":
         raise ValueError(
