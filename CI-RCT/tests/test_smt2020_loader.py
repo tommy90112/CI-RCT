@@ -54,7 +54,7 @@ def test_heterodata_mirrors_tables(tables_and_inj):
     import torch
     from utils.smt2020_loader import graph_tables_to_heterodata
     tables, _ = tables_and_inj
-    data = graph_tables_to_heterodata(tables)
+    data = graph_tables_to_heterodata(tables, reverse_edges=False, weak_labels=False)
     assert set(data.node_types) == set(tables.nodes)
     for ntype, node in tables.nodes.items():
         store = data[ntype]
@@ -96,7 +96,8 @@ def test_causal_graph_keeps_every_edge_under_the_temporal_guard(tables_and_inj):
 
 def test_load_from_disk_returns_target_run(toy_disk):
     from utils.smt2020_loader import load_smt2020_dataset
-    data, target = load_smt2020_dataset(toy_disk, window_hours=4.0, drop_before_days=0.0)
+    data, target = load_smt2020_dataset(toy_disk, window_hours=4.0, drop_before_days=0.0,
+                                        weak_labels=False)
     assert target == "run"
     y = data["run"].y
     assert int(y.min()) == 0                             # unknown → 0 placeholder, never -1
@@ -172,3 +173,48 @@ def test_aux_wallet_labels_never_creates_a_phantom_store(tables_and_inj):
     data = graph_tables_to_heterodata(tables)
     assert train_mod._aux_wallet_labels(data) is None
     assert "wallet" not in data.node_types
+
+
+def test_reverse_edges_are_representation_only(tables_and_inj):
+    import torch
+    from utils.data_utils import REPRESENTATION_ONLY_PREFIX, build_typed_causal_graph_from_hetero
+    from utils.smt2020_loader import graph_tables_to_heterodata
+    tables, _ = tables_and_inj
+    data = graph_tables_to_heterodata(tables)                       # defaults: reverse on
+    assert len(data.edge_types) == 2 * len(EDGE_TYPES)
+    for name, ei in tables.edges.items():
+        src, dst = EDGE_TYPES[name]
+        rev = data[(dst, f"{REPRESENTATION_ONLY_PREFIX}{name}", src)].edge_index
+        assert torch.equal(rev, torch.from_numpy(ei[[1, 0]]))
+    n_total = sum(len(n.ids) for n in tables.nodes.values())
+    tcg = build_typed_causal_graph_from_hetero(data, seed_node_ids=list(range(n_total)),
+                                               hop_limit=0, node_limit=n_total)
+    assert sum(len(p) for p in tcg.pa.values()) == sum(ei.shape[1] for ei in tables.edges.values())
+    assert len(tcg.topological_order()) == n_total                  # still a DAG
+
+
+def test_weak_labels_flow_into_heterodata(tables_and_inj):
+    import torch
+    from utils.smt2020_loader import graph_tables_to_heterodata
+    tables, _ = tables_and_inj
+    run = tables.nodes["run"]
+    with_weak = graph_tables_to_heterodata(tables, weak_labels=True)
+    assert torch.equal(with_weak["run"].y, torch.from_numpy(run.y_ncm))
+    without = graph_tables_to_heterodata(tables, weak_labels=False)
+    assert torch.equal(without["run"].y, torch.from_numpy(np.where(run.y < 0, 0, run.y)))
+    masks = with_weak["run"].train_mask | with_weak["run"].val_mask | with_weak["run"].test_mask
+    assert torch.equal(with_weak["run"].train_mask, without["run"].train_mask)   # masks untouched
+    assert int(with_weak["run"].y[~masks].sum()) > 0                            # some suspects marked
+
+
+def test_cli_flags_control_weak_labels_and_reverse_edges():
+    import argparse
+    from utils.smt2020_cli import add_smt2020_args, smt2020_loader_kwargs
+    parser = argparse.ArgumentParser()
+    add_smt2020_args(parser)
+    on = parser.parse_args([]); on.seed = 0
+    assert smt2020_loader_kwargs(on)["weak_labels"] is True
+    assert smt2020_loader_kwargs(on)["reverse_edges"] is True
+    off = parser.parse_args(["--smt2020_weak_labels", "false", "--smt2020_reverse_edges", "False"]); off.seed = 0
+    assert smt2020_loader_kwargs(off)["weak_labels"] is False
+    assert smt2020_loader_kwargs(off)["reverse_edges"] is False

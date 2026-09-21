@@ -33,6 +33,16 @@ def add_smt2020_args(parser: argparse.ArgumentParser) -> None:
                              "(0 = root cause must be inferred from topology/timing).")
     parser.add_argument("--smt2020_drop_before_days", type=float, default=2.0,
                         help="Drop runs starting before this many simulated days (warm-up).")
+    parser.add_argument("--smt2020_weak_labels", type=_bool, default=True,
+                        help="Bracketing weak labels for unlabelled process runs in the NCM "
+                             "supervision (true/false). false = blank 0 placeholder (ablation).")
+    parser.add_argument("--smt2020_reverse_edges", type=_bool, default=True,
+                        help="Add rev_* reverse edges for the backbone's message passing "
+                             "(true/false). The causal graph never uses them.")
+
+
+def _bool(text: str) -> bool:
+    return str(text).lower() == "true"
 
 
 def smt2020_graph_config(args: argparse.Namespace) -> GraphConfig:
@@ -58,4 +68,6 @@ def smt2020_loader_kwargs(args: argparse.Namespace) -> dict:
         drop_before_days=cfg.drop_before_days,
         feature_seed=cfg.feature_seed,
         split_seed=cfg.split_seed,
+        weak_labels=args.smt2020_weak_labels,
+        reverse_edges=args.smt2020_reverse_edges,
     )

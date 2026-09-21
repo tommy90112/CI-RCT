@@ -15,10 +15,20 @@ scripts/smt2020/inject_excursion.py):
     <data_root>/<excursion_subdir>/excursions.csv run_labels.csv lot_labels.csv gt_runs.csv
 
 Target node type is "run"; y = 1 anomaly observed at metrology, 0 clean
-metrology.  Unlabelled process runs (UNKNOWN_LABEL in GraphTables) are stored
-as y = 0 with every mask False — the Elliptic++ class-3 convention — because
-the NCM supervision (model.hetero_ncm.supervised_ncm_loss) applies BCE to the
-labels of ALL destination nodes in the causal subgraph, not only masked ones.
+metrology.  Unlabelled process runs keep every mask False (Elliptic++ class-3
+convention) but their stored y is NOT a blank 0: because the NCM supervision
+(model.hetero_ncm.supervised_ncm_loss) applies BCE to the labels of ALL
+destination nodes in the causal subgraph, a blank 0 teaches the NCM that a
+tool_state never causes a process run to go bad — exactly the edge the tracer
+needs.  With weak_labels=True (default) the placeholder is the bracketing weak
+label from utils.smt2020_graph.bracket_weak_labels instead.
+
+reverse_edges=True (default) adds a ``rev_<relation>`` copy of every edge in
+the opposite direction.  The HGT backbone uses them so a tool_state can
+aggregate what later happened to the lots it processed (message passing along
+time-forward edges alone can never inform an upstream node about downstream
+outcomes).  utils.data_utils skips ``rev_*`` relations when building the
+TypedCausalGraph, so the causal DAG / tracer / NCM are unaffected.
 """
 from __future__ import annotations
 
@@ -31,6 +41,7 @@ import pandas as pd
 import torch
 from torch_geometric.data import HeteroData
 
+from utils.data_utils import REPRESENTATION_ONLY_PREFIX
 from utils.smt2020_excursion import EXCURSION_COLUMNS, GT_RUN_COLUMNS, LOT_LABEL_COLUMNS, RUN_LABEL_COLUMNS
 from utils.smt2020_graph import EDGE_TYPES, SPLITS, GraphConfig, GraphTables, build_graph_tables, compute_local_offsets
 from utils.smt2020_gt import compute_excursion_ground_truth, ground_truth_to_global
@@ -100,7 +111,8 @@ def load_smt2020_tables(data_root: str | Path, excursion_subdir: str,
 
 # ── HeteroData ─────────────────────────────────────────────────────────────────
 
-def graph_tables_to_heterodata(tables: GraphTables) -> HeteroData:
+def graph_tables_to_heterodata(tables: GraphTables, reverse_edges: bool = True,
+                               weak_labels: bool = True) -> HeteroData:
     data = HeteroData()
     for ntype, node in tables.nodes.items():
         store = data[ntype]
@@ -108,27 +120,38 @@ def graph_tables_to_heterodata(tables: GraphTables) -> HeteroData:
         store.x = torch.from_numpy(node.x)
         store.time = torch.from_numpy(node.time)
         if node.y is not None:
-            store.y = torch.from_numpy(np.where(node.y < 0, 0, node.y).astype(np.int64))
+            y_src = node.y_ncm if (weak_labels and node.y_ncm is not None) else node.y
+            store.y = torch.from_numpy(np.where(y_src < 0, 0, y_src).astype(np.int64))
         for split in SPLITS:
             if ntype in tables.masks:
                 store[f"{split}_mask"] = torch.from_numpy(tables.masks[ntype][split])
     for name, ei in tables.edges.items():
         src, dst = EDGE_TYPES[name]
         data[(src, name, dst)].edge_index = torch.from_numpy(ei)
+        if reverse_edges:
+            data[(dst, f"{REPRESENTATION_ONLY_PREFIX}{name}", src)].edge_index = \
+                torch.from_numpy(np.ascontiguousarray(ei[[1, 0]]))
     return data
 
 
 def load_smt2020_dataset(data_root: str | Path, excursion_subdir: str = DEFAULT_EXCURSION_SUBDIR,
                          window_hours: float = 8.0, metrology_signal: float = 2.0,
                          tool_signal: float = 0.0, drop_before_days: float = 2.0,
-                         feature_seed: int = 0, split_seed: int = 0) -> Tuple[HeteroData, str]:
+                         feature_seed: int = 0, split_seed: int = 0,
+                         weak_labels: bool = True, reverse_edges: bool = True) -> Tuple[HeteroData, str]:
     """Build and return (HeteroData, target_node_type) — the train.py / evaluate.py contract."""
     cfg = GraphConfig(window_hours=window_hours, metrology_signal=metrology_signal,
                       tool_signal=tool_signal, drop_before_days=drop_before_days,
                       feature_seed=feature_seed, split_seed=split_seed)
     tables, _ = load_smt2020_tables(data_root, excursion_subdir, cfg)
     _print_summary(tables)
-    return graph_tables_to_heterodata(tables), TARGET_NODE_TYPE
+    if weak_labels:
+        y_ncm = tables.nodes["run"].y_ncm
+        print(f"  NCM weak labels (bracketing): {int(((y_ncm == 1) & (tables.nodes['run'].y < 0)).sum()):,} "
+              f"process runs marked suspect/carrying")
+    print(f"  reverse edges for the backbone: {'on' if reverse_edges else 'off'}")
+    return graph_tables_to_heterodata(tables, reverse_edges=reverse_edges,
+                                      weak_labels=weak_labels), TARGET_NODE_TYPE
 
 
 # ── Ground truth in global-ID space ────────────────────────────────────────────

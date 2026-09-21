@@ -15,6 +15,12 @@ Reference: CI-RCT_Thesis_Plan.md § 5.3.1
 from collections import deque
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+#: Relation-name prefix for HeteroData edges that exist only for the backbone's
+#: message passing (e.g. SMT2020's ``rev_flows_to``).  They are never causal
+#: edges: utils.data_utils skips them when building a TypedCausalGraph and
+#: CI_RCT skips them when creating per-edge-type NCM models.
+REPRESENTATION_ONLY_PREFIX = "rev_"
+
 
 class TypedCausalGraph:
     """

@@ -310,3 +310,65 @@ def test_ground_truth_to_global(tables, injected):
         assert g_strict[off["run"] + local] == {off[t] + i for t, i in nodes}
     for local, nodes in gt.extended.items():
         assert g_ext[off["run"] + local] == {off[t] + i for t, i in nodes}
+
+
+# ── NCM weak labels (bracketing) ───────────────────────────────────────────────
+
+def _bracket_expected(tables):
+    """Reference implementation of the bracketing rule on the toy graph."""
+    run = tables.nodes["run"]
+    ids, y, train = run.ids, run.y, tables.masks["run"]["train"]
+    expected = np.zeros(len(ids), dtype=np.int64)
+    for lot, g in ids.groupby("lot_idx"):
+        idx = g.index.to_numpy()
+        flagged = [i for i in idx if train[i] and y[i] == 1]
+        if not flagged:
+            continue
+        t1 = min(ids.t_start[i] for i in flagged)
+        clean = [ids.t_start[i] for i in idx if train[i] and y[i] == 0 and ids.t_start[i] < t1]
+        t0 = max(clean) if clean else -np.inf
+        for i in idx:
+            if y[i] == UNKNOWN_LABEL and ids.t_start[i] > t0:
+                expected[i] = 1
+    labelled = y != UNKNOWN_LABEL
+    expected[labelled] = y[labelled]
+    return expected
+
+
+def test_weak_labels_follow_the_bracketing_rule(tables):
+    run = tables.nodes["run"]
+    assert run.y_ncm is not None and run.y_ncm.shape == run.y.shape
+    assert (run.y_ncm == _bracket_expected(tables)).all()
+    labelled = run.y != UNKNOWN_LABEL
+    assert (run.y_ncm[labelled] == run.y[labelled]).all()      # never overrides real labels
+    assert set(np.unique(run.y_ncm)) <= {0, 1}
+
+
+def test_weak_labels_use_only_train_observations(injected):
+    runs, events, lots, inj = injected
+    cfg = GraphConfig(window_hours=WINDOW_H, train_ratio=0.34, val_ratio=0.33, split_seed=3)
+    t = build_graph_tables(runs, events, lots, inj.run_labels, inj.lot_labels, inj.excursions, cfg)
+    run = t.nodes["run"]
+    train = t.masks["run"]["train"]
+    for lot, g in run.ids.groupby("lot_idx"):
+        idx = g.index.to_numpy()
+        if not any(train[i] and run.y[i] == 1 for i in idx):
+            unl = [i for i in idx if run.y[i] == UNKNOWN_LABEL]
+            assert (run.y_ncm[unl] == 0).all(), f"lot {lot}: no train-mask flag → no weak positives"
+
+
+def test_weak_labels_mark_the_root_run_on_the_toy(injected, tables):
+    """Lot 0: clean readings at 2 h / 6 h, root run at 8 h, flagged from 10 h."""
+    runs, _, _, inj = injected
+    run = tables.nodes["run"]
+    train = tables.masks["run"]["train"]
+    lot0 = run.ids[run.ids.lot_idx == 0]
+    flagged_train = [t for i, t in zip(lot0.index, lot0.t_start) if train[i] and run.y[i] == 1]
+    if not flagged_train:
+        pytest.skip("split put none of lot 0's flagged readings in train")
+    t1 = min(flagged_train)
+    root = lot0.index[lot0.t_start == 8 * H][0]
+    if 8 * H < t1:
+        assert run.y_ncm[root] == 1
+    lot1 = run.ids[run.ids.lot_idx == 1]                       # clean lot → all zeros
+    assert (run.y_ncm[lot1.index] == 0).all()

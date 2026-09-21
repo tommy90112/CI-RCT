@@ -89,6 +89,7 @@ class NodeTable:
     feature_names: Tuple[str, ...]
     time: np.ndarray                # (n,) int64 seconds
     y: Optional[np.ndarray] = None  # (n,) int64 or None
+    y_ncm: Optional[np.ndarray] = None  # (n,) weak labels for NCM supervision (run only)
 
 
 @dataclass(frozen=True)
@@ -115,17 +116,44 @@ def build_graph_tables(runs: pd.DataFrame, events: pd.DataFrame, lots: pd.DataFr
     lot_ids = _lot_ids(lots, lot_labels, run_ids)
     tool_ids = _tool_state_ids(run_ids, cfg)
 
+    masks = {
+        "run": _stratified_masks(run_ids["y"].to_numpy(), cfg),
+        "lot": _stratified_masks(lot_ids["y"].to_numpy(), cfg),
+    }
+    y_ncm = bracket_weak_labels(run_ids, masks["run"]["train"])
     nodes = {
         "lot": _lot_table(lot_ids, run_ids),
-        "run": _run_table(run_ids, cfg, rng),
+        "run": _run_table(run_ids, cfg, rng, y_ncm),
         "tool_state": _tool_state_table(tool_ids, run_ids, events, excursions, cfg, rng),
     }
     edges = _build_edges(run_ids, lot_ids, tool_ids, cfg)
-    masks = {
-        "run": _stratified_masks(nodes["run"].y, cfg),
-        "lot": _stratified_masks(nodes["lot"].y, cfg),
-    }
     return GraphTables(config=cfg, nodes=nodes, edges=edges, masks=masks)
+
+
+def bracket_weak_labels(run_ids: pd.DataFrame, train_mask: np.ndarray) -> np.ndarray:
+    """
+    Weak labels for NCM supervision of unlabelled process runs ("bracketing").
+
+    A fab engineer brackets an excursion between the last GOOD inspection and
+    the first BAD one.  For every lot with a train-split metrology run flagged
+    y = 1 at time T1, let T0 be the latest train-split metrology run with
+    y = 0 before T1 (−∞ if none).  Unlabelled runs of that lot with
+    t_start > T0 get 1 (suspect window and everything after it — the lot is
+    carrying a defect); all other unlabelled runs get 0.  Real labels are
+    never overridden.  Only train-split observations are used, so no
+    validation / test label leaks into training.
+    """
+    y = run_ids["y"].to_numpy()
+    t = run_ids["t_start"].to_numpy(dtype=float)
+    lot = run_ids["lot_idx"].to_numpy()
+    obs = pd.DataFrame({"lot": lot, "t": t, "flag": train_mask & (y == 1), "clean": train_mask & (y == 0)})
+    t1 = obs.loc[obs["flag"]].groupby("lot")["t"].min()
+    clean = obs.loc[obs["clean"]].assign(t1=lambda d: d["lot"].map(t1))
+    t0 = clean.loc[clean["t"] < clean["t1"]].groupby("lot")["t"].max()
+    lot_t1 = pd.Series(lot).map(t1).to_numpy(dtype=float)          # NaN → lot never flagged
+    lot_t0 = pd.Series(lot).map(t0).fillna(-np.inf).to_numpy(dtype=float)
+    suspect = ~np.isnan(lot_t1) & (t > lot_t0)
+    return np.where(y == UNKNOWN_LABEL, suspect.astype(np.int64), y).astype(np.int64)
 
 
 def compute_local_offsets(tables: GraphTables) -> Dict[str, int]:
@@ -184,7 +212,7 @@ def _one_hot(values: pd.Series, prefix: str) -> Tuple[np.ndarray, list]:
     return mat, [f"{prefix}={c}" for c in cats]
 
 
-def _run_table(run_ids, cfg, rng) -> NodeTable:
+def _run_table(run_ids, cfg, rng, y_ncm: np.ndarray) -> NodeTable:
     group_x, group_names = _one_hot(run_ids["machine_group"], "group")
     route_len = run_ids.groupby("part")["step_order"].transform("max").to_numpy(dtype=float)
     y = run_ids["y"].to_numpy()
@@ -199,7 +227,8 @@ def _run_table(run_ids, cfg, rng) -> NodeTable:
                            "step_progress", "pm_triggered", "measurement"]
     ids = run_ids[["run_id", "lot_idx", "machine_idx", "t_start", "t_end", "w_start", "w_wear"]].copy()
     return NodeTable(ids=ids, x=np.hstack([group_x, scalars]), feature_names=tuple(names),
-                     time=run_ids["t_start"].to_numpy().astype(np.int64), y=y.astype(np.int64))
+                     time=run_ids["t_start"].to_numpy().astype(np.int64), y=y.astype(np.int64),
+                     y_ncm=y_ncm.astype(np.int64))
 
 
 def _lot_table(lot_ids, run_ids) -> NodeTable:

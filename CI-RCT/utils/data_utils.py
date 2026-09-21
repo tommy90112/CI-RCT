@@ -36,7 +36,7 @@ import torch
 from torch import Tensor
 from torch_geometric.data import HeteroData
 
-from model.typed_causal_graph import TypedCausalGraph
+from model.typed_causal_graph import REPRESENTATION_ONLY_PREFIX, TypedCausalGraph  # noqa: F401
 
 
 def default_rare_edge_types(dataset: str) -> Set[str]:
@@ -212,6 +212,8 @@ def build_typed_causal_graph_from_hetero(
 
     for src_type, rel, dst_type in data.edge_types:
         edge_key = (src_type, rel, dst_type)
+        if rel.startswith(REPRESENTATION_ONLY_PREFIX):
+            continue  # backbone-only reverse edge, not a causal edge
         if not hasattr(data[edge_key], "edge_index"):
             continue
         ei = data[edge_key].edge_index

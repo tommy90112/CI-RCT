@@ -40,7 +40,7 @@ from model.causal_shapley import compute_asymmetric_causal_shapley, compute_shap
 from model.hetero_backbone import HeteroGNNBackbone
 from model.hetero_ncm import HeteroNCM
 from model.root_cause_tracer import RootCauseTracer
-from model.typed_causal_graph import TypedCausalGraph
+from model.typed_causal_graph import REPRESENTATION_ONLY_PREFIX, TypedCausalGraph
 
 
 class CI_RCT(nn.Module):
@@ -84,10 +84,13 @@ class CI_RCT(nn.Module):
             t: i for i, t in enumerate(self.node_types)
         }
 
-        # All edge types as "src__to__dst" strings for HeteroNCM
-        self._edge_type_strs: List[str] = sorted(
-            f"{s}__to__{d}" for s, _, d in edge_types
-        )
+        # All causal edge types as "src__to__dst" strings for HeteroNCM.
+        # Representation-only relations (rev_* reverse edges that exist for the
+        # backbone alone) never enter the causal graph, so they get no NCM model.
+        self._edge_type_strs: List[str] = sorted({
+            f"{s}__to__{d}" for s, r, d in edge_types
+            if not r.startswith(REPRESENTATION_ONLY_PREFIX)
+        })
 
         # ── Module 1: HGT Backbone ────────────────────────────────────────
         self.backbone = HeteroGNNBackbone(
