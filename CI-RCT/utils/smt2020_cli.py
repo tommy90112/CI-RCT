@@ -39,6 +39,9 @@ def add_smt2020_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--smt2020_reverse_edges", type=_bool, default=True,
                         help="Add rev_* reverse edges for the backbone's message passing "
                              "(true/false). The causal graph never uses them.")
+    parser.add_argument("--smt2020_commonality", type=_bool, default=True,
+                        help="Tool-commonality features on tool_state (share of executed runs "
+                             "from train-split flagged lots) (true/false).")
 
 
 def _bool(text: str) -> bool:
@@ -53,6 +56,7 @@ def smt2020_graph_config(args: argparse.Namespace) -> GraphConfig:
         drop_before_days=args.smt2020_drop_before_days,
         feature_seed=args.seed,
         split_seed=args.seed,
+        commonality_features=args.smt2020_commonality,
     )
 
 
@@ -70,4 +74,5 @@ def smt2020_loader_kwargs(args: argparse.Namespace) -> dict:
         split_seed=cfg.split_seed,
         weak_labels=args.smt2020_weak_labels,
         reverse_edges=args.smt2020_reverse_edges,
+        commonality_features=args.smt2020_commonality,
     )

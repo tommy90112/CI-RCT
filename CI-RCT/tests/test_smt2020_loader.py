@@ -218,3 +218,19 @@ def test_cli_flags_control_weak_labels_and_reverse_edges():
     off = parser.parse_args(["--smt2020_weak_labels", "false", "--smt2020_reverse_edges", "False"]); off.seed = 0
     assert smt2020_loader_kwargs(off)["weak_labels"] is False
     assert smt2020_loader_kwargs(off)["reverse_edges"] is False
+
+
+def test_smt2020_blocks_lot_leaving_edges_in_the_causal_graph():
+    from utils.data_utils import default_blocked_edge_types
+    assert default_blocked_edge_types("smt2020") == {"run__to__tool_state", "tool_state__to__tool_state"}
+    assert default_blocked_edge_types("elliptic++") == {"wallet__to__wallet", "address__to__address"}
+
+
+def test_cli_commonality_flag():
+    import argparse
+    from utils.smt2020_cli import add_smt2020_args, smt2020_graph_config, smt2020_loader_kwargs
+    parser = argparse.ArgumentParser()
+    add_smt2020_args(parser)
+    off = parser.parse_args(["--smt2020_commonality", "false"]); off.seed = 0
+    assert smt2020_loader_kwargs(off)["commonality_features"] is False
+    assert smt2020_graph_config(off).commonality_features is False

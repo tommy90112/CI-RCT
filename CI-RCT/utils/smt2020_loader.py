@@ -138,18 +138,21 @@ def load_smt2020_dataset(data_root: str | Path, excursion_subdir: str = DEFAULT_
                          window_hours: float = 8.0, metrology_signal: float = 2.0,
                          tool_signal: float = 0.0, drop_before_days: float = 2.0,
                          feature_seed: int = 0, split_seed: int = 0,
-                         weak_labels: bool = True, reverse_edges: bool = True) -> Tuple[HeteroData, str]:
+                         weak_labels: bool = True, reverse_edges: bool = True,
+                         commonality_features: bool = True) -> Tuple[HeteroData, str]:
     """Build and return (HeteroData, target_node_type) — the train.py / evaluate.py contract."""
     cfg = GraphConfig(window_hours=window_hours, metrology_signal=metrology_signal,
                       tool_signal=tool_signal, drop_before_days=drop_before_days,
-                      feature_seed=feature_seed, split_seed=split_seed)
+                      feature_seed=feature_seed, split_seed=split_seed,
+                      commonality_features=commonality_features)
     tables, _ = load_smt2020_tables(data_root, excursion_subdir, cfg)
     _print_summary(tables)
     if weak_labels:
         y_ncm = tables.nodes["run"].y_ncm
         print(f"  NCM weak labels (bracketing): {int(((y_ncm == 1) & (tables.nodes['run'].y < 0)).sum()):,} "
               f"process runs marked suspect/carrying")
-    print(f"  reverse edges for the backbone: {'on' if reverse_edges else 'off'}")
+    print(f"  reverse edges for the backbone: {'on' if reverse_edges else 'off'}; "
+          f"tool commonality features: {'on' if commonality_features else 'off'}")
     return graph_tables_to_heterodata(tables, reverse_edges=reverse_edges,
                                       weak_labels=weak_labels), TARGET_NODE_TYPE
 

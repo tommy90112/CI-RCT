@@ -64,6 +64,7 @@ class GraphConfig:
     val_ratio: float = 0.15
     split_seed: int = 0
     drop_before_days: float = 0.0
+    commonality_features: bool = True   # train-split tool-commonality statistics on tool_state
     metrology_groups: Tuple[str, ...] = DEFAULT_METROLOGY_GROUPS
 
     def __post_init__(self) -> None:
@@ -121,13 +122,56 @@ def build_graph_tables(runs: pd.DataFrame, events: pd.DataFrame, lots: pd.DataFr
         "lot": _stratified_masks(lot_ids["y"].to_numpy(), cfg),
     }
     y_ncm = bracket_weak_labels(run_ids, masks["run"]["train"])
+    commonality = tool_commonality(run_ids, tool_ids, masks["run"]["train"], cfg)
     nodes = {
         "lot": _lot_table(lot_ids, run_ids),
         "run": _run_table(run_ids, cfg, rng, y_ncm),
-        "tool_state": _tool_state_table(tool_ids, run_ids, events, excursions, cfg, rng),
+        "tool_state": _tool_state_table(tool_ids, run_ids, events, excursions, cfg, rng, commonality),
     }
     edges = _build_edges(run_ids, lot_ids, tool_ids, cfg)
     return GraphTables(config=cfg, nodes=nodes, edges=edges, masks=masks)
+
+
+COMMONALITY_COLUMNS = ("flagged_runs", "flagged_lots", "flagged_share")
+COMMONALITY_PRIOR = 2.0   # pseudo-counts for the smoothed share
+
+
+def tool_commonality(run_ids: pd.DataFrame, tool_ids: pd.DataFrame, train_mask: np.ndarray,
+                     cfg: GraphConfig) -> pd.DataFrame:
+    """
+    Tool-commonality statistics per tool_state window (the fab's standard
+    excursion-hunting statistic): among the runs a window executed, how many
+    belong to a lot that a TRAIN-split metrology run flagged (y = 1).
+
+        flagged_runs   count of executed runs whose lot is flagged
+        flagged_lots   distinct flagged lots among them
+        flagged_share  (flagged_runs + k·base) / (n_runs + k), k = COMMONALITY_PRIOR,
+                       base = global share of flagged runs — smoothing keeps a
+                       one-run window from outranking a busy culprit window
+
+    A single flagged lot touches every tool on its route, so the *share*
+    across lots is what separates the culprit from the innocent tools that
+    merely processed the same lot.  Only train-split observations are used.
+    Returns all-zero columns when cfg.commonality_features is False (ablation).
+    """
+    key = pd.MultiIndex.from_frame(tool_ids[["machine_idx", "window_idx"]])
+    out = pd.DataFrame(0.0, index=range(len(tool_ids)), columns=list(COMMONALITY_COLUMNS))
+    if not cfg.commonality_features:
+        return out
+    y = run_ids["y"].to_numpy()
+    flagged_lots = set(run_ids.loc[train_mask & (y == 1), "lot_idx"])
+    frame = run_ids[["machine_idx", "w_start", "lot_idx"]].assign(
+        flagged=run_ids["lot_idx"].isin(flagged_lots))
+    base = float(frame["flagged"].mean()) if len(frame) else 0.0
+    agg = frame.groupby(["machine_idx", "w_start"]).agg(
+        n=("lot_idx", "size"), flagged_runs=("flagged", "sum"),
+        flagged_lots=("lot_idx", lambda l: l[frame.loc[l.index, "flagged"]].nunique()))
+    agg = agg.reindex(key, fill_value=0)
+    out["flagged_runs"] = agg["flagged_runs"].to_numpy(dtype=float)
+    out["flagged_lots"] = agg["flagged_lots"].to_numpy(dtype=float)
+    out["flagged_share"] = ((agg["flagged_runs"] + COMMONALITY_PRIOR * base)
+                            / (agg["n"] + COMMONALITY_PRIOR)).to_numpy(dtype=float)
+    return out
 
 
 def bracket_weak_labels(run_ids: pd.DataFrame, train_mask: np.ndarray) -> np.ndarray:
@@ -244,7 +288,8 @@ def _lot_table(lot_ids, run_ids) -> NodeTable:
                      y=lot_ids["y"].to_numpy().astype(np.int64))
 
 
-def _tool_state_table(tool_ids, run_ids, events, excursions, cfg, rng) -> NodeTable:
+def _tool_state_table(tool_ids, run_ids, events, excursions, cfg, rng,
+                      commonality: pd.DataFrame) -> NodeTable:
     group_x, group_names = _one_hot(tool_ids["machine_group"], "group")
     family_x, family_names = _one_hot(tool_ids["machine_family"], "family")
     key = pd.MultiIndex.from_frame(tool_ids[["machine_idx", "window_idx"]])
@@ -255,10 +300,11 @@ def _tool_state_table(tool_ids, run_ids, events, excursions, cfg, rng) -> NodeTa
     sensor = cfg.tool_signal * active + rng.standard_normal(len(tool_ids))
     scalars = np.column_stack([
         n_runs, busy / cfg.window_hours, ev["breakdown_in_window"], ev["pm_in_window"],
-        ev["hours_since_repair"], sensor,
+        ev["hours_since_repair"], sensor, *[commonality[c].to_numpy() for c in COMMONALITY_COLUMNS],
     ]).astype(np.float32)
     names = group_names + family_names + ["n_runs", "utilization", "breakdown_in_window",
-                                           "pm_in_window", "hours_since_repair", "sensor"]
+                                           "pm_in_window", "hours_since_repair", "sensor",
+                                           *COMMONALITY_COLUMNS]
     ids = tool_ids[["machine_idx", "window_idx", "machine_group", "machine_family"]].copy()
     return NodeTable(ids=ids, x=np.hstack([group_x, family_x, scalars]), feature_names=tuple(names),
                      time=tool_ids["time"].to_numpy().astype(np.int64))

@@ -372,3 +372,52 @@ def test_weak_labels_mark_the_root_run_on_the_toy(injected, tables):
         assert run.y_ncm[root] == 1
     lot1 = run.ids[run.ids.lot_idx == 1]                       # clean lot → all zeros
     assert (run.y_ncm[lot1.index] == 0).all()
+
+
+# ── tool commonality features ──────────────────────────────────────────────────
+
+def test_commonality_features_are_train_split_only_and_smoothed(injected, tables):
+    from utils.smt2020_graph import COMMONALITY_COLUMNS, COMMONALITY_PRIOR
+    runs, _, _, inj = injected
+    run, ts = tables.nodes["run"], tables.nodes["tool_state"]
+    names = list(ts.feature_names)
+    assert all(c in names for c in COMMONALITY_COLUMNS)
+    train = tables.masks["run"]["train"]
+    flagged_lots = set(run.ids.lot_idx[train & (run.y == 1)])
+    frame = run.ids.assign(flagged=run.ids.lot_idx.isin(flagged_lots))
+    base = frame.flagged.mean()
+    fr = ts.x[:, names.index("flagged_runs")]
+    fl = ts.x[:, names.index("flagged_lots")]
+    sh = ts.x[:, names.index("flagged_share")]
+    for i, (m, w) in enumerate(zip(ts.ids.machine_idx, ts.ids.window_idx)):
+        g = frame[(frame.machine_idx == m) & (frame.w_start == w)]
+        assert fr[i] == g.flagged.sum()
+        assert fl[i] == g.loc[g.flagged, "lot_idx"].nunique()
+        expected = (g.flagged.sum() + COMMONALITY_PRIOR * base) / (len(g) + COMMONALITY_PRIOR)
+        assert abs(sh[i] - expected) < 1e-5
+
+
+def test_commonality_separates_culprit_windows_on_the_toy(injected, tables):
+    """Machine 0 windows 1 and 2 ran lots 0 and 2 (both flagged); machine 1 ran clean lots only."""
+    ts = tables.nodes["tool_state"]
+    names = list(ts.feature_names)
+    sh = ts.x[:, names.index("flagged_share")]
+    train = tables.masks["run"]["train"]
+    run = tables.nodes["run"]
+    if not (train & (run.y == 1)).any():
+        pytest.skip("no flagged reading in train split")
+    m0 = sh[(ts.ids.machine_idx == 0).to_numpy()]
+    m1 = sh[(ts.ids.machine_idx == 1).to_numpy()]
+    assert m0.max() > m1.max()
+
+
+def test_commonality_off_gives_zero_columns(injected):
+    from utils.smt2020_graph import COMMONALITY_COLUMNS
+    runs, events, lots, inj = injected
+    t = build_graph_tables(runs, events, lots, inj.run_labels, inj.lot_labels, inj.excursions,
+                           GraphConfig(window_hours=WINDOW_H, commonality_features=False))
+    ts = t.nodes["tool_state"]
+    names = list(ts.feature_names)
+    for c in COMMONALITY_COLUMNS:
+        assert (ts.x[:, names.index(c)] == 0).all()
+    assert ts.x.shape[1] == len(names)          # feature dimension unchanged for ablations

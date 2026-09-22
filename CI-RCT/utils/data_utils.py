@@ -85,6 +85,19 @@ def default_blocked_edge_types(dataset: str) -> Set[str]:
             "wallet__to__wallet",
             "address__to__address",
         }
+    if dataset == "smt2020":
+        # A defect is carried by the LOT (run → run) and created by the TOOL
+        # (tool_state → run).  The two remaining forward relations would let
+        # the tracer leave the lot: `wears` (run → tool_state) hops from a
+        # tool_state to an earlier run of a *different* lot, and `progresses`
+        # (tool_state → tool_state) walks a machine's timeline hop by hop.
+        # Blocking both makes a chain "the lot's runs, then one exit to the
+        # tool_state that executed one of them" — the excursion question.
+        # The HGT backbone still sees every relation (and the rev_* copies).
+        return {
+            "run__to__tool_state",
+            "tool_state__to__tool_state",
+        }
     return set()
 
 
